@@ -7,12 +7,23 @@ import java.util.ArrayList;
  *
  * 支持的序列：CUU/CUD/CUF/CUB/CNL/CPL/CHA/CUP/HVP/VPA、ED/EL/ECH/DCH/ICH、
  * IL/DL/SU/SD、SGR（16 色 / 256 色 / 真彩）、DECSTBM 滚动区、DECSET 1049 备用屏、
- * DECSET 25 光标可见、DECSET 1 应用方向键、OSC（整体忽略）、字符集选择（忽略）。
+ * DECSET 25 光标可见、DECSET 1 应用方向键、DECSET 2004 括号粘贴、OSC 10/11/12/4 颜色查询。
+ *
+ * 终端**必须回应**两类查询，否则对方会一直等：
+ *   - DSR（`CSI 6n`）→ 光标位置报告 CPR；`CSI 5n` → 状态报告。
+ *   - DA（`CSI c`）→ 设备属性；`CSI > c` → 次要设备属性。
+ *   - OSC 10/11/12/4 + `?` → 前景/背景/光标色/调色板颜色。
+ * gh / fzf / survey 这类 TUI 在画提示符前会先问光标位置，收不到回报就卡在第一个提示上。
  *
  * 内部用「行对象数组 + 三套属性数组」存屏幕，滚动出屏的行进 scrollback。
  * 所有对外方法都加了 synchronized：PTY 读线程写、UI 线程读。
  */
 public final class TerminalEmulator {
+
+    /** 终端应答的出口：由 TermSession 接到 PTY 的写端。 */
+    public interface ReplySink {
+        void onReply(String reply);
+    }
 
     public static final int ATTR_BOLD = 1;
     public static final int ATTR_DIM = 2;
@@ -116,8 +127,15 @@ public final class TerminalEmulator {
 
     private int state = STATE_GROUND;
     private final StringBuilder csi = new StringBuilder();
+    private final StringBuilder osc = new StringBuilder();
     private final int[] params = new int[16];
     private int paramCount;
+
+    /** 终端应答出口，null 表示只做屏模型不回应（例如纯回放）。 */
+    private volatile ReplySink replySink;
+
+    /** DECSET 2004：括号粘贴。开启后粘贴内容要用 ESC[200~ … ESC[201~ 包起来。 */
+    private boolean bracketedPaste;
 
     /* UTF-8 增量解码缓冲 */
     private final byte[] pending = new byte[4];
@@ -148,6 +166,7 @@ public final class TerminalEmulator {
         cursorCol = 0;
         cursorVisible = true;
         appCursorKeys = false;
+        bracketedPaste = false;
         scrollTop = 0;
         scrollBottom = rows - 1;
         curFg = defaultFg;
@@ -155,6 +174,7 @@ public final class TerminalEmulator {
         curAttr = 0;
         state = STATE_GROUND;
         csi.setLength(0);
+        osc.setLength(0);
         pendingLen = 0;
     }
 
@@ -373,13 +393,23 @@ public final class TerminalEmulator {
                 break;
             case STATE_OSC:
                 if (c == 0x07) {
+                    handleOsc(osc.toString());
+                    osc.setLength(0);
                     state = STATE_GROUND;
                 } else if (c == 0x1B) {
                     state = STATE_OSC_ESC;
+                } else if (osc.length() < 64) {
+                    osc.append((char) c);
                 }
                 break;
             case STATE_OSC_ESC:
-                state = (c == '\\') ? STATE_GROUND : STATE_OSC;
+                if (c == '\\') {
+                    handleOsc(osc.toString());
+                    osc.setLength(0);
+                    state = STATE_GROUND;
+                } else {
+                    state = STATE_OSC;
+                }
                 break;
             case STATE_CHARSET:
                 state = STATE_GROUND;
@@ -432,6 +462,7 @@ public final class TerminalEmulator {
                 state = STATE_CSI;
                 break;
             case ']':
+                osc.setLength(0);
                 state = STATE_OSC;
                 break;
             case '(':
@@ -590,9 +621,90 @@ public final class TerminalEmulator {
                     setPrivateMode(false);
                 }
                 break;
+            case 'n': {
+                // DSR：6 = 光标位置报告（CPR），5 = 运行状态。回不上来对方就会一直等。
+                int kind = arg(0, 0);
+                if (prefix == 0) {
+                    if (kind == 6) {
+                        reply("\u001b[" + (cursorRow + 1) + ";" + (cursorCol + 1) + "R");
+                    } else if (kind == 5) {
+                        reply("\u001b[0n");
+                    }
+                }
+                break;
+            }
+            case 'c':
+                // DA：主设备属性回 VT220，次要设备属性回「VT220 + 标准颜色」。
+                if (prefix == '>') {
+                    reply("\u001b[>0;10;1c");
+                } else if (prefix == 0) {
+                    reply("\u001b[?62;22c");
+                }
+                break;
             default:
                 break;
         }
+    }
+
+    /**
+     * OSC 查询应答。只处理带 `?` 的颜色查询（10 前景 / 11 背景 / 12 光标 / 4;N 调色板），
+     * 其它 OSC（改标题、超链接、剪贴板）一律忽略。
+     */
+    private void handleOsc(String payload) {
+        if (payload.isEmpty() || !payload.endsWith("?")) {
+            return;
+        }
+        int semi = payload.indexOf(';');
+        int kind = parseIntSafe(semi < 0 ? payload.substring(0, payload.length() - 1)
+                : payload.substring(0, semi));
+        String body = payload.substring(0, payload.length() - 1);
+        switch (kind) {
+            case 10:
+                reply("\u001b]10;rgb:" + rgbOf(defaultFg) + "\u0007");
+                break;
+            case 11:
+                reply("\u001b]11;rgb:" + rgbOf(defaultBg) + "\u0007");
+                break;
+            case 12:
+                reply("\u001b]12;rgb:" + rgbOf(defaultFg) + "\u0007");
+                break;
+            case 4: {
+                // 形如 4;N;?：N 是调色板索引
+                String[] parts = body.split(";", -1);
+                int index = parts.length >= 2 ? parseIntSafe(parts[1]) : 0;
+                if (index >= 0 && index < PALETTE.length) {
+                    reply("\u001b]4;" + index + ";rgb:" + rgbOf(PALETTE[index]) + "\u0007");
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    /** 0xFFRRGGBB → xterm 风格 rrrr/gggg/bbbb（每通道两位十六进制重复一次）。 */
+    private static String rgbOf(int color) {
+        String hex = String.format("%06x", color & 0xFFFFFF);
+        String r = hex.substring(0, 2);
+        String g = hex.substring(2, 4);
+        String b = hex.substring(4, 6);
+        return r + r + "/" + g + g + "/" + b + b;
+    }
+
+    private void reply(String text) {
+        ReplySink sink = replySink;
+        if (sink != null) {
+            sink.onReply(text);
+        }
+    }
+
+    public void setReplySink(ReplySink sink) {
+        this.replySink = sink;
+    }
+
+    /** 括号粘贴是否开启（DECSET 2004）。开启时粘贴内容必须用 ESC[200~/ESC[201~ 包起来。 */
+    public synchronized boolean isBracketedPaste() {
+        return bracketedPaste;
     }
 
     private static int parseIntSafe(String s) {
@@ -642,6 +754,8 @@ public final class TerminalEmulator {
                 cursorVisible = enable;
             } else if (mode == 1049 || mode == 1047 || mode == 47) {
                 switchAltScreen(enable);
+            } else if (mode == 2004) {
+                bracketedPaste = enable;
             }
         }
     }

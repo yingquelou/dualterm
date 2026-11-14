@@ -25,6 +25,12 @@ public final class TermSession {
 
     private final byte[] buffer = new byte[8192];
 
+    /**
+     * 终端应答（CPR/DA/颜色查询）先攒在这里，等 append() 退出、离开仿真器的锁之后再写回 PTY。
+     * 直接在 ReplySink 里写 PTY 的话，一旦子进程暂时不读，读线程会卡在自己的写操作上，谁也动不了。
+     */
+    private final StringBuilder pendingReply = new StringBuilder();
+
     private volatile int fd = -1;
     private volatile int pid = -1;
     private volatile boolean running;
@@ -40,6 +46,14 @@ public final class TermSession {
         this.spec = spec;
         this.listener = listener;
         this.emulator = new TerminalEmulator(cols, rows, scrollback, 0xFFE6E6E6, 0xFF101014);
+        this.emulator.setReplySink(new TerminalEmulator.ReplySink() {
+            @Override
+            public void onReply(String reply) {
+                if (pendingReply.length() < 8192) {
+                    pendingReply.append(reply);
+                }
+            }
+        });
     }
 
     public LaunchSpec getSpec() {
@@ -102,6 +116,7 @@ public final class TermSession {
                     break;
                 }
                 emulator.append(buffer, n);
+                flushReply();
                 if (loggedChunks < logChunkLimit) {
                     loggedChunks++;
                     String text = new String(buffer, 0, n, StandardCharsets.UTF_8)
@@ -128,6 +143,16 @@ public final class TermSession {
             return;
         }
         writeBytes(text.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** 把本批解析中攒下的终端应答写回 PTY（只在读线程调用）。 */
+    private void flushReply() {
+        if (pendingReply.length() == 0) {
+            return;
+        }
+        String reply = pendingReply.toString();
+        pendingReply.setLength(0);
+        write(reply);
     }
 
     public void writeBytes(byte[] data) {

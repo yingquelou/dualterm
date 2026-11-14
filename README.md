@@ -104,9 +104,24 @@ app/src/main/
 
 **窗口尺寸**：`onSizeChanged` → 算出行列 → `ioctl(TIOCSWINSZ)`，不然全屏 TUI 会按 80x24 画歪。
 
+**终端要回话**：只画屏不够。`TerminalEmulator` 还得回应三类查询，否则对面会一直等：
+
+| 查询 | 回什么 | 不回会怎样 |
+|---|---|---|
+| `CSI 6n`（DSR，问光标位置） | `CSI <行>;<列> R` | gh / fzf / survey 卡在第一个提示上不动 |
+| `CSI c`（DA，问设备属性） | `CSI ?62;22c` | 少数程序降级成 7bit 模式或直接不渲染 |
+| `OSC 10/11/12/4;?`（问颜色） | `OSC 11;rgb:…` 之类 | 深/浅色判断失败，配色错乱（还可能白等超时） |
+
+典型症状就是 `gh auth login` 走到 `? Authenticate Git with your GitHub credentials? (Y/n)` 时**按什么都没反应**——
+其实它还没开始读按键，它在等光标位置报告。有些程序（含 gh）还会用 `ESC[999;999f` + `CSI 6n` 反测终端尺寸，
+所以 CPR 必须按当前屏幕行列**钳制**后再回，否则它会以为终端只有几行。
+
+回包不要写在解析路径里：`TermSession` 先把应答攒进缓冲区，等 `append()` 退出、离开仿真器的锁之后再写回 PTY，
+不然子进程一时不读就会把读线程锁死在自己身上。
+
 **渲染**：把"同色同属性的连续单元格"合成一次 `drawText`，而不是每格一次。宽字符（CJK）占两格、第二格用码点 0 占位。
 
-**输入**：自己实现 `InputConnection`——中文输入法的预编辑串（`setComposingText`）不进 PTY，只有 `commitText` 才发；退格走 `deleteSurroundingText` → `0x7f`。
+**输入**：自己实现 `InputConnection`——中文输入法的预编辑串（`setComposingText`）不进 PTY，只有 `commitText` 才发；退格走 `deleteSurroundingText` → `0x7f`。粘贴则看程序有没有开括号粘贴（`DECSET 2004`）：开了就用 `ESC[200~ … ESC[201~` 包起来，否则多行内容会被当成连续回车逐条执行（粘贴 token、粘贴多行命令时特别危险）。
 
 **容器启停**（`ProotRuntime`）：
 

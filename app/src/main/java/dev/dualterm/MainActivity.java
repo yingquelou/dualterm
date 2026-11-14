@@ -616,7 +616,7 @@ public class MainActivity extends Activity
         ClipData.Item item = cm.getPrimaryClip().getItemAt(0);
         CharSequence text = item == null ? null : item.coerceToText(this);
         if (text != null) {
-            terminal.sendText(text.toString());
+            terminal.pasteText(text.toString());
         }
     }
 

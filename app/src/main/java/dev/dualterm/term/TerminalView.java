@@ -190,6 +190,18 @@ public class TerminalView extends View {
         }
     }
 
+    /**
+     * 粘贴文本。程序若开了括号粘贴（DECSET 2004），就用 ESC[200~/ESC[201~ 把内容包起来——
+     * 否则多行内容会被当成多次回车逐行执行（粘贴 token、粘贴多行命令时尤其危险）。
+     */
+    public void pasteText(String text) {
+        if (session == null || text == null || text.isEmpty()) {
+            return;
+        }
+        boolean bracketed = session.getEmulator().isBracketedPaste();
+        sendText(bracketed ? "\u001b[200~" + text + "\u001b[201~" : text);
+    }
+
     /** 发送文本到 PTY（会应用一次性的 Ctrl/Alt 修饰）。 */
     public void sendText(String text) {
         if (session == null || text == null || text.isEmpty()) {
