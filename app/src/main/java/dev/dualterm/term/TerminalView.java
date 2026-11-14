@@ -45,6 +45,14 @@ public class TerminalView extends View {
         void onFontSizeChanged(int sp);
     }
 
+    /**
+     * 会话已经退出、用户还在往里敲。PTY 已经死了，写进去只是丢字节，
+     * 所以这里只通知一次（有节流），让界面提示「重启」，而不是默默吞掉按键。
+     */
+    public interface DeadInputListener {
+        void onInputWhileDead();
+    }
+
     /** 长按终端（全屏模式下没有顶栏按钮，靠它打开菜单）。 */
     public interface LongPressListener {
         void onLongPress();
@@ -102,6 +110,8 @@ public class TerminalView extends View {
     private boolean altDown;
 
     private FontSizeListener fontListener;
+    private DeadInputListener deadListener;
+    private long lastDeadNotice;
     private ScaleGestureDetector scaleDetector;
     private boolean scaling;
     private float scaleStartSize;
@@ -190,6 +200,26 @@ public class TerminalView extends View {
 
     public void setFontSizeListener(FontSizeListener listener) {
         this.fontListener = listener;
+    }
+
+    public void setDeadInputListener(DeadInputListener listener) {
+        this.deadListener = listener;
+    }
+
+    /** 会话进程还在不在。退出后屏幕内容仍可读，但输入已经没有意义。 */
+    private boolean isDead() {
+        return session != null && !session.isRunning();
+    }
+
+    private void notifyDead() {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - lastDeadNotice < 1500) {
+            return;
+        }
+        lastDeadNotice = now;
+        if (deadListener != null) {
+            deadListener.onInputWhileDead();
+        }
     }
 
     public void setSession(TermSession value) {
@@ -313,6 +343,10 @@ public class TerminalView extends View {
         if (session == null || text == null || text.isEmpty()) {
             return;
         }
+        if (!session.isRunning()) {
+            notifyDead();
+            return;
+        }
         boolean consumed = ctrlDown || altDown;
         session.write(applyModifiers(text));
         scrollOffset = 0;
@@ -358,6 +392,10 @@ public class TerminalView extends View {
      */
     public void sendRaw(String text) {
         if (session == null || text == null || text.isEmpty()) {
+            return;
+        }
+        if (!session.isRunning()) {
+            notifyDead();
             return;
         }
         session.write(text);
@@ -676,7 +714,12 @@ public class TerminalView extends View {
             case MotionEvent.ACTION_UP:
                 removeCallbacks(longPressRunnable);
                 if (!dragging && !longPressFired) {
-                    showKeyboard();
+                    if (isDead()) {
+                        // 键盘弹出来也没处输入，直接引导去重启
+                        notifyDead();
+                    } else {
+                        showKeyboard();
+                    }
                 }
                 return true;
             case MotionEvent.ACTION_CANCEL:
@@ -809,9 +852,10 @@ public class TerminalView extends View {
     }
 
     private void send(String sequence) {
-        if (sequence != null && session != null) {
-            session.write(sequence);
+        if (sequence == null || session == null || !session.isRunning()) {
+            return;
         }
+        session.write(sequence);
     }
 
     /* -------------------- 键盘与 IME -------------------- */

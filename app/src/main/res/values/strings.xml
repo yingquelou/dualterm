@@ -5,4 +5,6 @@
     <string name="mode_container">容器</string>
     <string name="menu">⋮</string>
     <string name="keyboard">⌨</string>
+    <string name="copy_output">复制输出</string>
+    <string name="restart">重启</string>
 </resources>

@@ -115,6 +115,58 @@
                 android:layout_height="wrap_content"
                 android:orientation="horizontal" />
         </LinearLayout>
+
+        <!--
+          会话结束条：和键条占同一个位置（互斥），所以不额外吃高度。
+          进程退出后键条已经没用了（PTY 已经死了），把这块最顺手的屏幕位置
+          换成「重启 / 复制输出」两个动作，并且不覆盖终端里的最后几行输出——
+          崩溃时的报错恰恰是最需要读的内容。
+        -->
+        <LinearLayout
+            android:id="@+id/exit_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/bar_bg"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal"
+            android:paddingLeft="12dp"
+            android:paddingTop="4dp"
+            android:paddingRight="4dp"
+            android:paddingBottom="4dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/exit_text"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:paddingRight="8dp"
+                android:singleLine="true"
+                android:textColor="@color/text_dim"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btn_copy_out"
+                style="@style/BarButton"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:text="@string/copy_output"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btn_restart"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:background="@drawable/key_bg_on"
+                android:minWidth="72dp"
+                android:paddingLeft="14dp"
+                android:paddingRight="14dp"
+                android:text="@string/restart"
+                android:textColor="#FF101014"
+                android:textSize="12sp" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- 准备容器时的遮罩 -->

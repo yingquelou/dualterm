@@ -74,6 +74,12 @@ public class MainActivity extends Activity
     private Button altKey;
     private boolean keyPanelOpen;
 
+    /** 会话结束条：和键条互斥，占同一块屏幕位置。 */
+    private View exitBar;
+    private TextView exitText;
+    private boolean sessionEnded;
+    private int lastExitCode;
+
     /** 软键盘在屏幕上（返回键分层用：先收键盘，再退后台）。 */
     private boolean imeVisible;
     /** 有没有物理键盘：决定键条是否出现——键盘上本来就有 ESC/Tab/方向键。 */
@@ -110,6 +116,8 @@ public class MainActivity extends Activity
         keyBar = findViewById(R.id.key_bar);
         keyRow = findViewById(R.id.key_row);
         keyPanel = findViewById(R.id.key_panel);
+        exitBar = findViewById(R.id.exit_bar);
+        exitText = findViewById(R.id.exit_text);
         overlay = findViewById(R.id.overlay);
         overlayText = findViewById(R.id.overlay_text);
 
@@ -123,6 +131,13 @@ public class MainActivity extends Activity
             }
         });
         // 捏合改字号后落盘，下次进来还是这个大小
+        // 会话已退出还继续敲键盘：给一次提示，别让用户对着死 PTY 敲半天
+        terminal.setDeadInputListener(new TerminalView.DeadInputListener() {
+            @Override
+            public void onInputWhileDead() {
+                toast("会话已结束 · 点下方「重启」继续");
+            }
+        });
         terminal.setFontSizeListener(new TerminalView.FontSizeListener() {
             @Override
             public void onFontSizeChanged(int sp) {
@@ -146,6 +161,19 @@ public class MainActivity extends Activity
             @Override
             public void onClick(View v) {
                 showModePicker();
+            }
+        });
+        // 会话结束条：进程没了，键条留着也没用，把这块位置换成「重启 / 复制输出」
+        findViewById(R.id.btn_restart).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                switchMode(mode, true);
+            }
+        });
+        findViewById(R.id.btn_copy_out).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                copyAll();
             }
         });
         btnKeyboard.setOnClickListener(new View.OnClickListener() {
@@ -183,6 +211,14 @@ public class MainActivity extends Activity
         maybeOpenConsole(it);
         maybeKeyTest(it);
         logWindowFlags();
+        // 冷启动窗口不在触摸模式，焦点会落到第一个可聚焦控件（模式 chip）上：
+        // 物理键盘按 Enter 就成了「打开模式菜单」。终端才是这台设备的主输入面。
+        terminal.post(new Runnable() {
+            @Override
+            public void run() {
+                terminal.requestFocus();
+            }
+        });
         uiReady = true;
     }
 
@@ -452,9 +488,80 @@ public class MainActivity extends Activity
 
     private void attach(TermSession session) {
         terminal.setSession(session);
+        terminal.requestFocus();
         session.resize(terminal.getGridRows(), terminal.getGridCols());
+        // 切到一个已经退出的会话（比如刚才 crash 掉的那个）也要把结束条显示出来
+        if (!session.isRunning()) {
+            showExitBar(lastExitCode);
+        } else {
+            hideExitBar();
+        }
         updateStatus(null);
         terminal.postInvalidateOnAnimation();
+    }
+
+    /* -------------------- 会话结束反馈 -------------------- */
+
+    /**
+     * 进程退出后的界面反馈。取舍：
+     * <ul>
+     *   <li><b>不弹对话框</b>——退出往往伴随报错，遮住终端等于遮住最需要读的那几行</li>
+     *   <li><b>键条原地换成结束条</b>——PTY 已经死了，键条按了也没用；这块位置本来就是拇指区，
+     *       换成「重启 / 复制输出」既不增加高度也不改变布局</li>
+     *   <li><b>区分退出原因</b>：exit 0 是正常收工；128+n 是被信号杀（Ctrl-C 是 130、
+     *       OOM 是 137）；其余是异常返回码。颜色上只对非 0 报警</li>
+     *   <li><b>物理键盘下同样显示</b>：这不是键盘替身，而是恢复入口</li>
+     * </ul>
+     */
+    private void showExitBar(int code) {
+        sessionEnded = true;
+        exitText.setText(describeExit(code) + " · 输出仍在屏上");
+        exitText.setTextColor(code == 0 ? 0xFF8A90A0 : 0xFFFF8A65);
+        exitBar.setVisibility(View.VISIBLE);
+        keyBar.setVisibility(View.GONE);
+        closeKeyPanel();
+    }
+
+    private void hideExitBar() {
+        if (sessionEnded) {
+            sessionEnded = false;
+            exitBar.setVisibility(View.GONE);
+            // 重启之后键条要按「有没有物理键盘」重新出现
+            refreshInputMode();
+        }
+    }
+
+    /** 128+n 是 waitpid 的信号编码：130 = SIGINT、137 = SIGKILL、143 = SIGTERM。 */
+    private static String describeExit(int code) {
+        if (code == 0) {
+            return "会话已结束（exit 0）";
+        }
+        if (code > 128 && code <= 192) {
+            int sig = code - 128;
+            String name;
+            switch (sig) {
+                case 1:
+                    name = "SIGHUP";
+                    break;
+                case 2:
+                    name = "SIGINT";
+                    break;
+                case 9:
+                    name = "SIGKILL";
+                    break;
+                case 15:
+                    name = "SIGTERM";
+                    break;
+                default:
+                    name = "signal " + sig;
+                    break;
+            }
+            return "被 " + name + " 终止（" + code + "）";
+        }
+        if (code < 0) {
+            return "会话异常结束（" + code + "）";
+        }
+        return "会话异常退出（code " + code + "）";
     }
 
     /* -------------------- TermSession.Listener -------------------- */
@@ -490,7 +597,9 @@ public class MainActivity extends Activity
                     Containers.setRunning(Containers.activeName(MainActivity.this), false);
                 }
                 if (terminal.getSession() == session) {
-                    updateStatus("进程已退出，code=" + code + "（菜单可重启）");
+                    lastExitCode = code;
+                    showExitBar(code);
+                    updateStatus(describeExit(code));
                 }
             }
         });
@@ -825,7 +934,8 @@ public class MainActivity extends Activity
                 toast("已连接物理键盘：隐藏屏幕键条，Esc/Tab/方向键直接用键盘");
             }
         }
-        keyBar.setVisibility(hardKeyboard ? View.GONE : View.VISIBLE);
+        // 会话结束时键条本来就该让位给结束条，键盘插拔也不能把它顶回来
+        keyBar.setVisibility(hardKeyboard || sessionEnded ? View.GONE : View.VISIBLE);
         btnKeyboard.setVisibility(hardKeyboard ? View.GONE : View.VISIBLE);
         updateStatus(null);
     }
@@ -1104,6 +1214,11 @@ public class MainActivity extends Activity
         // 从最近任务切回、或用户上滑把系统栏临时叫出来之后，重新进入沉浸式
         if (hasFocus && fullscreen) {
             hideSystemBars();
+        }
+        // 冷启动/切换回来时如果焦点还没定，把输入焦点还给终端：
+        // 不然物理键盘的 Enter 会激活第一个可聚焦控件（模式 chip），而不是发回车
+        if (hasFocus && getCurrentFocus() == null) {
+            terminal.requestFocus();
         }
     }
 
