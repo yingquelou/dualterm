@@ -26,6 +26,17 @@ import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
+import dev.dualterm.container.ContainerBootstrap;
+import dev.dualterm.container.ContainerRuntime;
+import dev.dualterm.container.Containers;
+import dev.dualterm.container.ImageImporter;
+import dev.dualterm.container.Volumes;
+import dev.dualterm.term.LaunchSpec;
+import dev.dualterm.term.Shells;
+import dev.dualterm.term.TermSession;
+import dev.dualterm.term.TerminalView;
+import dev.dualterm.ui.ConsoleActivity;
+
 /**
  * 主界面：两个模式共用一个终端视图。
  *
@@ -729,7 +740,6 @@ public class MainActivity extends Activity
         });
         root.requestApplyInsets();
     }
-
 
     /* -------------------- 绑定目录（volumes） -------------------- */
 

@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.term;
 
 /** JNI 入口。方法名必须与 pty.c 里的符号一一对应。 */
 public final class NativePty {

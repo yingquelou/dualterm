@@ -33,7 +33,7 @@
         </activity>
 
         <activity
-            android:name=".ConsoleActivity"
+            android:name=".ui.ConsoleActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density"
             android:exported="false"
             android:label="容器管理控制台"

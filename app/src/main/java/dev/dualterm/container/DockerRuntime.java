@@ -1,10 +1,13 @@
-package dev.dualterm;
+package dev.dualterm.container;
 
 import android.content.Context;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+
+import dev.dualterm.term.LaunchSpec;
+import dev.dualterm.term.Shells;
 
 /**
  * 实验性 Docker 后端。

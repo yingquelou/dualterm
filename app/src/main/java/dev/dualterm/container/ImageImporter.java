@@ -1,9 +1,6 @@
-package dev.dualterm;
+package dev.dualterm.container;
 
 import android.content.Context;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -13,6 +10,10 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+
+import dev.dualterm.util.Fs;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * 从 tar 归档导入镜像，对齐 docker 的两条路径：
@@ -113,7 +114,7 @@ public final class ImageImporter {
                                         boolean dockerSave, ContainerRuntime.Progress progress)
             throws IOException {
         File temp = new File(ctx.getCacheDir(), "import-" + System.nanoTime());
-        Shells.ensureDir(temp);
+        Fs.ensureDir(temp);
         try {
             report(progress, "解包镜像归档（" + Containers.humanSize(archive.length()) + "）…");
             try (InputStream in = new FileInputStream(archive)) {
@@ -291,7 +292,7 @@ public final class ImageImporter {
                 throw new IOException("镜像已存在：" + ref + "（先 docker rmi " + ref + " 再导入）");
             }
         }
-        Shells.ensureDir(rootfs);
+        Fs.ensureDir(rootfs);
         return rootfs;
     }
 

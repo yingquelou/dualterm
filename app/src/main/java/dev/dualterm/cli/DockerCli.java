@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.cli;
 
 import android.content.Context;
 
@@ -8,6 +8,11 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+
+import dev.dualterm.container.ContainerRuntime;
+import dev.dualterm.container.Containers;
+import dev.dualterm.container.ImageImporter;
+import dev.dualterm.container.Volumes;
 
 /**
  * 内置 docker CLI 的一个子集，只做「容器 / 镜像管理」这件事。

@@ -73,7 +73,7 @@ static void free_cstring_array(char **array) {
 /* ------------------------------------------------------------------ */
 
 JNIEXPORT jint JNICALL
-Java_dev_dualterm_NativePty_forkExec(JNIEnv *env, jclass clazz,
+Java_dev_dualterm_term_NativePty_forkExec(JNIEnv *env, jclass clazz,
                                      jobjectArray argv, jobjectArray envp, jstring jcwd,
                                      jint rows, jint cols, jintArray out_pid) {
     if (argv == NULL || out_pid == NULL) {
@@ -197,7 +197,7 @@ Java_dev_dualterm_NativePty_forkExec(JNIEnv *env, jclass clazz,
 /* ------------------------------------------------------------------ */
 
 JNIEXPORT jint JNICALL
-Java_dev_dualterm_NativePty_read(JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer, jint len) {
+Java_dev_dualterm_term_NativePty_read(JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer, jint len) {
     if (fd < 0 || len <= 0) {
         return -EBADF;
     }
@@ -219,7 +219,7 @@ Java_dev_dualterm_NativePty_read(JNIEnv *env, jclass clazz, jint fd, jbyteArray 
 }
 
 JNIEXPORT jint JNICALL
-Java_dev_dualterm_NativePty_write(JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer,
+Java_dev_dualterm_term_NativePty_write(JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer,
                                   jint offset, jint len) {
     if (fd < 0 || len <= 0) {
         return -EBADF;
@@ -250,7 +250,7 @@ Java_dev_dualterm_NativePty_write(JNIEnv *env, jclass clazz, jint fd, jbyteArray
 /* ------------------------------------------------------------------ */
 
 JNIEXPORT jint JNICALL
-Java_dev_dualterm_NativePty_setWindowSize(JNIEnv *env, jclass clazz, jint fd, jint rows,
+Java_dev_dualterm_term_NativePty_setWindowSize(JNIEnv *env, jclass clazz, jint fd, jint rows,
                                           jint cols) {
     if (fd < 0) {
         return -EBADF;
@@ -270,7 +270,7 @@ Java_dev_dualterm_NativePty_setWindowSize(JNIEnv *env, jclass clazz, jint fd, ji
 /* ------------------------------------------------------------------ */
 
 JNIEXPORT jint JNICALL
-Java_dev_dualterm_NativePty_sendSignal(JNIEnv *env, jclass clazz, jint pid, jint sig) {
+Java_dev_dualterm_term_NativePty_sendSignal(JNIEnv *env, jclass clazz, jint pid, jint sig) {
     if (pid <= 0) {
         return -EINVAL;
     }
@@ -281,7 +281,7 @@ Java_dev_dualterm_NativePty_sendSignal(JNIEnv *env, jclass clazz, jint pid, jint
 }
 
 JNIEXPORT jint JNICALL
-Java_dev_dualterm_NativePty_waitPid(JNIEnv *env, jclass clazz, jint pid) {
+Java_dev_dualterm_term_NativePty_waitPid(JNIEnv *env, jclass clazz, jint pid) {
     if (pid <= 0) {
         return -1;
     }
@@ -304,7 +304,7 @@ Java_dev_dualterm_NativePty_waitPid(JNIEnv *env, jclass clazz, jint pid) {
 }
 
 JNIEXPORT void JNICALL
-Java_dev_dualterm_NativePty_close(JNIEnv *env, jclass clazz, jint fd) {
+Java_dev_dualterm_term_NativePty_close(JNIEnv *env, jclass clazz, jint fd) {
     if (fd >= 0) {
         close((int) fd);
     }

@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.term;
 
 import java.util.ArrayList;
 

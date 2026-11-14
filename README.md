@@ -41,17 +41,19 @@ powershell -ExecutionPolicy Bypass -File scripts\fetch-runtime.ps1
 #    → proot/loader/依赖库 落进 app/src/main/jniLibs/<abi>/
 #    → Alpine minirootfs 落进 app/src/main/assets/runtime/rootfs-<abi>.pack
 
-# 3. 出包
-gradlew assembleDebug        # 若没有 wrapper，Android Studio 会生成，或 gradle wrapper
+# 3. 出包（仓库自带 wrapper，Gradle 8.7）
+./gradlew assembleDebug
 #    产物：app/build/outputs/apk/debug/app-debug.apk
 ```
 
-命令行首次构建没有 wrapper 时：
+wrapper 首次运行会从 `services.gradle.org` 下载 Gradle 8.7（约 100MB）；离线环境请自备同版本分发，
+或用本机已装的 Gradle 直接构建：
 
 ```bash
-gradle wrapper --gradle-version 8.2
-./gradlew assembleDebug
+gradle assembleDebug           # 等价，跳过 wrapper 下载
 ```
+
+> 命令行构建需要 `ANDROID_HOME`（或 `local.properties` 里的 `sdk.dir`）与 `JAVA_HOME` 指向 JDK 17。
 
 **零第三方依赖**：没有 AndroidX、没有 Kotlin、没有 commons-compress。只有 Framework API + 一个 200 行的 C 文件 + 手写 tar.gz 解包器。这样做的目的是让构建链尽可能不炸。
 
@@ -63,26 +65,38 @@ gradle wrapper --gradle-version 8.2
 app/src/main/
 ├── cpp/
 │   ├── CMakeLists.txt
-│   └── pty.c                     ← openpty + fork + setsid + TIOCSCTTY + execvp
+│   └── pty.c                     ← openpty + fork + setsid + TIOCSCTTY + execvp（JNI 符号在 dev.dualterm.term 包下）
 ├── jniLibs/<abi>/                ← 脚本生成：libproot.so / libproot_loader.so / 依赖库
 ├── assets/runtime/               ← 脚本生成：rootfs-<abi>.pack
 ├── java/dev/dualterm/
-│   ├── NativePty.java            ← JNI 声明：forkExec / read / write / setWindowSize / signal
-│   ├── TermSession.java          ← PTY 会话：读线程 + 1 号线程 waitPid 回收
-│   ├── TerminalEmulator.java     ← VT100/xterm 屏模型（CSI/SGR/滚动区/备用屏/scrollback）
-│   ├── TerminalView.java         ← 渲染 + 触摸滚动 + 自实现 InputConnection
-│   ├── MainActivity.java         ← 双模式切换、功能键行、菜单
-│   ├── Shells.java               ← 模式 A：/system/bin/sh（含 su 探测）
-│   ├── ContainerRuntime.java     ← 容器后端抽象
-│   ├── ProotRuntime.java         ← 模式 B：proot 参数组装（按容器 rootfs）
-│   ├── DockerRuntime.java        ← 模式 B 备选：su + dockerd（实验）
-│   ├── Containers.java           ← 镜像/容器注册表、物化复制、pull
-│   ├── ConsoleActivity.java      ← 容器管理控制台（docker 语法的子集，App 内执行）
-│   ├── DockerCli.java            ← 控制台背后的命令实现：ps/images/run/rm/rmi/pull…
-│   ├── ContainerBootstrap.java   ← rootfs/proot 落盘、解包、resolv.conf
-│   └── TarGzExtractor.java       ← ustar + pax + GNU 长文件名
+│   ├── MainActivity.java         ← 应用入口：双模式切换、功能键行、菜单
+│   ├── term/                     ← 终端内核（不依赖容器，可单独复用）
+│   │   ├── NativePty.java        ← JNI 声明：forkExec / read / write / setWindowSize / signal
+│   │   ├── TermSession.java      ← PTY 会话：读线程 + 1 号线程 waitPid 回收
+│   │   ├── TerminalEmulator.java ← VT100/xterm 屏模型（CSI/SGR/滚动区/备用屏/scrollback）
+│   │   ├── TerminalView.java     ← 渲染 + 触摸滚动 + 自实现 InputConnection
+│   │   ├── LaunchSpec.java       ← 一次会话的启动参数（argv/envp/cwd）
+│   │   └── Shells.java           ← 模式 A：/system/bin/sh（含 su 探测）
+│   ├── container/                ← 容器与镜像（只依赖 term + util）
+│   │   ├── ContainerRuntime.java ← 后端抽象
+│   │   ├── ProotRuntime.java     ← 模式 B：proot 参数组装（按容器 rootfs）
+│   │   ├── DockerRuntime.java    ← 模式 B 备选：su + dockerd（实验）
+│   │   ├── Containers.java       ← 镜像/容器注册表、物化复制、pull
+│   │   ├── ContainerBootstrap.java← rootfs/proot 落盘、解包、resolv.conf
+│   │   ├── TarGzExtractor.java   ← ustar + pax + GNU 长文件名 + 层叠加
+│   │   ├── ImageImporter.java    ← docker save / export / OCI 识别与导入
+│   │   └── Volumes.java          ← 宿主目录绑定（-b host:guest）
+│   ├── cli/
+│   │   └── DockerCli.java        ← 控制台背后的命令实现：ps/images/run/rm/rmi/pull…
+│   ├── ui/
+│   │   └── ConsoleActivity.java  ← 容器管理控制台界面（docker 语法的子集）
+│   └── util/
+│       └── Fs.java               ← ensureDir 之类的小工具
 └── res/…
 ```
+
+依赖方向是单向的：`ui/cli → container → term → util`，没有反向依赖，也没有跨层回调。
+根包只留应用入口 `MainActivity`（这样 `adb am start -n dev.dualterm/.MainActivity` 这个调试入口不会因分包而变）。
 
 ### 关键实现点
 
@@ -123,6 +137,9 @@ proot --kill-on-exit --link2symlink -0 -r <rootfs> \
 # 启动并自动敲入一条命令，输出同时打到 logcat（tag: DualTerm）
 adb shell 'am start -n dev.dualterm/.MainActivity --es mode container --es cmd "cat /etc/os-release; id"'
 adb logcat -s DualTerm
+
+# 直接打开容器管理控制台并执行一条命令（ConsoleActivity 不 exported，由 MainActivity 转发）
+adb shell 'am start -n dev.dualterm/.MainActivity --ez console true --es cmd "ps -a"'
 ```
 
 ---
@@ -231,3 +248,18 @@ files/container/
 - 选中/复制（现在只有"复制全部"）
 - `Intent` 支持外部调用（`am start -a RUN_COMMAND`）
 - rootfs 换成 Debian/Ubuntu 的 minirootfs（改 `fetch-runtime.ps1` 的 URL 即可，解包逻辑通用）
+
+---
+
+## 工程约定
+
+- **改包名 = 改 JNI 符号**。`NativePty` 的 native 方法靠 `Java_dev_dualterm_term_NativePty_*` 这种全限定名导出，
+  挪包时必须同步改 `cpp/pty.c`，否则编译照过、运行期只在 logcat 里冒
+  `No implementation found for ... NativePty.forkExec`，终端直接不启动。
+- **自定义 View 在布局里写的是全限定名**（`<dev.dualterm.term.TerminalView>`），挪包同样要改 XML。
+- **单元测试跑不了容器**：proot 依赖真机内核特性，验证一律走「容器内写文件 → 宿主 `run-as` 读」，
+  不要用 logcat 判断输出完整性（高频输出会被 chatty 丢弃）。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。

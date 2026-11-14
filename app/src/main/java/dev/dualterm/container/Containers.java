@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.container;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import dev.dualterm.util.Fs;
 
 /**
  * 多容器 / 多镜像的元数据与文件布局。
@@ -267,14 +269,14 @@ public final class Containers {
         if (dir.exists()) {
             deleteRecursive(dir, containersDir(ctx));
         }
-        Shells.ensureDir(rootfs);
+        Fs.ensureDir(rootfs);
         copyTree(img.rootfs, rootfs);
-        Shells.ensureDir(new File(dir, "home"));
+        Fs.ensureDir(new File(dir, "home"));
 
         // 容器自己的 resolv.conf（镜像是只读模板，不能指望它带着 DNS 配置）
         writeText(new File(rootfs, "etc/resolv.conf"), DNS_CONF);
         for (String d : new String[]{"root", "tmp", "dev", "proc", "sys", "var/run"}) {
-            Shells.ensureDir(new File(rootfs, d));
+            Fs.ensureDir(new File(rootfs, d));
         }
         stripLegacyDockerShim(rootfs);
 
@@ -391,8 +393,8 @@ public final class Containers {
      * 老的布局是 container/rootfs（v1.x），直接 rename 成镜像目录，省一次解包。
      */
     public static void ensureBootstrap(Context ctx, ContainerRuntime.Progress progress) throws IOException {
-        Shells.ensureDir(imagesDir(ctx));
-        Shells.ensureDir(containersDir(ctx));
+        Fs.ensureDir(imagesDir(ctx));
+        Fs.ensureDir(containersDir(ctx));
 
         if (images(ctx).isEmpty()) {
             File target = imageRootfs(ctx, DEFAULT_IMAGE);
@@ -403,7 +405,7 @@ public final class Containers {
                     && new File(old, "etc/alpine-release").exists()) {
                 report(progress, "迁移已有根文件系统…");
                 File parent = target.getParentFile();
-                Shells.ensureDir(parent);
+                Fs.ensureDir(parent);
                 if (target.exists()) {
                     deleteRecursive(target, imagesDir(ctx));
                 }
@@ -430,11 +432,11 @@ public final class Containers {
                 report(progress, "修复容器 " + item.name + " 的根文件系统…");
                 try {
                     deleteRecursive(rf, containersDir(ctx));
-                    Shells.ensureDir(rf);
+                    Fs.ensureDir(rf);
                     copyTree(img.rootfs, rf);
                     writeText(new File(rf, "etc/resolv.conf"), DNS_CONF);
                     for (String d : new String[]{"root", "tmp", "dev", "proc", "sys", "var/run"}) {
-                        Shells.ensureDir(new File(rf, d));
+                        Fs.ensureDir(new File(rf, d));
                     }
                     stripLegacyDockerShim(rf);
                 } catch (IOException ignored) {
@@ -575,7 +577,7 @@ public final class Containers {
         download(base + bestFile, tmp);
 
         report(progress, "解包镜像…");
-        Shells.ensureDir(target);
+        Fs.ensureDir(target);
         try (InputStream in = Files.newInputStream(tmp.toPath())) {
             TarGzExtractor.extract(in, target, null);
         }
@@ -645,7 +647,7 @@ public final class Containers {
         report(progress, "写入 DNS 与容器目录…");
         writeText(new File(rootfs, "etc/resolv.conf"), DNS_CONF);
         for (String d : new String[]{"root", "tmp", "dev", "proc", "sys", "var/run"}) {
-            Shells.ensureDir(new File(rootfs, d));
+            Fs.ensureDir(new File(rootfs, d));
         }
         registerImage(ctx, ref, rootfs);
     }
@@ -687,7 +689,7 @@ public final class Containers {
         if (code != 200) {
             throw new IOException("下载失败 HTTP " + code + "：" + url);
         }
-        Shells.ensureDir(dest.getParentFile());
+        Fs.ensureDir(dest.getParentFile());
         try (InputStream in = conn.getInputStream();
              OutputStream out = Files.newOutputStream(dest.toPath())) {
             byte[] buf = new byte[64 * 1024];
@@ -803,12 +805,12 @@ public final class Containers {
                     ? new File(srcRoot, ts.substring(1))
                     : new File(src.getParentFile(), ts);
             if (resolved.isFile()) {
-                Shells.ensureDir(dst.getParentFile());
+                Fs.ensureDir(dst.getParentFile());
                 Files.copy(resolved.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 //noinspection ResultOfMethodCallIgnored
                 dst.setExecutable(resolved.canExecute(), true);
             } else if (resolved.isDirectory()) {
-                Shells.ensureDir(dst);
+                Fs.ensureDir(dst);
             }
         } catch (Exception ignored) {
             // 复制不了就留空，启动时会有更明确的报错
@@ -843,7 +845,7 @@ public final class Containers {
         }
 
         if (link) {
-            Shells.ensureDir(dst.getParentFile());
+            Fs.ensureDir(dst.getParentFile());
             try {
                 Path target = Files.readSymbolicLink(srcPath);
                 //noinspection ResultOfMethodCallIgnored
@@ -857,7 +859,7 @@ public final class Containers {
             }
         }
         if (src.isDirectory()) {
-            Shells.ensureDir(dst);
+            Fs.ensureDir(dst);
             File[] children = src.listFiles();
             if (children != null) {
                 for (File child : children) {
@@ -866,7 +868,7 @@ public final class Containers {
             }
             return;
         }
-        Shells.ensureDir(dst.getParentFile());
+        Fs.ensureDir(dst.getParentFile());
         Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING,
                 LinkOption.NOFOLLOW_LINKS);
     }
@@ -929,7 +931,7 @@ public final class Containers {
 
     private static void writeText(File file, String content) {
         try {
-            Shells.ensureDir(file.getParentFile());
+            Fs.ensureDir(file.getParentFile());
             Files.write(file.toPath(), content.getBytes("UTF-8"));
         } catch (IOException ignored) {
             // 写不进去时上层会在启动时暴露更具体的错误

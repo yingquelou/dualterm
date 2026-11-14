@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.container;
 
 import android.content.Context;
 import android.content.SharedPreferences;

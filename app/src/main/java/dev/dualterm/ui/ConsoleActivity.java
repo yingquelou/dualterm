@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.ui;
 
 import android.app.Activity;
 import android.os.Bundle;
@@ -14,6 +14,9 @@ import android.widget.TextView;
 
 import java.util.ArrayList;
 import java.util.List;
+
+import dev.dualterm.R;
+import dev.dualterm.cli.DockerCli;
 
 /**
  * 容器 / 镜像管理控制台。

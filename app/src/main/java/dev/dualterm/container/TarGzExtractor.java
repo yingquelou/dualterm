@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.container;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;

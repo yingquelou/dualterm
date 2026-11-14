@@ -1,6 +1,8 @@
-package dev.dualterm;
+package dev.dualterm.container;
 
 import android.content.Context;
+
+import dev.dualterm.term.LaunchSpec;
 
 /**
  * 容器模式的后端抽象。

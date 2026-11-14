@@ -79,7 +79,7 @@
             android:textColor="@color/text_dim"
             android:textSize="11sp" />
 
-        <dev.dualterm.TerminalView
+        <dev.dualterm.term.TerminalView
             android:id="@+id/terminal"
             android:layout_width="match_parent"
             android:layout_height="0dp"

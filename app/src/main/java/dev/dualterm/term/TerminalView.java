@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.term;
 
 import android.content.Context;
 import android.graphics.Canvas;

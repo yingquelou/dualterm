@@ -1,10 +1,13 @@
-package dev.dualterm;
+package dev.dualterm.container;
 
 import android.content.Context;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+
+import dev.dualterm.term.LaunchSpec;
+import dev.dualterm.util.Fs;
 
 /**
  * PRoot 后端：把 Alpine/Debian 的 minirootfs 当成容器根，proot 负责路径重定向。
@@ -35,7 +38,7 @@ public final class ProotRuntime extends ContainerRuntime {
         Containers.ensureBootstrap(ctx, progress);
         progress.onProgress("检查 proot 运行时…");
         ContainerBootstrap.ensureProot(ctx);
-        Shells.ensureDir(ContainerBootstrap.tmpDir(ctx));
+        Fs.ensureDir(ContainerBootstrap.tmpDir(ctx));
         progress.onProgress("容器已就绪");
     }
 
@@ -61,8 +64,8 @@ public final class ProotRuntime extends ContainerRuntime {
         }
         File home = item.home(ctx);
         File tmp = ContainerBootstrap.tmpDir(ctx);
-        Shells.ensureDir(home);
-        Shells.ensureDir(new File(rootfs, "var/run"));
+        Fs.ensureDir(home);
+        Fs.ensureDir(new File(rootfs, "var/run"));
 
         List<String> args = new ArrayList<>();
         args.add(proot.getAbsolutePath());

@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.container;
 
 import android.content.Context;
 import android.os.Build;
@@ -7,6 +7,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+
+import dev.dualterm.util.Fs;
 
 /**
  * 容器运行时的「入驻」逻辑：把 proot 和根文件系统从 assets 放到应用私有目录，
@@ -102,7 +104,7 @@ public final class ContainerBootstrap {
         if (rootfs.exists()) {
             deleteRecursive(rootfs, ctx.getFilesDir());
         }
-        Shells.ensureDir(rootfs);
+        Fs.ensureDir(rootfs);
 
         String asset = "runtime/rootfs-" + abi() + ".pack";
         if (!assetExists(ctx, asset)) {
@@ -128,7 +130,7 @@ public final class ContainerBootstrap {
 
         // bind mount 目标必须存在
         for (String d : new String[]{"root", "tmp", "dev", "proc", "sys", "var/run"}) {
-            Shells.ensureDir(new File(rootfs, d));
+            Fs.ensureDir(new File(rootfs, d));
         }
 
         report(progress, "根文件系统就绪");
@@ -164,7 +166,7 @@ public final class ContainerBootstrap {
     }
 
     public static void copyAsset(Context ctx, String assetPath, File dest) throws IOException {
-        Shells.ensureDir(dest.getParentFile());
+        Fs.ensureDir(dest.getParentFile());
         try (InputStream in = ctx.getAssets().open(assetPath);
              FileOutputStream out = new FileOutputStream(dest)) {
             byte[] buf = new byte[64 * 1024];
@@ -176,7 +178,7 @@ public final class ContainerBootstrap {
     }
 
     private static void writeText(File file, String content) throws IOException {
-        Shells.ensureDir(file.getParentFile());
+        Fs.ensureDir(file.getParentFile());
         try (FileOutputStream out = new FileOutputStream(file)) {
             out.write(content.getBytes("UTF-8"));
         }

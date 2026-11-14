@@ -1,12 +1,27 @@
-*.iml
+# ---- 构建产物 ----
 .gradle/
-local.properties
-.idea/
 build/
 captures/
 .externalNativeBuild/
 .cxx/
+*.apk
+*.aab
+*.hprof
 
-# 运行时二进制：由 scripts/fetch-runtime.ps1 生成，不入库
+# ---- 本机配置 ----
+local.properties
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# ---- 日志与临时文件 ----
+*.log
+*.bak
+*.orig
+*.rej
+
+# ---- 运行时二进制：由 scripts/fetch-runtime.ps1 生成，不入库 ----
+# （rootfs 打包 4MB、proot 一组 .so，按 ABI 生成，跟着版本走会让仓库迅速膨胀）
 app/src/main/assets/runtime/rootfs-*.pack
 app/src/main/jniLibs/

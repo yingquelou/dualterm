@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.term;
 
 import android.content.Context;
 
@@ -6,6 +6,8 @@ import java.io.File;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+
+import dev.dualterm.util.Fs;
 
 /**
  * 模式 A：直接跑在 Android 底层。
@@ -21,12 +23,12 @@ public final class Shells {
 
     public static LaunchSpec localSpec(Context ctx, boolean useRoot) {
         File home = new File(ctx.getFilesDir(), "home");
-        ensureDir(home);
+        Fs.ensureDir(home);
         File prefix = new File(ctx.getFilesDir(), "usr");
-        ensureDir(prefix);
-        ensureDir(new File(prefix, "bin"));
+        Fs.ensureDir(prefix);
+        Fs.ensureDir(new File(prefix, "bin"));
         File tmp = new File(ctx.getCacheDir(), "tmp");
-        ensureDir(tmp);
+        Fs.ensureDir(tmp);
 
         if (useRoot && isRootAvailable()) {
             String[] env = localEnv(home, tmp, prefix);
@@ -67,12 +69,6 @@ public final class Shells {
             }
         }
         return false;
-    }
-
-    public static void ensureDir(File dir) {
-        if (!dir.exists() && !dir.mkdirs()) {
-            // 忽略：后续操作会给出更具体的错误
-        }
     }
 
     /** 执行一条命令并返回 stdout（最多 64KB），失败返回 null。 */

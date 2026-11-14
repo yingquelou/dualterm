@@ -1,4 +1,4 @@
-package dev.dualterm;
+package dev.dualterm.term;
 
 /** 一次会话的启动参数：谁、在哪、带什么环境变量。 */
 public final class LaunchSpec {
