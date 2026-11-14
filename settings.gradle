@@ -1,0 +1,18 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+// aapt2 / lint 这类构建期工具由 AGP 从 Google Maven 拉取，必须在 settings 里声明仓库
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "DualTerm"
+include ':app'

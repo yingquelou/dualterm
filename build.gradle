@@ -1,0 +1,5 @@
+// 顶层构建文件。DualTerm 不依赖任何第三方库（无 AndroidX、无 Kotlin），
+// 只用 Android Framework + NDK，最大限度降低构建环境的复杂度。
+plugins {
+    id 'com.android.application' version '8.2.2' apply false
+}

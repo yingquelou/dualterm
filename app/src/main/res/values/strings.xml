@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">双态终端</string>
+    <string name="mode_local">本地</string>
+    <string name="mode_container">容器</string>
+    <string name="menu">⋮</string>
+    <string name="keyboard">⌨</string>
+</resources>

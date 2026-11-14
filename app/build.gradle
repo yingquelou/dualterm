@@ -1,0 +1,62 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'dev.dualterm'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'dev.dualterm'
+        minSdk 26
+        targetSdk 34
+        versionCode 26
+        versionName '3.5'
+        // 需要 NDK：首次 Sync 时 Android Studio 会提示安装 NDK + CMake，直接同意即可。
+        // 若要指定版本，取消下一行注释并改成你已安装的版本。
+        // ndkVersion '26.1.10909125'
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=none'
+                cFlags '-O2'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        // 必须解压到 nativeLibraryDir：proot 是从 jniLibs 里以 libproot.so 形式
+        // 打包的可执行文件，只能从磁盘上 exec，APK 内部的压缩条目无法执行。
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+}
+
+dependencies {
+    // 故意留空：整个 App 只用 Android Framework API。
+}

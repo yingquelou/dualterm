@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/term_bg"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar_bg"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingLeft="12dp"
+        android:paddingTop="6dp"
+        android:paddingRight="4dp"
+        android:paddingBottom="6dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="容器管理控制台"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/btn_clear"
+            style="@style/BarButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="清屏" />
+
+        <Button
+            android:id="@+id/btn_close"
+            style="@style/BarButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="关闭" />
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar_bg_alt"
+        android:paddingLeft="12dp"
+        android:paddingTop="5dp"
+        android:paddingRight="12dp"
+        android:paddingBottom="5dp"
+        android:text="命令由 App 直接执行，容器里没有 docker 命令。输入 help 看可用命令。"
+        android:textColor="@color/text_dim"
+        android:textSize="11sp" />
+
+    <ScrollView
+        android:id="@+id/scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#FF0C0E12"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/transcript"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textColor="@color/text_primary"
+            android:textIsSelectable="true"
+            android:textSize="12sp" />
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar_bg"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingLeft="8dp"
+        android:paddingTop="4dp"
+        android:paddingRight="4dp"
+        android:paddingBottom="4dp">
+
+        <EditText
+            android:id="@+id/input"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@null"
+            android:fontFamily="monospace"
+            android:hint="docker ps -a"
+            android:imeOptions="actionGo"
+            android:importantForAutofill="no"
+            android:inputType="textNoSuggestions"
+            android:singleLine="true"
+            android:textColor="@color/text_primary"
+            android:textColorHint="@color/text_dim"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btn_prev"
+            style="@style/BarButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="↑" />
+
+        <Button
+            android:id="@+id/btn_run"
+            style="@style/BarButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="执行"
+            android:textColor="@color/accent" />
+    </LinearLayout>
+</LinearLayout>
