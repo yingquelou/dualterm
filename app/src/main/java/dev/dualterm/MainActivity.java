@@ -542,12 +542,19 @@ public class MainActivity extends Activity
         TermSession session = terminal.getSession();
         StringBuilder sb = new StringBuilder();
         if (session != null) {
-            sb.append(session.getSpec().title);
-            sb.append(" · ").append(terminal.getGridCols()).append('x').append(terminal.getGridRows());
+            // 容器模式下 chip 已经写了容器名，状态行不重复它
+            String title = session.getSpec().title;
+            boolean titleOnChip = MODE_CONTAINER.equals(mode)
+                    && title.equals(Containers.activeName(this));
+            if (!titleOnChip) {
+                sb.append(title).append(" · ");
+            }
+            sb.append(terminal.getGridCols()).append('x').append(terminal.getGridRows());
             if (session.getPid() > 0) {
                 sb.append(" · ").append(session.getPid());
             }
-            if (!session.isRunning()) {
+            // extra 通常是「进程已退出，code=…」，别再缀一个重复的「已退出」
+            if (!session.isRunning() && (extra == null || !extra.contains("退出"))) {
                 sb.append(" · 已退出");
             }
         } else {
