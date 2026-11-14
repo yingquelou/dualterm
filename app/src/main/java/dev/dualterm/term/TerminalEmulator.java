@@ -137,6 +137,35 @@ public final class TerminalEmulator {
     /** DECSET 2004：括号粘贴。开启后粘贴内容要用 ESC[200~ … ESC[201~ 包起来。 */
     private boolean bracketedPaste;
 
+    /** DECSET 7：自动换行。关掉后写满最后一列就原地覆盖（vim 会用 ?7l 避免多余滚动）。 */
+    private boolean autowrap = true;
+
+    /**
+     * 延迟换行。真终端写满最后一列时光标不立刻跳到下一行，而是停在最后一格「待换行」，
+     * 下一个字符来了才换。不这么做的话，每行末尾都会多滚一行，vim 满屏重绘时会整体错位。
+     */
+    private boolean pendingWrap;
+
+    /** G0/G1 指定：'B' = ASCII，'0' = DEC 特殊图形（画线字符，vim 的分屏边框/listchars 用）。 */
+    private char charsetG0 = 'B';
+    private char charsetG1 = 'B';
+    private int charsetTarget;
+    /** 当前解释 0x20–0x7E 用哪一组：0 = G0，1 = G1（SO/SI 切换）。 */
+    private int glSet;
+
+    /** 鼠标上报：0 关闭，否则是 1000 / 1002 / 1003 三种模式之一。 */
+    private int mouseMode;
+    /** 1006：SGR 扩展坐标（ESC[<b;x;yM）。 */
+    private boolean mouseSgr;
+    /** 1005：UTF-8 扩展坐标。 */
+    private boolean mouseUtf8;
+
+    /** DECSET 1004：焦点变化上报（ESC[I 进入 / ESC[O 离开）。 */
+    private boolean focusReport;
+
+    /** DECSCUSR 光标形状：0/1 方块，2 方块，3 下划线，4 下划线，5 竖线，6 竖线。 */
+    private int cursorShape;
+
     /* UTF-8 增量解码缓冲 */
     private final byte[] pending = new byte[4];
     private int pendingLen;
@@ -167,6 +196,17 @@ public final class TerminalEmulator {
         cursorVisible = true;
         appCursorKeys = false;
         bracketedPaste = false;
+        autowrap = true;
+        pendingWrap = false;
+        charsetG0 = 'B';
+        charsetG1 = 'B';
+        charsetTarget = 0;
+        glSet = 0;
+        mouseMode = 0;
+        mouseSgr = false;
+        mouseUtf8 = false;
+        focusReport = false;
+        cursorShape = 0;
         scrollTop = 0;
         scrollBottom = rows - 1;
         curFg = defaultFg;
@@ -260,6 +300,67 @@ public final class TerminalEmulator {
 
     public synchronized boolean isAppCursorKeys() {
         return appCursorKeys;
+    }
+
+    public synchronized boolean isAutowrap() {
+        return autowrap;
+    }
+
+    public synchronized int getCursorShape() {
+        return cursorShape;
+    }
+
+    /** 鼠标上报是否开启（vim 的 set mouse=a 会开）。开启后触摸应转成鼠标序列而不是本地滚动。 */
+    public synchronized boolean isMouseTracking() {
+        return mouseMode != 0;
+    }
+
+    public synchronized boolean isMouseSgr() {
+        return mouseSgr;
+    }
+
+    public synchronized boolean isFocusReport() {
+        return focusReport;
+    }
+
+    /**
+     * 生成一条鼠标上报序列。button：0 左 / 1 中 / 2 右，松开请用 {@code release=true}；
+     * motion 表示这是拖动中的移动上报（1002/1003 模式下才发）。
+     * 坐标从 1 开始（终端语义）。
+     */
+    public synchronized String mouseReport(int button, int col, int row, boolean release, boolean motion) {
+        if (mouseMode == 0) {
+            return null;
+        }
+        if (mouseMode == 9 && (release || motion)) {
+            return null;
+        }
+        if (mouseMode == 1000 && motion) {
+            return null;
+        }
+        int cb = button;
+        if (motion) {
+            cb += 32;
+        }
+        if (mouseMode == 1003 && motion) {
+            cb |= 32;
+        }
+        int x = Math.max(1, Math.min(cols, col));
+        int y = Math.max(1, Math.min(rows, row));
+        if (mouseSgr) {
+            return "\u001b[<" + cb + ";" + x + ";" + y + (release ? "m" : "M");
+        }
+        // 老式 X10/VT200 编码：release 用 button=3
+        int b = release ? 3 : cb;
+        if (mouseUtf8) {
+            // 1005：坐标超出单字节范围时用 UTF-8 编码
+            return "\u001b[M" + utf8(32 + b) + utf8(32 + x) + utf8(32 + y);
+        }
+        return "\u001b[M" + (char) (32 + b) + (char) (32 + x) + (char) (32 + y);
+    }
+
+    private static String utf8(int cp) {
+        return new String(Character.toChars(cp));
     }
 
     public synchronized String getText() {
@@ -412,6 +513,12 @@ public final class TerminalEmulator {
                 }
                 break;
             case STATE_CHARSET:
+                // ESC ( X / ESC ) X 的 X：'B' = ASCII，'0' = DEC 特殊图形
+                if (charsetTarget == 0) {
+                    charsetG0 = (char) c;
+                } else if (charsetTarget == 1) {
+                    charsetG1 = (char) c;
+                }
                 state = STATE_GROUND;
                 break;
             default:
@@ -428,23 +535,30 @@ public final class TerminalEmulator {
             case 0x07:
                 break;
             case 0x08:
+                pendingWrap = false;
                 if (cursorCol > 0) {
                     cursorCol--;
                 }
                 break;
             case 0x09:
+                pendingWrap = false;
                 cursorCol = Math.min(cols - 1, (cursorCol / 8 + 1) * 8);
                 break;
             case 0x0A:
             case 0x0B:
             case 0x0C:
+                pendingWrap = false;
                 lineFeed();
                 break;
             case 0x0D:
+                pendingWrap = false;
                 cursorCol = 0;
                 break;
             case 0x0E:
+                glSet = 1;
+                break;
             case 0x0F:
+                glSet = 0;
                 break;
             default:
                 if (c >= 0x20 && c != 0x7F) {
@@ -466,9 +580,17 @@ public final class TerminalEmulator {
                 state = STATE_OSC;
                 break;
             case '(':
+                charsetTarget = 0;
+                state = STATE_CHARSET;
+                break;
             case ')':
+                charsetTarget = 1;
+                state = STATE_CHARSET;
+                break;
             case '*':
             case '+':
+                // G2/G3 我们不用，但这两个字符得吃掉，否则会漏成可见字符
+                charsetTarget = 2;
                 state = STATE_CHARSET;
                 break;
             case '7':
@@ -531,6 +653,26 @@ public final class TerminalEmulator {
             }
         }
 
+        // 光标移动类指令会清掉「待换行」状态（SGR 之类不清，否则 vim 每段颜色都会打断换行）
+        switch (finalChar) {
+            case 'A':
+            case 'B':
+            case 'C':
+            case 'D':
+            case 'E':
+            case 'F':
+            case 'G':
+            case '`':
+            case 'H':
+            case 'f':
+            case 'd':
+            case 'Z':
+                pendingWrap = false;
+                break;
+            default:
+                break;
+        }
+
         switch (finalChar) {
             case 'A':
                 cursorRow = clamp(cursorRow - arg(0, 1), scrollTop, scrollBottom);
@@ -563,6 +705,25 @@ public final class TerminalEmulator {
                 break;
             case 'd':
                 cursorRow = clamp(arg(0, 1) - 1, 0, rows - 1);
+                break;
+            case 'Z': {
+                // CBT：向左跳 n 个制表位（Shift+Tab 用它，vim 里反向跳缩进）
+                int n = Math.max(1, arg(0, 1));
+                for (int i = 0; i < n; i++) {
+                    int prev = cursorCol;
+                    cursorCol = Math.max(0, ((cursorCol - 1) / 8) * 8);
+                    if (cursorCol == prev) {
+                        cursorCol = 0;
+                        break;
+                    }
+                }
+                break;
+            }
+            case 'q':
+                // DECSCUSR：2 方块 / 4 下划线 / 6 竖线
+                if (prefix == 0) {
+                    cursorShape = arg(0, 0);
+                }
                 break;
             case 'J':
                 eraseDisplay(arg(0, 0));
@@ -624,7 +785,12 @@ public final class TerminalEmulator {
             case 'n': {
                 // DSR：6 = 光标位置报告（CPR），5 = 运行状态。回不上来对方就会一直等。
                 int kind = arg(0, 0);
-                if (prefix == 0) {
+                if (prefix == '?') {
+                    if (kind == 6) {
+                        // DECXCPR，多一个页号
+                        reply("\u001b[?" + (cursorRow + 1) + ";" + (cursorCol + 1) + ";1R");
+                    }
+                } else if (prefix == 0) {
                     if (kind == 6) {
                         reply("\u001b[" + (cursorRow + 1) + ";" + (cursorCol + 1) + "R");
                     } else if (kind == 5) {
@@ -750,17 +916,34 @@ public final class TerminalEmulator {
             int mode = params[i];
             if (mode == 1) {
                 appCursorKeys = enable;
+            } else if (mode == 7) {
+                autowrap = enable;
+                if (!enable) {
+                    pendingWrap = false;
+                }
             } else if (mode == 25) {
                 cursorVisible = enable;
             } else if (mode == 1049 || mode == 1047 || mode == 47) {
                 switchAltScreen(enable);
             } else if (mode == 2004) {
                 bracketedPaste = enable;
+            } else if (mode == 1000 || mode == 1002 || mode == 1003) {
+                mouseMode = enable ? mode : 0;
+            } else if (mode == 1005) {
+                mouseUtf8 = enable;
+            } else if (mode == 1006) {
+                mouseSgr = enable;
+            } else if (mode == 1004) {
+                focusReport = enable;
+            } else if (mode == 9) {
+                // X10：只报按下
+                mouseMode = enable ? 9 : 0;
             }
         }
     }
 
     private void switchAltScreen(boolean enable) {
+        pendingWrap = false;
         if (enable) {
             if (!altActive) {
                 savedRow = cursorRow;
@@ -915,30 +1098,103 @@ public final class TerminalEmulator {
     }
 
     private void putChar(int cp) {
+        cp = mapCharset(cp);
+
+        if (pendingWrap) {
+            pendingWrap = false;
+            if (autowrap) {
+                cursorCol = 0;
+                lineFeed();
+            }
+        }
         if (cursorCol >= cols) {
+            if (autowrap) {
+                cursorCol = 0;
+                lineFeed();
+            } else {
+                cursorCol = cols - 1;
+            }
+        }
+        int width = charWidth(cp);
+        // 宽字符卡在最后一列（只剩一格）时，真终端会先换行再画
+        if (width == 2 && cursorCol == cols - 1 && autowrap) {
             cursorCol = 0;
             lineFeed();
         }
-        int width = charWidth(cp);
+
         Line line = lines[cursorRow];
         line.text[cursorCol] = cp;
         line.fg[cursorCol] = curFg;
         line.bg[cursorCol] = curBg;
         line.attr[cursorCol] = (byte) curAttr;
         cursorCol++;
-        if (width == 2 && cursorCol < cols) {
-            line.text[cursorCol] = 0;
-            line.fg[cursorCol] = curFg;
-            line.bg[cursorCol] = curBg;
-            line.attr[cursorCol] = (byte) curAttr;
-            cursorCol++;
+        if (width == 2) {
+            if (cursorCol < cols) {
+                line.text[cursorCol] = 0;
+                line.fg[cursorCol] = curFg;
+                line.bg[cursorCol] = curBg;
+                line.attr[cursorCol] = (byte) curAttr;
+                cursorCol++;
+            }
         }
-        if (cursorCol > cols) {
-            cursorCol = cols;
+        if (cursorCol >= cols) {
+            // 停在最后一格并标记待换行；下一个字符到来时才真正换行
+            cursorCol = cols - 1;
+            pendingWrap = autowrap;
         }
     }
 
-    private static int charWidth(int cp) {
+    /**
+     * DEC 特殊图形字符集（ESC ( 0）。vim 的垂直分屏线、listchars、fillchars 都靠它，
+     * 不映射的话 `\x1b(0x\x1b(B` 会显示成一个字面的字母 x。
+     */
+    private int mapCharset(int cp) {
+        if (cp < 0x20 || cp > 0x7E) {
+            return cp;
+        }
+        char set = glSet == 1 ? charsetG1 : charsetG0;
+        if (set != '0') {
+            return cp;
+        }
+        switch (cp) {
+            case '`': return 0x25C6; // ◆
+            case 'a': return 0x2592; // ▒
+            case 'b': return 0x2409; // ␉
+            case 'c': return 0x240C; // ␌
+            case 'd': return 0x240D; // ␍
+            case 'e': return 0x240A; // ␊
+            case 'f': return 0x00B0; // °
+            case 'g': return 0x00B1; // ±
+            case 'h': return 0x2424; // ␤
+            case 'i': return 0x240B; // ␋
+            case 'j': return 0x2518; // ┘
+            case 'k': return 0x2510; // ┐
+            case 'l': return 0x250C; // ┌
+            case 'm': return 0x2514; // └
+            case 'n': return 0x253C; // ┼
+            case 'o': return 0x23BA; // ⎺
+            case 'p': return 0x23BB; // ⎻
+            case 'q': return 0x2500; // ─
+            case 'r': return 0x23BC; // ⎼
+            case 's': return 0x23BD; // ⎽
+            case 't': return 0x251C; // ├
+            case 'u': return 0x2524; // ┤
+            case 'v': return 0x2534; // ┴
+            case 'w': return 0x252C; // ┬
+            case 'x': return 0x2502; // │
+            case 'y': return 0x2264; // ≤
+            case 'z': return 0x2265; // ≥
+            case '{': return 0x03C0; // π
+            case '|': return 0x2260; // ≠
+            case '}': return 0x00A3; // £
+            case '~': return 0x00B7; // ·
+            case '_': return 0x0020; // 不换行空格（显示成空格）
+            default: return cp;
+        }
+    }
+
+    /** 码点占几列：CJK/全角 2 列，其余 1 列（0 表示宽字符的占位尾格）。 */
+    public static int charWidth(int cp) {
         if (cp == 0) {
             return 0;
         }
@@ -987,7 +1243,8 @@ public final class TerminalEmulator {
             count = bottom - top + 1;
         }
         for (int i = 0; i < count; i++) {
-            if (top == 0) {
+            // 备用屏（vim/less 的全屏界面）滚动不该污染主屏的 scrollback
+            if (top == 0 && !altActive) {
                 pushScrollback(lines[top]);
             }
             System.arraycopy(lines, top + 1, lines, top, bottom - top);

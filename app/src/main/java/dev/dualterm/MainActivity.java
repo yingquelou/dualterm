@@ -157,6 +157,112 @@ public class MainActivity extends Activity
         }
         switchMode(MODE_CONTAINER.equals(saved) ? MODE_CONTAINER : MODE_LOCAL, false);
         maybeOpenConsole(it);
+        maybeKeyTest(it);
+        logWindowFlags();
+    }
+
+    /** 排查「该应用不允许屏幕截图」：把窗口标志打出来，看是不是我们自己的 FLAG_SECURE。 */
+    private void logWindowFlags() {
+        int flags = getWindow().getAttributes().flags;
+        boolean secure = (flags & WindowManager.LayoutParams.FLAG_SECURE) != 0;
+        android.util.Log.i("DualTerm",
+                "window flags=0x" + Integer.toHexString(flags) + " FLAG_SECURE=" + secure);
+    }
+
+    /**
+     * 调试/自动化：--es keytest "ctrl+c" 往终端注入一次带修饰键的按键事件。
+     *
+     * 蓝牙/USB 键盘不在手边时，用它回归硬件键映射（Ctrl 组合、Shift+Tab、Alt、方向键、F 键）。
+     * 走的是 TerminalView.dispatchKeyEvent → onKeyDown，与真实按键同一条路径。
+     */
+    private void maybeKeyTest(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        final String spec = intent.getStringExtra("keytest");
+        if (spec == null) {
+            return;
+        }
+        terminal.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                injectKey(spec);
+            }
+        }, 5000);
+    }
+
+    private void injectKey(String spec) {
+        int meta = 0;
+        String name = spec.trim().toLowerCase(java.util.Locale.US);
+        while (true) {
+            if (name.startsWith("ctrl+")) {
+                meta |= android.view.KeyEvent.META_CTRL_ON | android.view.KeyEvent.META_CTRL_LEFT_ON;
+                name = name.substring(5);
+            } else if (name.startsWith("alt+")) {
+                meta |= android.view.KeyEvent.META_ALT_ON | android.view.KeyEvent.META_ALT_LEFT_ON;
+                name = name.substring(4);
+            } else if (name.startsWith("shift+")) {
+                meta |= android.view.KeyEvent.META_SHIFT_ON | android.view.KeyEvent.META_SHIFT_LEFT_ON;
+                name = name.substring(6);
+            } else {
+                break;
+            }
+        }
+        int code = keyCodeOf(name);
+        if (code == 0) {
+            android.util.Log.w("DualTerm", "keytest 无法识别: " + spec);
+            return;
+        }
+        long now = android.os.SystemClock.uptimeMillis();
+        terminal.requestFocus();
+        terminal.dispatchKeyEvent(new android.view.KeyEvent(
+                now, now, android.view.KeyEvent.ACTION_DOWN, code, 0, meta));
+        terminal.dispatchKeyEvent(new android.view.KeyEvent(
+                now, now, android.view.KeyEvent.ACTION_UP, code, 0, meta));
+        android.util.Log.i("DualTerm", "keytest 注入 " + spec + " keyCode=" + code + " meta=" + meta);
+    }
+
+    private static int keyCodeOf(String name) {
+        if (name.length() == 1) {
+            char c = name.charAt(0);
+            if (c >= 'a' && c <= 'z') {
+                return android.view.KeyEvent.KEYCODE_A + (c - 'a');
+            }
+            if (c >= '0' && c <= '9') {
+                return android.view.KeyEvent.KEYCODE_0 + (c - '0');
+            }
+        }
+        switch (name) {
+            case "tab": return android.view.KeyEvent.KEYCODE_TAB;
+            case "enter": return android.view.KeyEvent.KEYCODE_ENTER;
+            case "esc":
+            case "escape": return android.view.KeyEvent.KEYCODE_ESCAPE;
+            case "space": return android.view.KeyEvent.KEYCODE_SPACE;
+            case "backspace": return android.view.KeyEvent.KEYCODE_DEL;
+            case "delete": return android.view.KeyEvent.KEYCODE_FORWARD_DEL;
+            case "insert": return android.view.KeyEvent.KEYCODE_INSERT;
+            case "up": return android.view.KeyEvent.KEYCODE_DPAD_UP;
+            case "down": return android.view.KeyEvent.KEYCODE_DPAD_DOWN;
+            case "left": return android.view.KeyEvent.KEYCODE_DPAD_LEFT;
+            case "right": return android.view.KeyEvent.KEYCODE_DPAD_RIGHT;
+            case "home": return android.view.KeyEvent.KEYCODE_MOVE_HOME;
+            case "end": return android.view.KeyEvent.KEYCODE_MOVE_END;
+            case "pgup": return android.view.KeyEvent.KEYCODE_PAGE_UP;
+            case "pgdn": return android.view.KeyEvent.KEYCODE_PAGE_DOWN;
+            case "f1": return android.view.KeyEvent.KEYCODE_F1;
+            case "f2": return android.view.KeyEvent.KEYCODE_F2;
+            case "f3": return android.view.KeyEvent.KEYCODE_F3;
+            case "f4": return android.view.KeyEvent.KEYCODE_F4;
+            case "f5": return android.view.KeyEvent.KEYCODE_F5;
+            case "f6": return android.view.KeyEvent.KEYCODE_F6;
+            case "f7": return android.view.KeyEvent.KEYCODE_F7;
+            case "f8": return android.view.KeyEvent.KEYCODE_F8;
+            case "f9": return android.view.KeyEvent.KEYCODE_F9;
+            case "f10": return android.view.KeyEvent.KEYCODE_F10;
+            case "f11": return android.view.KeyEvent.KEYCODE_F11;
+            case "f12": return android.view.KeyEvent.KEYCODE_F12;
+            default: return 0;
+        }
     }
 
     /** 调试/自动化：--ez console true [--es cmd "ps -a"] 直接打开管理控制台。 */
@@ -308,7 +414,18 @@ public class MainActivity extends Activity
         }
         sessions.put(key, session);
         attach(session);
-        terminal.showKeyboard();
+        // 接了物理键盘（蓝牙/USB）就别强弹软键盘：横屏时软键盘能吃掉大半个屏幕，
+        // 终端会被压到只剩两三行，而且软键盘窗口是 secure 的，连截图都会被系统拦掉。
+        if (!hasHardKeyboard()) {
+            terminal.showKeyboard();
+        }
+    }
+
+    private boolean hasHardKeyboard() {
+        android.content.res.Configuration c = getResources().getConfiguration();
+        return c.keyboard == android.content.res.Configuration.KEYBOARD_QWERTY
+                || c.keyboard == android.content.res.Configuration.KEYBOARD_12KEY
+                || c.hardKeyboardHidden == android.content.res.Configuration.HARDKEYBOARDHIDDEN_NO;
     }
 
     private void attach(TermSession session) {

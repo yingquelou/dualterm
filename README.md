@@ -120,8 +120,44 @@ app/src/main/
 不然子进程一时不读就会把读线程锁死在自己身上。
 
 **渲染**：把"同色同属性的连续单元格"合成一次 `drawText`，而不是每格一次。宽字符（CJK）占两格、第二格用码点 0 占位。
+注意宽字符要**单独画在自己那一格**上：把一个宽字形和它后面的字符塞进同一个 `drawText`，字体会自己撑开两倍宽，
+后面所有字符就整体右移一格——中文文件在 vim 里会越往右越歪。
 
 **输入**：自己实现 `InputConnection`——中文输入法的预编辑串（`setComposingText`）不进 PTY，只有 `commitText` 才发；退格走 `deleteSurroundingText` → `0x7f`。粘贴则看程序有没有开括号粘贴（`DECSET 2004`）：开了就用 `ESC[200~ … ESC[201~` 包起来，否则多行内容会被当成连续回车逐条执行（粘贴 token、粘贴多行命令时特别危险）。
+软键盘的回车送的是 `\n`，进 PTY 前要换成 `\r`（CR）：`\n` 在 vim 里是 `<NL>`，等于 `<C-J>`，和回车的语义不一样。
+
+**外接键盘（蓝牙/USB）**：物理键默认先交给输入法，中文输入法会把不认识的组合（`Ctrl+C`）吞掉，
+所以 `TerminalView.onKeyPreIme` 在 IME 之前把终端语义键抢下来，再按 xterm 的规则翻译：
+
+| 按键 | 发出 | 备注 |
+|---|---|---|
+| `Ctrl+A`…`Ctrl+Z` | `0x01`…`0x1A` | `Ctrl+@`/`Ctrl+空格` → `0x00`，`Ctrl+?` → `0x7F` |
+| `Ctrl+[ \ ] ^ _` | `0x1B`…`0x1F` | `Ctrl+[` 就是 ESC |
+| `Alt+<键>` | `ESC` + 键 | 即 Meta 键，emacs/readline 的 `M-x`、vim 的 `Alt+` 映射 |
+| `Shift+Tab` | `ESC[Z` | CBT 反向制表 |
+| `Ctrl+方向键` | `ESC[1;5A` 等 | 修饰参数 = `1 + shift + 2*alt + 4*ctrl` |
+| `Ctrl+Home/End` | `ESC[1;5H` / `ESC[1;5F` | 同上 |
+| `F1`–`F4` | `ESC O P/Q/R/S` | 带修饰时 `ESC[1;<m>P` |
+| `F5`–`F12` | `ESC[15~` `17~` `18~` `19~` `20~` `21~` `23~` `24~` | |
+| `Insert` / `Delete` | `ESC[2~` / `ESC[3~` | |
+| `Ctrl+Backspace` | `0x08` | 普通退格是 `0x7F` |
+
+**vim 这类全屏程序还依赖这些终端能力**（都已实现）：
+
+| 能力 | 序列 | 不实现会怎样 |
+|---|---|---|
+| DEC 画线字符集 | `ESC ( 0` / `SO`·`SI` | 分屏边框、`listchars`、`fillchars` 显示成 `l q q k x` 一堆字母 |
+| 延迟换行 | 写满末列先不换行 | 每行多滚一行，满屏重绘整体错位 |
+| 自动换行开关 | `DECSET 7` | vim `?7l` 之后仍会多出空行 |
+| 备用屏 | `CSI ?1049h/l` | 退出 vim 后主屏内容被冲掉 |
+| 备用屏不写 scrollback | — | 翻 vim 时主屏历史被污染 |
+| 鼠标上报 | `?1000/?1002/?1003` + `?1006` | `set mouse=a` 时点击、拖选全无反应 |
+| 焦点上报 | `?1004` | 切回前台 vim 不重绘 |
+| 光标形状 | `DECSCUSR` `CSI n q` | 插入/普通模式光标无区别 |
+| 括号粘贴 | `?2004` | 多行粘贴被逐条执行 |
+
+鼠标这块对触摸做了转换：单指点击发 `<LeftMouse>`（vim 里定位光标），单指拖动发拖动上报（拖选），
+**双指上下滑发滚轮**（`<ScrollWheelUp/Down>`，button 64/65）——触摸屏没有滚轮，不给滚轮 vim 就没法翻页。
 
 **容器启停**（`ProotRuntime`）：
 
@@ -155,7 +191,15 @@ adb logcat -s DualTerm
 
 # 直接打开容器管理控制台并执行一条命令（ConsoleActivity 不 exported，由 MainActivity 转发）
 adb shell 'am start -n dev.dualterm/.MainActivity --ez console true --es cmd "ps -a"'
+
+# 注入一次带修饰键的按键（手边没有蓝牙键盘时回归键映射）
+# 走的是 TerminalView.dispatchKeyEvent → onKeyDown，与真实按键同一条路径
+adb shell 'am start -n dev.dualterm/.MainActivity --es mode container --es keytest "ctrl+c"'
 ```
+
+`--es keytest` 的写法：`ctrl+` / `alt+` / `shift+` 任意前缀组合（可叠加），键名用 `a`–`z`、`0`–`9`、
+`tab` `enter` `esc` `space` `backspace` `delete` `insert` `up` `down` `left` `right` `home` `end` `pgup` `pgdn` `f1`–`f12`。
+按键在 5 秒后注入（留时间让 shell 进 raw 模式再抓字节）。
 
 ---
 
@@ -256,12 +300,16 @@ files/container/
 5. **Docker 后端未在真机验证**：代码路径完整（探测 → 启 dockerd → `docker run -it`），但没有可测的带 namespace 内核的设备，所以按"实验"对待。
 6. **只打了 arm64 的运行时**：`jniLibs/armeabi-v7a`、`x86_64` 需要分别跑一次 `fetch-runtime.ps1 -Abi …`，否则 32 位设备/模拟器上容器模式会提示缺运行时（本地模式不受影响）。
 7. **本地模式的 `PS1` 会被 `/system/etc/mkshrc` 覆盖**：所以看到的是 Android 默认提示符（`:当前目录$`），不是工程里设置的那个。纯外观问题。
+8. **软键盘弹出时终端会被压扁**：横屏全键盘能吃掉 600dp 以上，`adjustResize` 之后终端只剩两三行。接了物理键盘时不会触发（代码里有判断，有硬键盘就不强弹软键盘）。
+9. **`TerminalEmulator` 不支持的少数协议**：`modifyOtherKeys`（`CSI > 4 ; 2 m`，让 `Ctrl+字母` 有独立编码）、OSC 52（程序直接写系统剪贴板，vim 的 `"+y`）、Sixel/iTerm 图片、同步输出（`?2026`）。这些程序都会静默降级，不影响基本使用。
+10. **这个 App 自己没禁止截图**，但**开着软键盘时截不了图**：输入法窗口带 `FLAG_SECURE`，系统会拒绝整屏截图并提示「该应用不允许屏幕截图」。要截图先收起键盘。可用 `adb logcat -s DualTerm | grep "window flags"` 确认 App 自己的 `FLAG_SECURE=false`。
 
 ## 可以接着做的
 
 - 多标签会话（现在是每模式一个）
 - 选中/复制（现在只有"复制全部"）
 - `Intent` 支持外部调用（`am start -a RUN_COMMAND`）
+- OSC 52：让 vim 的 `"+y` 能写进系统剪贴板
 - rootfs 换成 Debian/Ubuntu 的 minirootfs（改 `fetch-runtime.ps1` 的 URL 即可，解包逻辑通用）
 
 ---
