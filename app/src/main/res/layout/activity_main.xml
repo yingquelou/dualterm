@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  结构上只有三层：顶栏（36dp 单行）/ 终端 / 键条（仅触屏时存在）。
+
+  以前是「顶栏 + 状态行 + 键条」三层常驻 chrome：手机横屏时它们能吃掉 100dp，
+  相当于少四五行终端。现在状态合并进顶栏，键条在有物理键盘时整条隐藏，
+  全屏则只留终端 —— 屏幕高度全部给 PTY。
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/root"
     android:layout_width="match_parent"
@@ -10,74 +17,67 @@
         android:layout_height="match_parent"
         android:orientation="vertical">
 
-        <!-- 顶栏：标题 + 模式切换 + 菜单 -->
+        <!-- 顶栏：模式 chip + 一行状态 + 键盘/菜单 -->
         <LinearLayout
             android:id="@+id/top_bar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:background="@color/bar_bg"
             android:gravity="center_vertical"
+            android:minHeight="38dp"
             android:orientation="horizontal"
-            android:paddingLeft="12dp"
-            android:paddingRight="4dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp">
+            android:paddingLeft="6dp"
+            android:paddingTop="3dp"
+            android:paddingRight="2dp"
+            android:paddingBottom="3dp">
 
             <TextView
+                android:id="@+id/btn_mode"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/app_name"
+                android:layout_height="30dp"
+                android:background="@drawable/chip_bg"
+                android:gravity="center"
+                android:minWidth="64dp"
+                android:paddingLeft="12dp"
+                android:paddingRight="12dp"
+                android:text="@string/mode_local"
                 android:textColor="@color/text_primary"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                android:textSize="12sp" />
 
-            <Space
+            <TextView
+                android:id="@+id/status"
                 android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
-
-            <Button
-                android:id="@+id/btn_local"
-                style="@style/BarButton"
-                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/mode_local" />
-
-            <Button
-                android:id="@+id/btn_container"
-                style="@style/BarButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/mode_container" />
+                android:layout_weight="1"
+                android:ellipsize="middle"
+                android:paddingLeft="10dp"
+                android:paddingRight="4dp"
+                android:singleLine="true"
+                android:textColor="@color/text_dim"
+                android:textSize="11sp" />
 
             <Button
                 android:id="@+id/btn_keyboard"
                 style="@style/BarButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/keyboard" />
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:contentDescription="@string/keyboard"
+                android:paddingLeft="0dp"
+                android:paddingRight="0dp"
+                android:text="@string/keyboard"
+                android:textSize="16sp" />
 
             <Button
                 android:id="@+id/btn_menu"
                 style="@style/BarButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/menu" />
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:contentDescription="@string/menu"
+                android:paddingLeft="0dp"
+                android:paddingRight="0dp"
+                android:text="@string/menu"
+                android:textSize="18sp" />
         </LinearLayout>
-
-        <TextView
-            android:id="@+id/status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@color/bar_bg_alt"
-            android:ellipsize="middle"
-            android:singleLine="true"
-            android:paddingLeft="12dp"
-            android:paddingRight="12dp"
-            android:paddingTop="3dp"
-            android:paddingBottom="3dp"
-            android:textColor="@color/text_dim"
-            android:textSize="11sp" />
 
         <dev.dualterm.term.TerminalView
             android:id="@+id/terminal"
@@ -85,22 +85,36 @@
             android:layout_height="0dp"
             android:layout_weight="1" />
 
-        <!-- 功能键行，内容在代码里生成 -->
-        <HorizontalScrollView
-            android:id="@+id/key_scroll"
+        <!--
+          功能键条。触屏才需要它：物理键盘上这些键本来就有。
+          上半部分是「更多键」面板（默认收起，按一次键后自动收起），
+          下半部分是一屏放得下的常用键，不需要横向滚动去找。
+        -->
+        <LinearLayout
+            android:id="@+id/key_bar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:background="@color/bar_bg"
-            android:fillViewport="false"
-            android:scrollbars="none">
+            android:orientation="vertical"
+            android:paddingLeft="2dp"
+            android:paddingTop="3dp"
+            android:paddingRight="2dp"
+            android:paddingBottom="2dp">
+
+            <LinearLayout
+                android:id="@+id/key_panel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="2dp"
+                android:visibility="gone" />
 
             <LinearLayout
                 android:id="@+id/key_row"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:padding="4dp" />
-        </HorizontalScrollView>
+                android:orientation="horizontal" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- 准备容器时的遮罩 -->

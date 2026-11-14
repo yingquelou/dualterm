@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -60,16 +61,27 @@ public class MainActivity extends Activity
 
     private TerminalView terminal;
     private TextView status;
-    private Button btnLocal;
-    private Button btnContainer;
+    private TextView btnMode;
     private Button btnKeyboard;
     private Button btnMenu;
+    private View keyBar;
     private LinearLayout keyRow;
+    private LinearLayout keyPanel;
     private View overlay;
     private TextView overlayText;
 
     private Button ctrlKey;
     private Button altKey;
+    private boolean keyPanelOpen;
+
+    /** 软键盘在屏幕上（返回键分层用：先收键盘，再退后台）。 */
+    private boolean imeVisible;
+    /** 有没有物理键盘：决定键条是否出现——键盘上本来就有 ESC/Tab/方向键。 */
+    private boolean hardKeyboard;
+    private android.hardware.input.InputManager inputManager;
+    private android.hardware.input.InputManager.InputDeviceListener inputDeviceListener;
+    /** onCreate 走完之前不弹「已连接物理键盘」的提示，避免每次冷启动都刷一条。 */
+    private boolean uiReady;
 
     private final Map<String, TermSession> sessions = new HashMap<>();
     private String mode = MODE_LOCAL;
@@ -92,11 +104,12 @@ public class MainActivity extends Activity
         terminal = findViewById(R.id.terminal);
         status = findViewById(R.id.status);
         topBar = findViewById(R.id.top_bar);
-        btnLocal = findViewById(R.id.btn_local);
-        btnContainer = findViewById(R.id.btn_container);
+        btnMode = findViewById(R.id.btn_mode);
         btnKeyboard = findViewById(R.id.btn_keyboard);
         btnMenu = findViewById(R.id.btn_menu);
+        keyBar = findViewById(R.id.key_bar);
         keyRow = findViewById(R.id.key_row);
+        keyPanel = findViewById(R.id.key_panel);
         overlay = findViewById(R.id.overlay);
         overlayText = findViewById(R.id.overlay_text);
 
@@ -109,30 +122,40 @@ public class MainActivity extends Activity
                 showMenu(terminal);
             }
         });
+        // 捏合改字号后落盘，下次进来还是这个大小
+        terminal.setFontSizeListener(new TerminalView.FontSizeListener() {
+            @Override
+            public void onFontSizeChanged(int sp) {
+                prefs.edit().putInt("font_size", sp).apply();
+                updateStatus(null);
+            }
+        });
         terminal.setTextSizeSp(prefs.getInt("font_size", 13));
 
-        buildKeyRow();
+        buildKeyBar();
+        installInputDeviceWatcher();
+        installImeWatcher();
 
         installInsetsHandler();
         // 恢复上次的全屏状态（在会话启动前应用，避免先闪一下顶栏）
         applyFullscreen(prefs.getBoolean("fullscreen", false));
 
-        btnLocal.setOnClickListener(new View.OnClickListener() {
+        // 模式 chip：点一下选「本地 / 容器 / 容器与镜像」。以前是两个常驻按钮，
+        // 占了顶栏一半宽度，而切换模式其实一天也用不了几次——低频操作不该常驻。
+        btnMode.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                switchMode(MODE_LOCAL, false);
-            }
-        });
-        btnContainer.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                switchMode(MODE_CONTAINER, false);
+                showModePicker();
             }
         });
         btnKeyboard.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                terminal.showKeyboard();
+                if (imeVisible) {
+                    terminal.hideKeyboard();
+                } else {
+                    terminal.showKeyboard();
+                }
             }
         });
         btnMenu.setOnClickListener(new View.OnClickListener() {
@@ -155,10 +178,12 @@ public class MainActivity extends Activity
                 applyFullscreen(it.getBooleanExtra("fullscreen", false));
             }
         }
+        refreshInputMode();
         switchMode(MODE_CONTAINER.equals(saved) ? MODE_CONTAINER : MODE_LOCAL, false);
         maybeOpenConsole(it);
         maybeKeyTest(it);
         logWindowFlags();
+        uiReady = true;
     }
 
     /** 排查「该应用不允许屏幕截图」：把窗口标志打出来，看是不是我们自己的 FLAG_SECURE。 */
@@ -422,10 +447,7 @@ public class MainActivity extends Activity
     }
 
     private boolean hasHardKeyboard() {
-        android.content.res.Configuration c = getResources().getConfiguration();
-        return c.keyboard == android.content.res.Configuration.KEYBOARD_QWERTY
-                || c.keyboard == android.content.res.Configuration.KEYBOARD_12KEY
-                || c.hardKeyboardHidden == android.content.res.Configuration.HARDKEYBOARDHIDDEN_NO;
+        return detectHardKeyboard();
     }
 
     private void attach(TermSession session) {
@@ -494,35 +516,48 @@ public class MainActivity extends Activity
 
     private void updateModeButtons() {
         boolean local = MODE_LOCAL.equals(mode);
-        btnLocal.setTextColor(local ? COLOR_ACCENT : COLOR_TEXT);
-        btnContainer.setTextColor(local ? COLOR_TEXT : COLOR_ACCENT);
+        btnMode.setText(local ? "本地" : "容器 · " + Containers.activeName(this) + " ▾");
+        btnMode.setTextColor(local ? COLOR_TEXT : COLOR_ACCENT);
     }
 
     private void updateModifierButtons() {
-        if (ctrlKey != null) {
-            ctrlKey.setTextColor(terminal.isCtrlDown() ? COLOR_ACCENT : COLOR_TEXT);
-        }
-        if (altKey != null) {
-            altKey.setTextColor(terminal.isAltDown() ? COLOR_ACCENT : COLOR_TEXT);
-        }
+        applyModifierLook(ctrlKey, terminal.isCtrlDown());
+        applyModifierLook(altKey, terminal.isAltDown());
     }
 
+    /** 粘滞修饰键锁上时整键反白：触屏上没有 LEDs，只能靠颜色告诉用户「Ctrl 还按着」。 */
+    private void applyModifierLook(Button key, boolean on) {
+        if (key == null) {
+            return;
+        }
+        key.setBackgroundResource(on ? R.drawable.key_bg_on : R.drawable.key_bg);
+        key.setTextColor(on ? 0xFF101014 : COLOR_TEXT);
+    }
+
+    /**
+     * 状态并进顶栏一行（以前是独立的一整行，只为了显示 pid 和行列数）。
+     * 全屏时顶栏是收起的，这时额外消息改用 Toast，否则「进程已退出」没人看得见。
+     */
     private void updateStatus(String extra) {
         TermSession session = terminal.getSession();
         StringBuilder sb = new StringBuilder();
-        sb.append(MODE_LOCAL.equals(mode) ? "本地 Shell" : "容器");
         if (session != null) {
-            sb.append(" · ").append(session.getSpec().title);
-            if (session.getPid() > 0) {
-                sb.append(" · pid ").append(session.getPid());
-            }
+            sb.append(session.getSpec().title);
             sb.append(" · ").append(terminal.getGridCols()).append('x').append(terminal.getGridRows());
+            if (session.getPid() > 0) {
+                sb.append(" · ").append(session.getPid());
+            }
             if (!session.isRunning()) {
                 sb.append(" · 已退出");
             }
+        } else {
+            sb.append(MODE_LOCAL.equals(mode) ? "本地 Shell：等待启动" : "容器：等待启动");
         }
         if (extra != null && !extra.isEmpty()) {
             sb.append(" · ").append(extra);
+            if (fullscreen) {
+                toast(extra);
+            }
         }
         status.setText(sb.toString());
     }
@@ -556,62 +591,281 @@ public class MainActivity extends Activity
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
     }
 
-    /* -------------------- 功能键行 -------------------- */
+    /* -------------------- 功能键条 -------------------- */
 
-    private void buildKeyRow() {
-        String[][] keys = {
-                {"ESC", "\u001b"}, {"TAB", "\t"}, {"CTRL", null}, {"ALT", null},
-                {"←", "\u001b[D"}, {"↑", "\u001b[A"}, {"↓", "\u001b[B"}, {"→", "\u001b[C"},
-                {"HOME", "\u001b[H"}, {"END", "\u001b[F"}, {"PGUP", "\u001b[5~"}, {"PGDN", "\u001b[6~"},
-                {"^C", "\u0003"}, {"^D", "\u0004"}, {"^Z", "\u001a"},
-                {"/", "/"}, {"-", "-"}, {"|", "|"}, {"~", "~"}, {"\\", "\\"}
+    private static final int KEY_MOD_CTRL = 0;
+    private static final int KEY_MOD_ALT = 1;
+    private static final int KEY_RAW = 2;
+    private static final int KEY_CURSOR = 3;
+    private static final int KEY_PANEL = 4;
+
+    /**
+     * 键条 = 一屏放得下的常用键 + 可展开的更多键面板。
+     *
+     * 以前是 20 个键塞在横向 ScrollView 里：^C 排在第 13 位，得先横滑才找得到，
+     * 而横向滚动条被隐藏后根本没人知道右边还有键。现在常用键等宽铺满一行（不用滑），
+     * 剩下的进面板，按一次就收起——面板只在「临时要个 F 键」时占用高度。
+     */
+    private void buildKeyBar() {
+        Object[][] primary = {
+                {"CTRL", KEY_MOD_CTRL, null},
+                {"ALT", KEY_MOD_ALT, null},
+                {"ESC", KEY_RAW, "\u001b"},
+                {"TAB", KEY_RAW, "\t"},
+                {"^C", KEY_RAW, "\u0003"},
+                {"←", KEY_CURSOR, "D"},
+                {"↑", KEY_CURSOR, "A"},
+                {"↓", KEY_CURSOR, "B"},
+                {"→", KEY_CURSOR, "C"},
+                {"⋯", KEY_PANEL, null},
         };
-
-        for (String[] key : keys) {
-            Button button = new Button(this);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
-            lp.setMargins(dp(2), dp(2), dp(2), dp(2));
-            button.setLayoutParams(lp);
-            button.setText(key[0]);
-            button.setTextSize(12);
-            button.setAllCaps(false);
-            button.setMinWidth(0);
-            button.setMinimumWidth(0);
-            button.setMinimumHeight(0);
-            button.setPadding(dp(9), 0, dp(9), 0);
-            button.setTextColor(COLOR_TEXT);
-            button.setBackgroundColor(0xFF262A33);
-
-            if (key[1] == null) {
-                final boolean isCtrl = "CTRL".equals(key[0]);
-                button.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        if (isCtrl) {
-                            terminal.setCtrlDown(!terminal.isCtrlDown());
-                        } else {
-                            terminal.setAltDown(!terminal.isAltDown());
-                        }
-                        updateModifierButtons();
-                    }
-                });
-                if (isCtrl) {
-                    ctrlKey = button;
-                } else {
-                    altKey = button;
-                }
-            } else {
-                final String sequence = key[1];
-                button.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        terminal.sendText(sequence);
-                    }
-                });
-            }
-            keyRow.addView(button);
+        for (Object[] spec : primary) {
+            Button b = makeKeyButton((String) spec[0]);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1f);
+            lp.setMargins(dp(2), 0, dp(2), 0);
+            b.setLayoutParams(lp);
+            attachKeyAction(b, (String) spec[0], (Integer) spec[1], (String) spec[2]);
+            keyRow.addView(b);
         }
+        buildKeyPanel();
+    }
+
+    /** 更多键：HOME/END/PGUP/PGDN/DEL/INS、F1-F6，以及软键盘上最难打的那些符号。 */
+    private static final String[][] PANEL_KEYS = {
+            {"HOME", "\u001b[H"}, {"END", "\u001b[F"}, {"PGUP", "\u001b[5~"},
+            {"PGDN", "\u001b[6~"}, {"DEL", "\u001b[3~"}, {"INS", "\u001b[2~"},
+            {"F1", "\u001bOP"}, {"F2", "\u001bOQ"}, {"F3", "\u001bOR"},
+            {"F4", "\u001bOS"}, {"F5", "\u001b[15~"}, {"F6", "\u001b[17~"},
+            {"/", "/"}, {"-", "-"}, {"|", "|"}, {"~", "~"}, {"\\", "\\"}, {"*", "*"},
+            {"&", "&"}, {"$", "$"}, {">", ">"}, {"<", "<"}, {"\"", "\""}, {"'", "'"},
+    };
+
+    private void buildKeyPanel() {
+        final int perRow = 6;
+        LinearLayout row = null;
+        for (int i = 0; i < PANEL_KEYS.length; i++) {
+            if (i % perRow == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setLayoutParams(new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                keyPanel.addView(row);
+            }
+            Button b = makeKeyButton(PANEL_KEYS[i][0]);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1f);
+            lp.setMargins(dp(2), dp(2), dp(2), 0);
+            b.setLayoutParams(lp);
+            final String sequence = PANEL_KEYS[i][1];
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    terminal.sendRaw(sequence);
+                    closeKeyPanel();
+                }
+            });
+            row.addView(b);
+        }
+    }
+
+    private Button makeKeyButton(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextSize(11);
+        b.setAllCaps(false);
+        b.setGravity(Gravity.CENTER);
+        b.setTextColor(COLOR_TEXT);
+        b.setBackgroundResource(R.drawable.key_bg);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setPadding(0, 0, 0, 0);
+        b.setSingleLine(true);
+        return b;
+    }
+
+    private void attachKeyAction(Button b, String label, int kind, final String arg) {
+        switch (kind) {
+            case KEY_MOD_CTRL:
+                ctrlKey = b;
+                b.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        terminal.setCtrlDown(!terminal.isCtrlDown());
+                    }
+                });
+                break;
+            case KEY_MOD_ALT:
+                altKey = b;
+                b.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        terminal.setAltDown(!terminal.isAltDown());
+                    }
+                });
+                break;
+            case KEY_CURSOR:
+                b.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        terminal.sendCursor(arg.charAt(0));
+                    }
+                });
+                break;
+            case KEY_PANEL:
+                b.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        toggleKeyPanel();
+                    }
+                });
+                break;
+            default:
+                b.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        terminal.sendRaw(arg);
+                    }
+                });
+                break;
+        }
+    }
+
+    private void toggleKeyPanel() {
+        if (keyPanelOpen) {
+            closeKeyPanel();
+        } else {
+            keyPanelOpen = true;
+            keyPanel.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void closeKeyPanel() {
+        if (!keyPanelOpen) {
+            return;
+        }
+        keyPanelOpen = false;
+        keyPanel.setVisibility(View.GONE);
+    }
+
+    /* -------------------- 模式选择 -------------------- */
+
+    private void showModePicker() {
+        PopupMenu menu = new PopupMenu(this, btnMode);
+        menu.getMenu().add(0, 1, 0, "本地 Shell");
+        menu.getMenu().add(0, 2, 1, "容器：" + Containers.activeName(this));
+        menu.getMenu().add(0, 3, 2, "容器与镜像…");
+        menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
+            @Override
+            public boolean onMenuItemClick(android.view.MenuItem item) {
+                switch (item.getItemId()) {
+                    case 1:
+                        switchMode(MODE_LOCAL, false);
+                        return true;
+                    case 2:
+                        switchMode(MODE_CONTAINER, false);
+                        return true;
+                    case 3:
+                        showContainersDialog();
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        });
+        menu.show();
+    }
+
+    /* -------------------- 输入设备自适应 -------------------- */
+
+    /**
+     * 物理键盘有没有插上，决定「键条要不要存在」「软键盘按钮有没有意义」。
+     *
+     * 蓝牙键盘热插拔不会改 Configuration（除非系统重启/旋转），所以还得听
+     * InputManager 的设备增删事件，否则拔了键盘键条不回来、插上也不消失。
+     */
+    private void installInputDeviceWatcher() {
+        inputManager = (android.hardware.input.InputManager) getSystemService(INPUT_SERVICE);
+        if (inputManager == null) {
+            return;
+        }
+        inputDeviceListener = new android.hardware.input.InputManager.InputDeviceListener() {
+            @Override
+            public void onInputDeviceAdded(int deviceId) {
+                refreshInputMode();
+            }
+
+            @Override
+            public void onInputDeviceRemoved(int deviceId) {
+                refreshInputMode();
+            }
+
+            @Override
+            public void onInputDeviceChanged(int deviceId) {
+                refreshInputMode();
+            }
+        };
+        inputManager.registerInputDeviceListener(inputDeviceListener,
+                new android.os.Handler(getMainLooper()));
+    }
+
+    private void refreshInputMode() {
+        boolean hw = detectHardKeyboard();
+        if (hw != hardKeyboard) {
+            hardKeyboard = hw;
+            if (hw && uiReady) {
+                closeKeyPanel();
+                toast("已连接物理键盘：隐藏屏幕键条，Esc/Tab/方向键直接用键盘");
+            }
+        }
+        keyBar.setVisibility(hardKeyboard ? View.GONE : View.VISIBLE);
+        btnKeyboard.setVisibility(hardKeyboard ? View.GONE : View.VISIBLE);
+        updateStatus(null);
+    }
+
+    private boolean detectHardKeyboard() {
+        if (inputManager != null) {
+            for (int id : inputManager.getInputDeviceIds()) {
+                android.view.InputDevice device = inputManager.getInputDevice(id);
+                if (device == null || device.isVirtual()) {
+                    continue;
+                }
+                if (device.getKeyboardType()
+                        == android.view.InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                    return true;
+                }
+            }
+        }
+        android.content.res.Configuration c = getResources().getConfiguration();
+        return c.keyboard == android.content.res.Configuration.KEYBOARD_QWERTY
+                && c.hardKeyboardHidden == android.content.res.Configuration.HARDKEYBOARDHIDDEN_NO;
+    }
+
+    /** 软键盘可见性（返回键分层、键盘弹出时收起更多键面板）。 */
+    private void installImeWatcher() {
+        final View root = findViewById(R.id.root);
+        if (root == null) {
+            return;
+        }
+        root.getViewTreeObserver().addOnGlobalLayoutListener(
+                new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+                    private final android.graphics.Rect visible = new android.graphics.Rect();
+
+                    @Override
+                    public void onGlobalLayout() {
+                        root.getWindowVisibleDisplayFrame(visible);
+                        int hidden = root.getRootView().getHeight() - visible.bottom
+                                - getWindow().getDecorView().getPaddingBottom();
+                        boolean shown = hidden > dp(120);
+                        if (shown != imeVisible) {
+                            imeVisible = shown;
+                            if (shown) {
+                                // 键盘和面板同时开着，终端只剩两行
+                                closeKeyPanel();
+                            }
+                        }
+                    }
+                });
     }
 
     /* -------------------- 菜单 -------------------- */
@@ -636,6 +890,8 @@ public class MainActivity extends Activity
         menu.getMenu().add(0, 13, 11, "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"));
         menu.getMenu().add(0, 11, 12, fullscreen ? "退出全屏" : "全屏模式");
         menu.getMenu().add(0, 10, 13, "关于");
+        // 返回键只退到后台（会话不丢），真正结束会话放在这里
+        menu.getMenu().add(0, 17, 14, "退出应用（结束会话）");
 
         menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
             @Override
@@ -706,9 +962,27 @@ public class MainActivity extends Activity
             case 16:
                 startActivity(new android.content.Intent(this, ConsoleActivity.class));
                 return true;
+            case 17:
+                confirmQuit();
+                return true;
             default:
                 return false;
         }
+    }
+
+    /** 真正结束会话（返回键只退后台，避免误触把正在跑的编译/tmux 杀掉）。 */
+    private void confirmQuit() {
+        new AlertDialog.Builder(this)
+                .setTitle("退出应用")
+                .setMessage("会结束本地 / 容器里正在跑的进程。\n\n只是想暂时离开的话，按返回键即可，会话会保持。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("退出", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        finish();
+                    }
+                })
+                .show();
     }
 
     private void copyAll() {
@@ -763,7 +1037,6 @@ public class MainActivity extends Activity
         if (topBar != null) {
             topBar.setVisibility(on ? View.GONE : View.VISIBLE);
         }
-        status.setVisibility(on ? View.GONE : View.VISIBLE);
 
         Window window = getWindow();
         View decor = window.getDecorView();
@@ -1598,12 +1871,41 @@ public class MainActivity extends Activity
         if (overlay.getVisibility() == View.VISIBLE) {
             return;
         }
-        terminal.hideKeyboard();
-        super.onBackPressed();
+        if (keyPanelOpen) {
+            closeKeyPanel();
+            return;
+        }
+        if (imeVisible) {
+            terminal.hideKeyboard();
+            return;
+        }
+        // 返回键在终端里不该等于「杀掉正在跑的进程」：退到后台，回来还在原处。
+        // 真正结束会话走菜单里的「退出应用」。
+        moveTaskToBack(true);
+        toast("已退到后台，会话保持运行（菜单 → 退出应用 可结束）");
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // 旋转 / 键盘支架开合都会走这里
+        refreshInputMode();
+        updateStatus(null);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 后台期间插拔的键盘收不到回调，回到前台补一次
+        refreshInputMode();
     }
 
     @Override
     protected void onDestroy() {
+        if (inputManager != null && inputDeviceListener != null) {
+            inputManager.unregisterInputDeviceListener(inputDeviceListener);
+            inputDeviceListener = null;
+        }
         if (isFinishing()) {
             for (TermSession session : sessions.values()) {
                 session.stop();

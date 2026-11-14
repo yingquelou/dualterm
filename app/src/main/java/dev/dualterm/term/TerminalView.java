@@ -14,6 +14,7 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import android.view.ScaleGestureDetector;
 
 /**
  * 终端渲染 + 输入。
@@ -21,6 +22,13 @@ import android.view.inputmethod.InputMethodManager;
  * 渲染：按「同色同属性的连续单元格」合并成一次 drawText，避免每格一次绘制。
  * 输入：自己实现 InputConnection（IME 走 commitText），硬件键走 onKeyDown。
  * 滚动：上下拖动看 scrollback，点一下回到光标/弹出键盘。
+ *
+ * 触摸端的三个约定（都在手机单手握持的范围内）：
+ * <ul>
+ *   <li>单指拖动 = 看历史；右下角浮出「回到底部」胶囊，点它一键回游标（否则用户会被留在历史里）</li>
+ *   <li>双指捏合 = 改字号（桌面终端靠 Ctrl+滚轮，触屏用捏合最直觉）</li>
+ *   <li>鼠标滚轮 / 触控板 = 滚屏；程序开了鼠标上报就转成滚轮序列交给它（vim、htop）</li>
+ * </ul>
  */
 public class TerminalView extends View {
 
@@ -30,6 +38,11 @@ public class TerminalView extends View {
 
     public interface ModifierWatcher {
         void onModifiersChanged();
+    }
+
+    /** 捏合改字号后回调，交给 Activity 持久化。 */
+    public interface FontSizeListener {
+        void onFontSizeChanged(int sp);
     }
 
     /** 长按终端（全屏模式下没有顶栏按钮，靠它打开菜单）。 */
@@ -88,6 +101,15 @@ public class TerminalView extends View {
     private boolean ctrlDown;
     private boolean altDown;
 
+    private FontSizeListener fontListener;
+    private ScaleGestureDetector scaleDetector;
+    private boolean scaling;
+    private float scaleStartSize;
+
+    /** 「回到底部」胶囊的命中区（scrollOffset > 0 时才有意义）。 */
+    private final RectF scrollPill = new RectF();
+    private boolean scrollPillVisible;
+
     private float downY;
     private float lastY;
     private boolean dragging;
@@ -119,6 +141,41 @@ public class TerminalView extends View {
         setBackgroundColor(COLOR_BG);
         setFocusable(true);
         setFocusableInTouchMode(true);
+
+        scaleDetector = new ScaleGestureDetector(getContext(),
+                new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    @Override
+                    public boolean onScaleBegin(ScaleGestureDetector detector) {
+                        // 鼠标上报模式下双指是滚轮，捏合缩放让位
+                        if (session != null && session.getEmulator().isMouseTracking()) {
+                            return false;
+                        }
+                        scaling = true;
+                        scaleStartSize = textSizeSp;
+                        removeCallbacks(longPressRunnable);
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onScale(ScaleGestureDetector detector) {
+                        if (!scaling) {
+                            return false;
+                        }
+                        int target = Math.round(scaleStartSize * detector.getScaleFactor());
+                        if (target != textSizeSp) {
+                            setTextSizeSp(target);
+                        }
+                        return true;
+                    }
+
+                    @Override
+                    public void onScaleEnd(ScaleGestureDetector detector) {
+                        scaling = false;
+                        if (fontListener != null) {
+                            fontListener.onFontSizeChanged(textSizeSp);
+                        }
+                    }
+                });
     }
 
     /* -------------------- 外部配置 -------------------- */
@@ -129,6 +186,10 @@ public class TerminalView extends View {
 
     public void setModifierWatcher(ModifierWatcher watcher) {
         this.modifierWatcher = watcher;
+    }
+
+    public void setFontSizeListener(FontSizeListener listener) {
+        this.fontListener = listener;
     }
 
     public void setSession(TermSession value) {
@@ -288,6 +349,46 @@ public class TerminalView extends View {
         return sb.toString();
     }
 
+    /**
+     * 发送固定转义序列（键条上的 ESC / TAB / ^C / 符号）。
+     *
+     * 不走 applyModifiers：这些序列本身就是终端语义，再叠一次粘滞 Ctrl 只会把
+     * ESC 前缀搅坏（Ctrl 一旦锁上，连按 ^C 都发不出去）。发完顺手解锁，
+     * 免得用户忘了自己按过 Ctrl。
+     */
+    public void sendRaw(String text) {
+        if (session == null || text == null || text.isEmpty()) {
+            return;
+        }
+        session.write(text);
+        scrollOffset = 0;
+        clearModifiers();
+        invalidate();
+    }
+
+    /**
+     * 键条上的方向键。程序切到应用光标模式（vim）时要发 SS3；粘滞 Ctrl/Alt 锁着时
+     * 要发 CSI 1 ; m D —— 否则 Ctrl+← 在 vim 里不会按词跳。
+     */
+    public void sendCursor(char dir) {
+        if (session == null) {
+            return;
+        }
+        int mod = (ctrlDown ? M_CTRL : 0) | (altDown ? M_ALT : 0);
+        sendRaw(cursorKey(dir, mod, session.getEmulator().isAppCursorKeys()));
+    }
+
+    private void clearModifiers() {
+        if (!ctrlDown && !altDown) {
+            return;
+        }
+        ctrlDown = false;
+        altDown = false;
+        if (modifierWatcher != null) {
+            modifierWatcher.onModifiersChanged();
+        }
+    }
+
     /* -------------------- 尺寸与网格 -------------------- */
 
     @Override
@@ -355,6 +456,42 @@ public class TerminalView extends View {
         if (scrollOffset == 0 && emulator.isCursorVisible()) {
             drawCursor(canvas, emulator);
         }
+
+        scrollPillVisible = scrollOffset > 0;
+        if (scrollPillVisible) {
+            drawScrollPill(canvas);
+        }
+    }
+
+    /**
+     * 上滚时右下角浮出的胶囊：告诉你「现在看的是历史、往上偏了多少行」，
+     * 点一下直接回游标。没有它的话，用户拖一下手指就停在历史里，
+     * 光标不画、新输出看不见，很容易以为程序卡死。
+     */
+    private void drawScrollPill(Canvas canvas) {
+        String label = "↓ " + scrollOffset + " 行 · 回到底部";
+        textPaint.setTextSize(sp(11));
+        textPaint.setFakeBoldText(false);
+        textPaint.setUnderlineText(false);
+        textPaint.setStrikeThruText(false);
+        textPaint.setColor(0xFF101014);
+
+        float padH = dp(10);
+        float h = dp(26);
+        float w = textPaint.measureText(label) + padH * 2;
+        float left = Math.max(dp(4), getWidth() - w - dp(6));
+        float top = Math.max(dp(4), getHeight() - h - dp(6));
+        scrollPill.set(left, top, left + w, top + h);
+
+        fillPaint.setColor(COLOR_CURSOR);
+        rect.set(scrollPill);
+        canvas.drawRoundRect(rect, h / 2f, h / 2f, fillPaint);
+
+        Paint.FontMetrics fm = textPaint.getFontMetrics();
+        float baseline = top + h / 2f - (fm.ascent + fm.descent) / 2f;
+        canvas.drawText(label, left + padH, baseline, textPaint);
+
+        textPaint.setColor(COLOR_FG);
     }
 
     private void drawLine(Canvas canvas, TerminalEmulator.Line line, int row) {
@@ -479,7 +616,7 @@ public class TerminalView extends View {
         textPaint.setFakeBoldText(false);
         textPaint.setUnderlineText(false);
         textPaint.setStrikeThruText(false);
-        String hint = "选择上方「本地」或「容器」开始终端会话";
+        String hint = "点左上角「本地 / 容器」开始 · 长按终端打开菜单";
         float w = textPaint.measureText(hint);
         canvas.drawText(hint, Math.max(padX, (getWidth() - w) / 2f),
                 getHeight() / 2f, textPaint);
@@ -494,6 +631,21 @@ public class TerminalView extends View {
         boolean tracking = emulator != null && emulator.isMouseTracking();
         if (tracking) {
             return handleMouseTouch(event, emulator);
+        }
+        // 先看是不是点在「回到底部」胶囊上：上滚状态下的这一下不该弹键盘
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN
+                && scrollPillVisible && scrollPill.contains(event.getX(), event.getY())) {
+            scrollOffset = 0;
+            scrollPillVisible = false;
+            invalidate();
+            return true;
+        }
+        // 捏合改字号；进入缩放后这一串事件都归手势，不再当作拖动
+        scaleDetector.onTouchEvent(event);
+        if (scaling) {
+            removeCallbacks(longPressRunnable);
+            dragging = true;
+            return true;
         }
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
@@ -533,6 +685,50 @@ public class TerminalView extends View {
             default:
                 return super.onTouchEvent(event);
         }
+    }
+
+    /**
+     * 鼠标 / 触控板。Android 把滚轮做成 ACTION_SCROLL 走这里而不是触摸事件——
+     * 不实现的话，接了蓝牙鼠标也只能点不能滚。程序开了鼠标上报就转成 64/65
+     * 滚轮序列（vim 的 &lt;ScrollWheelUp/Down&gt;、htop 的翻页都靠它）。
+     */
+    @Override
+    public boolean onGenericMotionEvent(MotionEvent event) {
+        TerminalEmulator emulator = session == null ? null : session.getEmulator();
+        if (emulator == null) {
+            return super.onGenericMotionEvent(event);
+        }
+        if (event.getAction() == MotionEvent.ACTION_SCROLL) {
+            float v = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
+            if (v == 0f) {
+                return false;
+            }
+            int lines = Math.max(1, Math.round(Math.abs(v) * 3f));
+            if (emulator.isMouseTracking()) {
+                int button = v > 0 ? 64 : 65;
+                int col = (int) ((event.getX() - padX) / cellWidth) + 1;
+                int row = (int) ((event.getY() - padY) / cellHeight) + 1;
+                for (int i = 0; i < lines; i++) {
+                    send(emulator.mouseReport(button, col, row, false, false));
+                }
+                return true;
+            }
+            int max = emulator.getScrollbackCount();
+            int delta = v > 0 ? lines : -lines;    // 滚轮往上 = 看更早的内容
+            int next = Math.max(0, Math.min(max, scrollOffset + delta));
+            if (next != scrollOffset) {
+                scrollOffset = next;
+                invalidate();
+            }
+            return true;
+        }
+        if (event.getAction() == MotionEvent.ACTION_HOVER_MOVE && emulator.isMouseTracking()) {
+            int col = (int) ((event.getX() - padX) / cellWidth) + 1;
+            int row = (int) ((event.getY() - padY) / cellHeight) + 1;
+            send(emulator.mouseReport(0, col, row, false, true));
+            return true;
+        }
+        return super.onGenericMotionEvent(event);
     }
 
     private boolean handleMouseTouch(MotionEvent event, TerminalEmulator emulator) {

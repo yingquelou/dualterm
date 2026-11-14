@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 粘滞修饰键（Ctrl/Alt）已锁：整键反白，避免用户忘了自己按过 Ctrl。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/accent" />
+    <corners android:radius="7dp" />
+</shape>
