@@ -55,6 +55,17 @@ gradle assembleDebug           # 等价，跳过 wrapper 下载
 
 > 命令行构建需要 `ANDROID_HOME`（或 `local.properties` 里的 `sdk.dir`）与 `JAVA_HOME` 指向 JDK 17。
 
+**终端仿真器回归**（不需要设备，`TerminalEmulator` 是纯 Java）：
+
+```bash
+javac -encoding UTF-8 -d /tmp/etest \
+      app/src/main/java/dev/dualterm/term/TerminalEmulator.java tools/EmuTest.java
+java -cp /tmp/etest EmuTest      # 全部 PASS 打印 "ALL PASS"
+```
+
+覆盖 DEC 画线字符集、延迟换行、DECAWM、CJK 占位、DECSCUSR、鼠标序列、焦点上报、
+备用屏 scrollback 隔离、SO/SI、CPR。改仿真器后先跑这个，再去真机看 vim。
+
 **零第三方依赖**：没有 AndroidX、没有 Kotlin、没有 commons-compress。只有 Framework API + 一个 200 行的 C 文件 + 手写 tar.gz 解包器。这样做的目的是让构建链尽可能不炸。
 
 ---
