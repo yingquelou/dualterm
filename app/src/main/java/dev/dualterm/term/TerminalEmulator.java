@@ -6,14 +6,22 @@ import java.util.ArrayList;
  * 一个够用就好的 VT100 / xterm 终端屏幕模型。
  *
  * 支持的序列：CUU/CUD/CUF/CUB/CNL/CPL/CHA/CUP/HVP/VPA、ED/EL/ECH/DCH/ICH、
- * IL/DL/SU/SD、SGR（16 色 / 256 色 / 真彩）、DECSTBM 滚动区、DECSET 1049 备用屏、
- * DECSET 25 光标可见、DECSET 1 应用方向键、DECSET 2004 括号粘贴、OSC 10/11/12/4 颜色查询。
+ * IL/DL/SU/SD、SGR（16 色 / 256 色 / 真彩，含 38:2::R:G:B 冒号写法）、DECSTBM 滚动区 +
+ * DECOM 原点模式、DECSET 1049 备用屏、DECSET 25 光标可见、DECSET 1 应用方向键、
+ * DECSET 7 自动换行、DECSET 2004 括号粘贴、制表位（HTS/TBC/CBT/CHT）、
+ * DEC 字符集（ESC ( 0 画线字符 + SO/SI）、DECALN、DECSTR 软复位、
+ * 鼠标上报（1000/1002/1003 + SGR/UTF-8 扩展坐标）、焦点上报、DECSCUSR、
+ * 组合字符（零宽挂前格）、CJK/emoji 宽度、BCE（用当前背景色擦除）。
+ * OSC 处理 10/11/12/4 颜色查询；其余 OSC（标题/超链接/剪贴板）忽略。
  *
  * 终端**必须回应**两类查询，否则对方会一直等：
  *   - DSR（`CSI 6n`）→ 光标位置报告 CPR；`CSI 5n` → 状态报告。
  *   - DA（`CSI c`）→ 设备属性；`CSI > c` → 次要设备属性。
  *   - OSC 10/11/12/4 + `?` → 前景/背景/光标色/调色板颜色。
  * gh / fzf / survey 这类 TUI 在画提示符前会先问光标位置，收不到回报就卡在第一个提示上。
+ *
+ * resize 与 xterm 对齐：变矮时从顶部裁（裁掉的行进 scrollback），保证光标不离开屏幕；
+ * 变高时在底部补空行；scrollback 不清空。
  *
  * 内部用「行对象数组 + 三套属性数组」存屏幕，滚动出屏的行进 scrollback。
  * 所有对外方法都加了 synchronized：PTY 读线程写、UI 线程读。
@@ -39,6 +47,10 @@ public final class TerminalEmulator {
     private static final int STATE_OSC = 3;
     private static final int STATE_OSC_ESC = 4;
     private static final int STATE_CHARSET = 5;
+    /** 未实现的「ESC + 一个参数字节」序列：吃掉参数字节，避免它漏成可见字符。 */
+    private static final int STATE_ESC_SKIP = 6;
+    /** ESC # 8（DECALN 屏幕对齐测试）。 */
+    private static final int STATE_ESC_HASH = 7;
 
     /** 一行屏幕数据。text 存码点，0 表示被宽字符占用的第二格。 */
     public static final class Line {
@@ -46,6 +58,8 @@ public final class TerminalEmulator {
         public final int[] fg;
         public final int[] bg;
         public final byte[] attr;
+        /** 组合字符（零宽）挂在前一个格子上，懒分配：绝大多数行用不到。 */
+        private String[] extra;
 
         Line(int cols) {
             text = new int[cols];
@@ -54,12 +68,36 @@ public final class TerminalEmulator {
             attr = new byte[cols];
         }
 
+        String[] extra() {
+            if (extra == null) {
+                extra = new String[text.length];
+            }
+            return extra;
+        }
+
+        /** 该格上附加的组合字符（é 的声调、泰文的元音符号…），可能为 null。 */
+        public String extraAt(int index) {
+            if (extra == null || index < 0 || index >= extra.length) {
+                return null;
+            }
+            return extra[index];
+        }
+
+        void clearExtra(int index) {
+            if (extra != null && index >= 0 && index < extra.length) {
+                extra[index] = null;
+            }
+        }
+
         void blank(int cols, int defaultFg, int defaultBg) {
             for (int i = 0; i < cols; i++) {
                 text[i] = ' ';
                 fg[i] = defaultFg;
                 bg[i] = defaultBg;
                 attr[i] = 0;
+            }
+            if (extra != null) {
+                java.util.Arrays.fill(extra, null);
             }
         }
     }
@@ -130,6 +168,9 @@ public final class TerminalEmulator {
     private final StringBuilder osc = new StringBuilder();
     private final int[] params = new int[16];
     private int paramCount;
+    /** params[i] 所属的「;」组：组内用「:」分隔的是子参数（SGR 38:2::r:g:b 这种）。 */
+    private final int[] groupStart = new int[16];
+    private final int[] groupSize = new int[16];
 
     /** 终端应答出口，null 表示只做屏模型不回应（例如纯回放）。 */
     private volatile ReplySink replySink;
@@ -139,6 +180,12 @@ public final class TerminalEmulator {
 
     /** DECSET 7：自动换行。关掉后写满最后一列就原地覆盖（vim 会用 ?7l 避免多余滚动）。 */
     private boolean autowrap = true;
+
+    /** DECSET 6：原点模式。开启后 CUP/VPA 的行号相对滚动区顶部，而不是屏幕顶部。 */
+    private boolean originMode;
+
+    /** 制表位。xterm 默认每 8 列一个，程序可以用 HTS / TBC 改（`tput tsets`）。 */
+    private boolean[] tabStops;
 
     /**
      * 延迟换行。真终端写满最后一列时光标不立刻跳到下一行，而是停在最后一格「待换行」，
@@ -197,7 +244,9 @@ public final class TerminalEmulator {
         appCursorKeys = false;
         bracketedPaste = false;
         autowrap = true;
+        originMode = false;
         pendingWrap = false;
+        initTabStops();
         charsetG0 = 'B';
         charsetG1 = 'B';
         charsetTarget = 0;
@@ -218,44 +267,118 @@ public final class TerminalEmulator {
         pendingLen = 0;
     }
 
+    /**
+     * 尺寸变化。两件事必须和真终端一致，否则手机上每次弹键盘都会「丢东西」：
+     *
+     * <p>1. scrollback 不能清。转屏/弹键盘就抹掉历史，等于把终端最常用的功能废掉。
+     * <p>2. 变矮时优先从顶部裁，把裁掉的行推进 scrollback —— 保证光标（也就是提示符）还在屏幕上。
+     *    原来是从底部裁，软键盘一弹提示符直接消失。变高时在底部补空行（xterm 也是这么做，
+     *    内容不跟着往下跳），光标行列不变。
+     */
     public synchronized void resize(int newCols, int newRows) {
         newCols = Math.max(10, newCols);
         newRows = Math.max(2, newRows);
         if (newCols == cols && newRows == rows) {
             return;
         }
-        mainLines = reflow(mainLines, newCols, newRows);
-        if (altLines != null) {
-            altLines = reflow(altLines, newCols, newRows);
+        if (newCols != cols) {
+            mainLines = resizeWidth(mainLines, newCols);
+            if (altLines != null) {
+                altLines = resizeWidth(altLines, newCols);
+            }
+            cols = newCols;
+            cursorCol = Math.min(cursorCol, cols - 1);
+            pendingWrap = false;
+            initTabStops();
         }
-        cols = newCols;
-        rows = newRows;
+        if (newRows != rows) {
+            mainLines = resizeHeight(mainLines, newRows, true);
+            if (altLines != null) {
+                altLines = resizeHeight(altLines, newRows, false);
+            }
+            rows = newRows;
+        }
         lines = altActive && altLines != null ? altLines : mainLines;
-        scrollback.clear();
-        if (cursorRow >= rows) {
-            cursorRow = rows - 1;
-        }
-        if (cursorCol >= cols) {
-            cursorCol = cols - 1;
-        }
         scrollTop = 0;
         scrollBottom = rows - 1;
     }
 
-    private Line[] reflow(Line[] old, int newCols, int newRows) {
-        Line[] out = new Line[newRows];
-        for (int r = 0; r < newRows; r++) {
+    private Line[] resizeWidth(Line[] old, int newCols) {
+        Line[] out = new Line[old.length];
+        for (int r = 0; r < old.length; r++) {
             out[r] = new Line(newCols);
             out[r].blank(newCols, defaultFg, defaultBg);
-            if (old != null && r < old.length) {
-                int n = Math.min(newCols, old[r].text.length);
-                System.arraycopy(old[r].text, 0, out[r].text, 0, n);
-                System.arraycopy(old[r].fg, 0, out[r].fg, 0, n);
-                System.arraycopy(old[r].bg, 0, out[r].bg, 0, n);
-                System.arraycopy(old[r].attr, 0, out[r].attr, 0, n);
+            int n = Math.min(newCols, old[r].text.length);
+            System.arraycopy(old[r].text, 0, out[r].text, 0, n);
+            System.arraycopy(old[r].fg, 0, out[r].fg, 0, n);
+            System.arraycopy(old[r].bg, 0, out[r].bg, 0, n);
+            System.arraycopy(old[r].attr, 0, out[r].attr, 0, n);
+            if (old[r].extra != null) {
+                for (int i = 0; i < n; i++) {
+                    if (old[r].extra[i] != null) {
+                        out[r].extra()[i] = old[r].extra[i];
+                    }
+                }
+            }
+            // 变窄可能把宽字符砍成半个（只剩头没有尾），修掉
+            if (newCols < old[r].text.length) {
+                repairWide(out[r], 0, newCols - 1);
             }
         }
         return out;
+    }
+
+    private Line[] resizeHeight(Line[] src, int newRows, boolean main) {
+        Line[] out = new Line[newRows];
+        int delta = newRows - rows;
+        int dropTop = 0;
+        if (delta < 0 && main) {
+            // 只有光标会被裁掉时才从顶部删；删掉的行进 scrollback
+            dropTop = clamp(cursorRow - (newRows - 1), 0, -delta);
+        }
+        for (int r = 0; r < newRows; r++) {
+            int from = r + dropTop;
+            if (from < rows) {
+                out[r] = src[from];
+            } else {
+                out[r] = new Line(cols);
+                out[r].blank(cols, defaultFg, defaultBg);
+            }
+        }
+        if (main) {
+            for (int r = 0; r < dropTop; r++) {
+                pushScrollback(src[r]);
+            }
+            cursorRow = clamp(cursorRow - dropTop, 0, newRows - 1);
+        }
+        return out;
+    }
+
+    private void initTabStops() {
+        tabStops = new boolean[cols];
+        for (int i = 8; i < cols; i += 8) {
+            tabStops[i] = true;
+        }
+    }
+
+    /** 下一个制表位。没有更右的制表位时停在最后一列（真终端的行为）。 */
+    private int nextTabStop(int from) {
+        for (int i = from + 1; i < cols; i++) {
+            if (tabStops[i]) {
+                return i;
+            }
+        }
+        return cols - 1;
+    }
+
+    /** 上一个制表位。 */
+    private int prevTabStop(int from) {
+        for (int i = Math.min(from, cols) - 1; i > 0; i--) {
+            if (tabStops[i]) {
+                return i;
+            }
+        }
+        return 0;
     }
 
     public synchronized int getCols() {
@@ -386,6 +509,10 @@ public final class TerminalEmulator {
             int cp = line.text[i];
             if (cp != 0) {
                 sb.appendCodePoint(cp);
+                String extra = line.extraAt(i);
+                if (extra != null) {
+                    sb.append(extra);
+                }
             }
         }
         sb.append('\n');
@@ -521,6 +648,15 @@ public final class TerminalEmulator {
                 }
                 state = STATE_GROUND;
                 break;
+            case STATE_ESC_SKIP:
+                state = STATE_GROUND;
+                break;
+            case STATE_ESC_HASH:
+                if (c == '8') {
+                    alignmentTest();
+                }
+                state = STATE_GROUND;
+                break;
             default:
                 state = STATE_GROUND;
                 break;
@@ -542,7 +678,7 @@ public final class TerminalEmulator {
                 break;
             case 0x09:
                 pendingWrap = false;
-                cursorCol = Math.min(cols - 1, (cursorCol / 8 + 1) * 8);
+                cursorCol = nextTabStop(cursorCol);
                 break;
             case 0x0A:
             case 0x0B:
@@ -593,11 +729,35 @@ public final class TerminalEmulator {
                 charsetTarget = 2;
                 state = STATE_CHARSET;
                 break;
+            case '#':
+                // ESC # 8 = DECALN（把整屏填成 E，用来检查字符网格）
+                state = STATE_ESC_HASH;
+                break;
+            case '%':
+            case ' ':
+            case '&':
+            case 'N':
+            case 'O':
+                // ESC % G（选 UTF-8）、ESC SP F（7/8 位模式）、ESC N/O（单次移出）都是
+                // 「ESC + 一个参数字节」的形式。不把这个参数字节吃掉，它就会变成屏幕上的可见字符
+                // —— `tput init`、`reset`、tmux 都会发这些序列。
+                state = STATE_ESC_SKIP;
+                break;
+            case '=':
+            case '>':
+                // DECKPAM / DECKPNM：应用键盘模式。我们始终按 ANSI 模式发键，忽略即可。
+                break;
             case '7':
                 saveCursor();
                 break;
             case '8':
                 restoreCursor();
+                break;
+            case 'H':
+                // HTS：把当前列设成制表位（`tput tset` / tabs 命令用）
+                if (cursorCol >= 0 && cursorCol < cols) {
+                    tabStops[cursorCol] = true;
+                }
                 break;
             case 'D':
                 lineFeed();
@@ -643,13 +803,22 @@ public final class TerminalEmulator {
 
         paramCount = 0;
         if (!body.isEmpty()) {
-            body = body.replace(':', ';');
-            String[] parts = body.split(";", -1);
-            for (String part : parts) {
-                if (paramCount >= params.length) {
-                    break;
+            // 先按「;」分组，再按「:」拆子参数。不能一股脑把 ':' 换成 ';'：
+            // SGR 的 38:2::R:G:B（含空白色彩空间）换完会多出一个 0，颜色直接错位成别的颜色。
+            String[] groups = body.split(";", -1);
+            for (String group : groups) {
+                int start = paramCount;
+                String[] subs = group.split(":", -1);
+                for (String sub : subs) {
+                    if (paramCount >= params.length) {
+                        break;
+                    }
+                    params[paramCount++] = parseIntSafe(sub);
                 }
-                params[paramCount++] = parseIntSafe(part);
+                for (int k = start; k < paramCount; k++) {
+                    groupStart[k] = start;
+                    groupSize[k] = paramCount - start;
+                }
             }
         }
 
@@ -674,12 +843,17 @@ public final class TerminalEmulator {
         }
 
         switch (finalChar) {
-            case 'A':
-                cursorRow = clamp(cursorRow - arg(0, 1), scrollTop, scrollBottom);
+            case 'A': {
+                // 和 xterm 一致：光标已经在滚动区外时不受上边界限制，可以一路走到第 0 行
+                int min = cursorRow < scrollTop ? 0 : scrollTop;
+                cursorRow = Math.max(min, cursorRow - arg(0, 1));
                 break;
-            case 'B':
-                cursorRow = clamp(cursorRow + arg(0, 1), scrollTop, scrollBottom);
+            }
+            case 'B': {
+                int max = cursorRow > scrollBottom ? rows - 1 : scrollBottom;
+                cursorRow = Math.min(max, cursorRow + arg(0, 1));
                 break;
+            }
             case 'C':
                 cursorCol = clamp(cursorCol + arg(0, 1), 0, cols - 1);
                 break;
@@ -700,25 +874,50 @@ public final class TerminalEmulator {
                 break;
             case 'H':
             case 'f':
-                cursorRow = clamp(arg(0, 1) - 1, 0, rows - 1);
+                // 原点模式（DECOM）下行号相对滚动区顶部；否则相对屏幕顶部
+                cursorRow = originMode
+                        ? clamp(scrollTop + arg(0, 1) - 1, scrollTop, scrollBottom)
+                        : clamp(arg(0, 1) - 1, 0, rows - 1);
                 cursorCol = clamp(arg(1, 1) - 1, 0, cols - 1);
                 break;
             case 'd':
-                cursorRow = clamp(arg(0, 1) - 1, 0, rows - 1);
+                cursorRow = originMode
+                        ? clamp(scrollTop + arg(0, 1) - 1, scrollTop, scrollBottom)
+                        : clamp(arg(0, 1) - 1, 0, rows - 1);
                 break;
             case 'Z': {
                 // CBT：向左跳 n 个制表位（Shift+Tab 用它，vim 里反向跳缩进）
                 int n = Math.max(1, arg(0, 1));
                 for (int i = 0; i < n; i++) {
-                    int prev = cursorCol;
-                    cursorCol = Math.max(0, ((cursorCol - 1) / 8) * 8);
-                    if (cursorCol == prev) {
-                        cursorCol = 0;
-                        break;
-                    }
+                    cursorCol = prevTabStop(cursorCol);
                 }
                 break;
             }
+            case 'I': {
+                // CHT：向右跳 n 个制表位
+                int n = Math.max(1, arg(0, 1));
+                for (int i = 0; i < n; i++) {
+                    cursorCol = nextTabStop(cursorCol);
+                }
+                break;
+            }
+            case 'g':
+                if (prefix == 0) {
+                    // TBC：0 = 清当前列的制表位，3 = 清全部
+                    int mode = arg(0, 0);
+                    if (mode == 0) {
+                        tabStops[cursorCol] = false;
+                    } else if (mode == 3) {
+                        java.util.Arrays.fill(tabStops, false);
+                    }
+                }
+                break;
+            case 'p':
+                // DECSTR（CSI ! p）软复位：`reset` / `tput init` / 程序异常退出后用它把状态拉回来
+                if (prefix == '!') {
+                    softReset();
+                }
+                break;
             case 'q':
                 // DECSCUSR：2 方块 / 4 下划线 / 6 竖线
                 if (prefix == 0) {
@@ -753,7 +952,11 @@ public final class TerminalEmulator {
                 scrollDownLines(arg(0, 1));
                 break;
             case 'm':
-                applySgr();
+                // 只认 SGR（无前缀）。`CSI > 4 ; 2 m` 是 xterm 的 modifyOtherKeys 开关，
+                // 当成 SGR 会莫名其妙把整屏变成下划线+暗色
+                if (prefix == 0) {
+                    applySgr();
+                }
                 break;
             case 'r': {
                 int top = clamp(arg(0, 1) - 1, 0, rows - 1);
@@ -916,6 +1119,12 @@ public final class TerminalEmulator {
             int mode = params[i];
             if (mode == 1) {
                 appCursorKeys = enable;
+            } else if (mode == 6) {
+                // DECOM：光标寻址相对滚动区。切换时真终端会把光标送回原点
+                originMode = enable;
+                cursorRow = enable ? scrollTop : 0;
+                cursorCol = 0;
+                pendingWrap = false;
             } else if (mode == 7) {
                 autowrap = enable;
                 if (!enable) {
@@ -940,6 +1149,44 @@ public final class TerminalEmulator {
                 mouseMode = enable ? 9 : 0;
             }
         }
+    }
+
+    /**
+     * DECSTR 软复位（CSI ! p）。程序被 kill 或崩了以后经常留下半截状态——滚动区还在、
+     * 光标被藏了、反显没关。`reset` / `tput init` 就是发这条序列把终端拉回默认。
+     * 按规范不清屏、不动光标位置，只复位模式与 SGR。
+     */
+    private void softReset() {
+        autowrap = true;
+        originMode = false;
+        cursorVisible = true;
+        appCursorKeys = false;
+        pendingWrap = false;
+        glSet = 0;
+        charsetG0 = 'B';
+        charsetG1 = 'B';
+        scrollTop = 0;
+        scrollBottom = rows - 1;
+        curFg = defaultFg;
+        curBg = defaultBg;
+        curAttr = 0;
+        initTabStops();
+    }
+
+    /** DECALN（ESC # 8）：整屏填 E，光标回左上。用来检查字符网格是否等宽。 */
+    private void alignmentTest() {
+        for (int r = 0; r < rows; r++) {
+            Line line = lines[r];
+            for (int c = 0; c < cols; c++) {
+                line.text[c] = 'E';
+                line.fg[c] = defaultFg;
+                line.bg[c] = defaultBg;
+                line.attr[c] = 0;
+            }
+        }
+        cursorRow = 0;
+        cursorCol = 0;
+        pendingWrap = false;
     }
 
     private void switchAltScreen(boolean enable) {
@@ -975,7 +1222,18 @@ public final class TerminalEmulator {
     }
 
     private void applySgr() {
+        if (paramCount == 0) {
+            // `CSI m` 等价于 `CSI 0 m`（真终端就是这么处理的）
+            curFg = defaultFg;
+            curBg = defaultBg;
+            curAttr = 0;
+            return;
+        }
         for (int i = 0; i < paramCount; i++) {
+            // 组内的子参数由主参数消费（4:3 是「花式下划线」，不是「下划线 + 斜体」）
+            if (groupStart[i] != i) {
+                continue;
+            }
             int v = params[i];
             switch (v) {
                 case 0:
@@ -1050,11 +1308,14 @@ public final class TerminalEmulator {
         }
     }
 
+    /**
+     * 38 / 48 扩展色。两种写法都得认：
+     * 分号式 `38;2;R;G;B`（5 个子参数），冒号式 `38:2::R:G:B`（6 个，第二位是色彩空间，通常留空）。
+     * 原来把 ':' 一律换成 ';'，冒号式会多出一个 0，R 被当成色彩空间、G 被当成 R，颜色整体错位。
+     */
     private int extendedColor(int index, boolean foreground) {
-        if (index + 1 >= paramCount) {
-            return paramCount;
-        }
-        int mode = params[index + 1];
+        int size = Math.max(1, groupSize[index]);
+        int mode = index + 1 < paramCount ? params[index + 1] : 0;
         if (mode == 5 && index + 2 < paramCount) {
             int color = PALETTE[params[index + 2] & 0xFF];
             if (foreground) {
@@ -1064,19 +1325,23 @@ public final class TerminalEmulator {
             }
             return index + 2;
         }
-        if (mode == 2 && index + 4 < paramCount) {
-            int color = 0xFF000000
-                    | ((params[index + 2] & 0xFF) << 16)
-                    | ((params[index + 3] & 0xFF) << 8)
-                    | (params[index + 4] & 0xFF);
-            if (foreground) {
-                curFg = color;
-            } else {
-                curBg = color;
+        if (mode == 2) {
+            int base = size >= 6 ? index + 3 : index + 2;
+            if (base + 2 < paramCount) {
+                int color = 0xFF000000
+                        | ((params[base] & 0xFF) << 16)
+                        | ((params[base + 1] & 0xFF) << 8)
+                        | (params[base + 2] & 0xFF);
+                if (foreground) {
+                    curFg = color;
+                } else {
+                    curBg = color;
+                }
+                return base + 2;
             }
-            return index + 4;
         }
-        return paramCount;
+        // 认不出的形式：整组吃掉，别把子参数当成独立的 SGR
+        return index + size - 1;
     }
 
     /* -------------------- 光标与写字符 -------------------- */
@@ -1099,6 +1364,12 @@ public final class TerminalEmulator {
 
     private void putChar(int cp) {
         cp = mapCharset(cp);
+        int width = charWidth(cp);
+        if (width == 0) {
+            // 组合字符（é 的声调、泰文元音、emoji 的 ZWJ/肤色修饰）不占格，挂到前一个格子上
+            combineInto(cp);
+            return;
+        }
 
         if (pendingWrap) {
             pendingWrap = false;
@@ -1115,7 +1386,6 @@ public final class TerminalEmulator {
                 cursorCol = cols - 1;
             }
         }
-        int width = charWidth(cp);
         // 宽字符卡在最后一列（只剩一格）时，真终端会先换行再画
         if (width == 2 && cursorCol == cols - 1 && autowrap) {
             cursorCol = 0;
@@ -1123,6 +1393,10 @@ public final class TerminalEmulator {
         }
 
         Line line = lines[cursorRow];
+        // 覆写宽字符的任意一半时把另一半也清掉，否则屏幕上会留半个字形
+        for (int k = 0; k < width; k++) {
+            clearCell(line, cursorCol + k);
+        }
         line.text[cursorCol] = cp;
         line.fg[cursorCol] = curFg;
         line.bg[cursorCol] = curBg;
@@ -1141,6 +1415,72 @@ public final class TerminalEmulator {
             // 停在最后一格并标记待换行；下一个字符到来时才真正换行
             cursorCol = cols - 1;
             pendingWrap = autowrap;
+        }
+    }
+
+    /** 把零宽字符挂到光标前一个格子上（光标刚写在 pendingWrap 时就是当前格）。 */
+    private void combineInto(int cp) {
+        Line line = lines[cursorRow];
+        int target = pendingWrap ? cursorCol : cursorCol - 1;
+        if (target < 0 || target >= cols) {
+            return;
+        }
+        if (line.text[target] == 0 && target > 0) {
+            target--;
+        }
+        String[] extra = line.extra();
+        String prev = extra[target];
+        extra[target] = (prev == null ? "" : prev) + new String(Character.toChars(cp));
+    }
+
+    /** 清掉一格（含它的组合字符），不动配对角。 */
+    private void blankCell(Line line, int col) {
+        if (col < 0 || col >= line.text.length) {
+            return;
+        }
+        line.text[col] = ' ';
+        line.fg[col] = defaultFg;
+        line.bg[col] = defaultBg;
+        line.attr[col] = 0;
+        line.clearExtra(col);
+    }
+
+    /** 清掉一格，同时清掉宽字符的另一半。 */
+    private void clearCell(Line line, int col) {
+        if (col < 0 || col >= line.text.length) {
+            return;
+        }
+        if (line.text[col] == 0 && col > 0) {
+            blankCell(line, col - 1);
+        } else if (charWidth(line.text[col]) == 2 && col + 1 < line.text.length
+                && line.text[col + 1] == 0) {
+            blankCell(line, col + 1);
+        }
+        blankCell(line, col);
+    }
+
+    /**
+     * 修复被编辑操作拆散的宽字符（删除/擦除只碰到头或只碰到尾）。
+     * 不修的话，屏幕上会留下半个汉字，或者一个占位格被当成空格。
+     * 边界按 line 自身的长度钳制：resize 时行的宽度可能和 cols 字段不一致。
+     */
+    private void repairWide(Line line, int from, int to) {
+        int len = line.text.length;
+        int lo = Math.max(0, from - 1);
+        int hi = Math.min(len - 1, to + 1);
+        for (int i = lo; i <= hi; i++) {
+            if (line.text[i] == 0) {
+                boolean orphan = i == 0 || line.text[i - 1] == 0
+                        || charWidth(line.text[i - 1]) != 2;
+                if (orphan) {
+                    blankCell(line, i);
+                }
+            } else if (charWidth(line.text[i]) == 2) {
+                boolean orphan = i + 1 >= len || line.text[i + 1] != 0;
+                if (orphan) {
+                    blankCell(line, i);
+                }
+            }
         }
     }
 
@@ -1193,9 +1533,12 @@ public final class TerminalEmulator {
         }
     }
 
-    /** 码点占几列：CJK/全角 2 列，其余 1 列（0 表示宽字符的占位尾格）。 */
+    /** 码点占几列：CJK/全角/emoji 占 2 列，组合字符占 0 列，其余 1 列（0 也表示宽字符的占位尾格）。 */
     public static int charWidth(int cp) {
         if (cp == 0) {
+            return 0;
+        }
+        if (isZeroWidth(cp)) {
             return 0;
         }
         if (cp < 0x1100) {
@@ -1211,10 +1554,53 @@ public final class TerminalEmulator {
                 || (cp >= 0xF900 && cp <= 0xFAFF)
                 || (cp >= 0xFE30 && cp <= 0xFE6F)
                 || (cp >= 0xFF00 && cp <= 0xFF60)
-                || (cp >= 0xFFE0 && cp <= 0xFFE6)) {
+                || (cp >= 0xFFE0 && cp <= 0xFFE6)
+                || (cp >= 0x1F300 && cp <= 0x1F5FF)
+                || (cp >= 0x1F600 && cp <= 0x1F64F)
+                || (cp >= 0x1F680 && cp <= 0x1F6FF)
+                || (cp >= 0x1F900 && cp <= 0x1F9FF)
+                || (cp >= 0x1FA70 && cp <= 0x1FAFF)
+                || cp == 0x1F004 || cp == 0x1F0CF || cp == 0x1F18E
+                || (cp >= 0x1F191 && cp <= 0x1F19A)) {
             return 2;
         }
         return 1;
+    }
+
+    /**
+     * 零宽字符：组合用附加符号（声调、泰文/天城文元音）、变体选择符、ZWJ/ZWNJ、
+     * emoji 的肤色修饰。它们要挂在前一个格子上，单独占格会把整行文字推歪。
+     */
+    private static boolean isZeroWidth(int cp) {
+        return (cp >= 0x0300 && cp <= 0x036F)
+                || (cp >= 0x0483 && cp <= 0x0489)
+                || (cp >= 0x0591 && cp <= 0x05C7)
+                || (cp >= 0x0610 && cp <= 0x061A)
+                || (cp >= 0x064B && cp <= 0x065F)
+                || cp == 0x0670
+                || (cp >= 0x06D6 && cp <= 0x06ED)
+                || cp == 0x0711
+                || (cp >= 0x0730 && cp <= 0x074A)
+                || (cp >= 0x07A6 && cp <= 0x07B0)
+                || (cp >= 0x0900 && cp <= 0x0902)
+                || (cp >= 0x093A && cp <= 0x093C)
+                || (cp >= 0x0941 && cp <= 0x0948)
+                || cp == 0x094D
+                || (cp >= 0x0951 && cp <= 0x0957)
+                || cp == 0x0E31
+                || (cp >= 0x0E34 && cp <= 0x0E3A)
+                || (cp >= 0x0E47 && cp <= 0x0E4E)
+                || cp == 0x0EB1
+                || (cp >= 0x0EB4 && cp <= 0x0EBC)
+                || (cp >= 0x0EC8 && cp <= 0x0ECD)
+                || (cp >= 0x1AB0 && cp <= 0x1AFF)
+                || (cp >= 0x1DC0 && cp <= 0x1DFF)
+                || (cp >= 0x200B && cp <= 0x200F)
+                || (cp >= 0x20D0 && cp <= 0x20F0)
+                || (cp >= 0xFE00 && cp <= 0xFE0F)
+                || (cp >= 0xFE20 && cp <= 0xFE2F)
+                || (cp >= 0x1F3FB && cp <= 0x1F3FF)
+                || (cp >= 0xE0100 && cp <= 0xE01EF);
     }
 
     /* -------------------- 滚动 -------------------- */
@@ -1298,20 +1684,46 @@ public final class TerminalEmulator {
 
     /* -------------------- 擦除与插删 -------------------- */
 
+    /**
+     * 擦除时填什么背景色。xterm 的 BCE（background color erase）就是用「当前背景色」，
+     * xterm-256color 的 terminfo 里带着 bce 标记，程序（vim、less、mc）会依赖它画色块。
+     * 原来一律填默认背景，彩色区域里的 \e[K 会挖出一块黑底。
+     */
+    private int eraseBg() {
+        return (curAttr & ATTR_REVERSE) != 0 ? curFg : curBg;
+    }
+
+    private void eraseRange(Line line, int from, int to, int bg) {
+        if (line == null || from > to) {
+            return;
+        }
+        int start = Math.max(0, from);
+        int end = Math.min(cols - 1, to);
+        for (int i = start; i <= end; i++) {
+            line.text[i] = ' ';
+            line.fg[i] = defaultFg;
+            line.bg[i] = bg;
+            line.attr[i] = 0;
+            line.clearExtra(i);
+        }
+        repairWide(line, start, end);
+    }
+
     private void eraseDisplay(int mode) {
+        int bg = eraseBg();
         if (mode == 0) {
             eraseLine(0);
             for (int r = cursorRow + 1; r < rows; r++) {
-                blankLine(r);
+                eraseRange(lines[r], 0, cols - 1, bg);
             }
         } else if (mode == 1) {
             eraseLine(1);
             for (int r = 0; r < cursorRow; r++) {
-                blankLine(r);
+                eraseRange(lines[r], 0, cols - 1, bg);
             }
         } else {
             for (int r = 0; r < rows; r++) {
-                blankLine(r);
+                eraseRange(lines[r], 0, cols - 1, bg);
             }
             if (mode == 3) {
                 scrollback.clear();
@@ -1320,7 +1732,6 @@ public final class TerminalEmulator {
     }
 
     private void eraseLine(int mode) {
-        Line line = lines[cursorRow];
         int from;
         int to;
         if (mode == 0) {
@@ -1333,25 +1744,11 @@ public final class TerminalEmulator {
             from = 0;
             to = cols - 1;
         }
-        for (int i = from; i <= to && i < cols; i++) {
-            if (i < 0) {
-                continue;
-            }
-            line.text[i] = ' ';
-            line.fg[i] = defaultFg;
-            line.bg[i] = defaultBg;
-            line.attr[i] = 0;
-        }
+        eraseRange(lines[cursorRow], from, to, eraseBg());
     }
 
     private void eraseChars(int count) {
-        Line line = lines[cursorRow];
-        for (int i = 0; i < count && cursorCol + i < cols; i++) {
-            line.text[cursorCol + i] = ' ';
-            line.fg[cursorCol + i] = defaultFg;
-            line.bg[cursorCol + i] = defaultBg;
-            line.attr[cursorCol + i] = 0;
-        }
+        eraseRange(lines[cursorRow], cursorCol, cursorCol + Math.max(1, count) - 1, eraseBg());
     }
 
     private void deleteChars(int count) {
@@ -1365,13 +1762,19 @@ public final class TerminalEmulator {
             System.arraycopy(line.fg, cursorCol + count, line.fg, cursorCol, move);
             System.arraycopy(line.bg, cursorCol + count, line.bg, cursorCol, move);
             System.arraycopy(line.attr, cursorCol + count, line.attr, cursorCol, move);
+            if (line.extra != null) {
+                System.arraycopy(line.extra, cursorCol + count, line.extra, cursorCol, move);
+            }
         }
+        int bg = eraseBg();
         for (int i = Math.max(cursorCol, cols - count); i < cols; i++) {
             line.text[i] = ' ';
             line.fg[i] = defaultFg;
-            line.bg[i] = defaultBg;
+            line.bg[i] = bg;
             line.attr[i] = 0;
+            line.clearExtra(i);
         }
+        repairWide(line, cursorCol, cols - 1);
     }
 
     private void insertChars(int count) {
@@ -1385,13 +1788,19 @@ public final class TerminalEmulator {
             System.arraycopy(line.fg, cursorCol, line.fg, cursorCol + count, move);
             System.arraycopy(line.bg, cursorCol, line.bg, cursorCol + count, move);
             System.arraycopy(line.attr, cursorCol, line.attr, cursorCol + count, move);
+            if (line.extra != null) {
+                System.arraycopy(line.extra, cursorCol, line.extra, cursorCol + count, move);
+            }
         }
+        int bg = eraseBg();
         for (int i = cursorCol; i < Math.min(cols, cursorCol + count); i++) {
             line.text[i] = ' ';
             line.fg[i] = defaultFg;
-            line.bg[i] = defaultBg;
+            line.bg[i] = bg;
             line.attr[i] = 0;
+            line.clearExtra(i);
         }
+        repairWide(line, cursorCol, cols - 1);
     }
 
     private void insertLines(int count) {

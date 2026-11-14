@@ -64,7 +64,10 @@ java -cp /tmp/etest EmuTest      # 全部 PASS 打印 "ALL PASS"
 ```
 
 覆盖 DEC 画线字符集、延迟换行、DECAWM、CJK 占位、DECSCUSR、鼠标序列、焦点上报、
-备用屏 scrollback 隔离、SO/SI、CPR。改仿真器后先跑这个，再去真机看 vim。
+备用屏 scrollback 隔离、SO/SI、CPR、resize（顶裁/底补/scrollback 保留/宽字符跨界）、
+DECALN、`ESC % G` 参数字节吞除、DECSTR、DECOM 原点模式、SGR 冒号真彩、
+modifyOtherKeys 不当 SGR、制表位（HTS/TBC）、组合字符、DCH 宽字符修复、BCE。
+改仿真器后先跑这个，再去真机看 vim。
 
 **零第三方依赖**：没有 AndroidX、没有 Kotlin、没有 commons-compress。只有 Framework API + 一个 200 行的 C 文件 + 手写 tar.gz 解包器。这样做的目的是让构建链尽可能不炸。
 
@@ -166,9 +169,38 @@ app/src/main/
 | 焦点上报 | `?1004` | 切回前台 vim 不重绘 |
 | 光标形状 | `DECSCUSR` `CSI n q` | 插入/普通模式光标无区别 |
 | 括号粘贴 | `?2004` | 多行粘贴被逐条执行 |
+| 原点模式 | `DECSET 6`（DECOM） | 用了滚动区的程序光标寻址整体偏移，画面错位 |
+| 软复位 | `CSI ! p`（DECSTR） | 程序崩掉后滚动区/反显/隐藏光标一直残留，`reset` 救不回来 |
+| 屏幕对齐测试 | `ESC # 8`（DECALN） | 参数字节漏成屏幕上一个可见的 `8` |
+| 制表位 | `HTS`/`TBC`/`CBT`/`CHT` | `tabs`/`tput tset` 设的自定义制表位失效 |
+| BCE（背景色擦除） | `\e[K` 用当前背景色填 | 彩色区域里的 `\e[K` 挖出默认底色的洞 |
+| 组合字符 | 零宽附加符 | `é`、泰文元音、emoji 肤色修饰各占一格，整行推歪 |
+| 宽字符修复 | 覆写/删除/变窄时清孤儿 | 删掉半个汉字后屏幕上留下残缺字形 |
 
 鼠标这块对触摸做了转换：单指点击发 `<LeftMouse>`（vim 里定位光标），单指拖动发拖动上报（拖选），
 **双指上下滑发滚轮**（`<ScrollWheelUp/Down>`，button 64/65）——触摸屏没有滚轮，不给滚轮 vim 就没法翻页。
+
+### 与真终端对表的取舍（审计结论）
+
+逐项对照 xterm 后，按「对日常使用的影响」做了取舍：
+
+**已对齐**：
+- **resize 语义**：变矮时从顶部裁（裁掉的行进 scrollback），保证光标（提示符）留在屏幕上；
+  变高时在底部补空行、内容不跟着跳；scrollback 不再清空——原来转个屏/弹个键盘历史就没了。
+- **未知序列不漏字**：`ESC % G`、`ESC SP F`、`ESC N/O` 这类「ESC + 参数字节」的序列会把参数字节吃掉，
+  不再漏成屏幕上的可见字符（`tput init` / `reset` / tmux 都会发）。
+- **SGR 冒号子参数**：`38:2::R:G:B`（真彩）按组解析，不再把色彩空间位当成 R 通道把颜色错位；
+  `4:3`（花式下划线）不再被拆成「下划线 + 斜体」。
+- **`CSI > 4 ; 2 m` 是 modifyOtherKeys**，不是 SGR——误当 SGR 会把整屏变成下划线加暗色。
+- **xterm 的边界语义**：CUU/CUD 在光标已处于滚动区外时不受区边界限制；DECOM 切换时光标回原点。
+
+**有意不实现**（程序会静默降级，实现它们的风险/收益不划算）：
+- `IRM`（插入模式）/`LNM`：几乎没有现代程序依赖 terminfo 的 `smir`。
+- `modifyOtherKeys` / kitty 键盘协议：开启后需要程序按新格式解码按键；不回话它就用旧格式，无损。
+- OSC 52（剪贴板）：等于允许远端进程改写手机剪贴板，很多现代终端也默认禁用。
+- OSC 0/2（标题）、OSC 8（超链接）、同步输出 `?2026`：只影响「不显示的东西」，不影响正确性。
+- ZWJ emoji 合成序列（家庭 emoji 这类多码点图形）按多格画；真终端做字形簇合并也是靠整个
+  harfbuzz 管线，这里不值得背这个复杂度。
 
 **容器启停**（`ProotRuntime`）：
 
@@ -312,7 +344,7 @@ files/container/
 6. **只打了 arm64 的运行时**：`jniLibs/armeabi-v7a`、`x86_64` 需要分别跑一次 `fetch-runtime.ps1 -Abi …`，否则 32 位设备/模拟器上容器模式会提示缺运行时（本地模式不受影响）。
 7. **本地模式的 `PS1` 会被 `/system/etc/mkshrc` 覆盖**：所以看到的是 Android 默认提示符（`:当前目录$`），不是工程里设置的那个。纯外观问题。
 8. **软键盘弹出时终端会被压扁**：横屏全键盘能吃掉 600dp 以上，`adjustResize` 之后终端只剩两三行。接了物理键盘时不会触发（代码里有判断，有硬键盘就不强弹软键盘）。
-9. **`TerminalEmulator` 不支持的少数协议**：`modifyOtherKeys`（`CSI > 4 ; 2 m`，让 `Ctrl+字母` 有独立编码）、OSC 52（程序直接写系统剪贴板，vim 的 `"+y`）、Sixel/iTerm 图片、同步输出（`?2026`）。这些程序都会静默降级，不影响基本使用。
+9. **`TerminalEmulator` 有意不实现的协议**：`IRM`/`LNM`（插入/换行模式）、`modifyOtherKeys` 与 kitty 键盘协议、OSC 52（程序直接写系统剪贴板，vim 的 `"+y`）、OSC 0/2 标题、OSC 8 超链接、Sixel 图片、同步输出（`?2026`）、ZWJ emoji 合成序列。取舍理由见上文「与真终端对表的取舍」；这些程序都会静默降级，不影响基本使用。
 10. **这个 App 自己没禁止截图**，但**开着软键盘时截不了图**：输入法窗口带 `FLAG_SECURE`，系统会拒绝整屏截图并提示「该应用不允许屏幕截图」。要截图先收起键盘。可用 `adb logcat -s DualTerm | grep "window flags"` 确认 App 自己的 `FLAG_SECURE=false`。
 
 ## 可以接着做的

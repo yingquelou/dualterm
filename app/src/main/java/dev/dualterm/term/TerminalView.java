@@ -398,7 +398,8 @@ public class TerminalView extends View {
 
             // 逐格推进：宽字符单独画并占两列，窄字符攒成一段一次画。
             // 不能把宽字符和它后面的字符塞进同一个 drawText——宽字形会自己撑开两倍宽，
-            // 后面所有字符就整体右移一格。
+            // 后面所有字符就整体右移一格。带组合字符（é、泰文、emoji 修饰）的格子也要单独画，
+            // 否则附加符号会被当成独立字符排到下一格。
             int i = start;
             while (i < end) {
                 int cp = line.text[i];
@@ -407,9 +408,14 @@ public class TerminalView extends View {
                     i++;
                     continue;
                 }
-                if (TerminalEmulator.charWidth(cp) == 2) {
-                    canvas.drawText(new String(Character.toChars(cp)),
-                            padX + i * cellWidth, baseline, textPaint);
+                String extra = line.extraAt(i);
+                if (TerminalEmulator.charWidth(cp) == 2 || extra != null) {
+                    StringBuilder one = new StringBuilder(4);
+                    one.appendCodePoint(cp);
+                    if (extra != null) {
+                        one.append(extra);
+                    }
+                    canvas.drawText(one.toString(), padX + i * cellWidth, baseline, textPaint);
                     i++;
                     continue;
                 }
@@ -417,7 +423,7 @@ public class TerminalView extends View {
                 StringBuilder sb = new StringBuilder(end - i);
                 while (i < end) {
                     int c2 = line.text[i];
-                    if (c2 == 0 || TerminalEmulator.charWidth(c2) == 2) {
+                    if (c2 == 0 || TerminalEmulator.charWidth(c2) == 2 || line.extraAt(i) != null) {
                         break;
                     }
                     sb.appendCodePoint(c2);
@@ -846,7 +852,12 @@ public class TerminalView extends View {
         switch (keyCode) {
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
-                return mod == 0 ? "\r" : "\u001b\r";
+                // 没开 modifyOtherKeys 的 xterm 里，Shift/Ctrl+Enter 仍然是 CR。
+                // 原来一律加 ESC 前缀，vim 会先被 ESC 拉回普通模式再回车——插进半个命令。
+                if ((mod & M_ALT) != 0) {
+                    return "\u001b\r";
+                }
+                return "\r";
             case KeyEvent.KEYCODE_DEL:
                 // Ctrl+Backspace 在 xterm 里是 BS(0x08)，普通退格是 DEL(0x7f)
                 if ((mod & M_CTRL) != 0) {
