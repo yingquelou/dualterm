@@ -86,6 +86,12 @@ java -cp "/tmp/tt:$ANDROID_HOME/platforms/android-34/android.jar" TarTest
 + `pickRef` 闸门（恶意 RepoTags 白名单拒绝——P0 注入修复的回归）。
 整包 `importArchive` 依赖 Context 和真 org.json 实现，仍需上真机验证。
 
+**注入链回归**（同款跑法，`tools/SecTest.java`）：`shQuote` 转义还原、`checkSafeName`、
+恶意 RepoTags 拒绝、`dockerVolumeArg`、`su -c` 拼装层拦截。
+
+**端口声明回归**（同款跑法，`tools/PortsTest.java`）：`-p` 写法解析（同端口直通 /
+重映射识别 / udp、范围、IPv6、越界拒绝）+ 提示文案（监听 0.0.0.0、低端口要 root）。
+
 **零第三方依赖**：没有 AndroidX、没有 Kotlin、没有 commons-compress。只有 Framework API + 一个 200 行的 C 文件 + 手写 tar.gz 解包器。这样做的目的是让构建链尽可能不炸。
 
 ---
@@ -329,6 +335,25 @@ info / version / help
 
 也支持 `run -v /sdcard/Download:/mnt/dl ...`，绑定会写进全局 `Volumes`（和菜单里的「绑定目录」同一份配置）。
 
+### 端口：同端口直通，不做映射
+
+容器里跑了个服务（nginx、http.server、ssh…），**整个安卓系统都连得上**：PRoot 只是
+ptrace 路径重定向，容器进程就是本 App 的普通进程，和系统共用同一个 network namespace、
+同一张 `lo`、同一个 `wlan0`——没有 veth、没有 NAT、没有 iptables。容器里
+`listen 0.0.0.0:8080`，手机浏览器访问 `http://127.0.0.1:8080` 就是它；绑 `0.0.0.0`
+时同一局域网的设备也能连（路由器开 AP 隔离就不行）。
+
+`run -p` 只收**同端口直通**（`8080` 或 `8080:8080`），声明会存下来并在创建后给出
+访问指引；`-p 8080:80` 这种重映射在创建时就拒绝，而不是运行后静默连不上——
+两条后端都没有 NAT，承诺做不到的事不如不说。低于 1024 的端口需要 root 模式
+（容器里的假 root 实为 app uid，绑特权端口会 EACCES）。声明只用于展示，
+不参与启动参数拼装。
+
+**会话保活**：只要有活着的终端会话，App 就顶一个前台服务 + 部分唤醒锁
+（`SessionService`，specialUse 类型），否则 Android 12+ 的 cached app freezer
+会在切后台后把容器连同服务一起 SIGSTOP——网络通着也没用。会话全结束就自动收摊，
+不做常驻守护、不做开机自启。通知权限没授权时服务照常工作，只是通知不可见。
+
 ### 为什么容器里没有 docker 命令
 
 第一版是在每个容器的 `/usr/local/bin/docker` 放一个脚本，靠绑定目录 + 文件信箱把命令转发给 App。
@@ -353,7 +378,7 @@ files/container/
 > 从 v1.x 升级时，旧的 `container/rootfs` 会被改名成 `images/alpine-3.20/rootfs`（不重新解包），
 > 旧 `container/home` 的内容搬进默认容器，不会丢。
 
-**不支持**：`build` / `commit` / `push` / `compose` / 网络管理 / 端口映射 —— 这些必须有真 dockerd。
+**不支持**：`build` / `commit` / `push` / `compose` / 网络管理 / 端口重映射 —— 这些必须有真 dockerd 或 NAT。
 如果你在已 root 且内核开 namespace 的设备上选了 Docker 后端，那是另一条路径（`DockerRuntime`，实验）。
 
 ---
@@ -373,6 +398,8 @@ files/container/
 | 容器包管理 | `apk-tools 2.14.4, compiled for aarch64`；`apk add --no-cache curl` 成功 |
 | 容器网络 | `ping 223.5.5.5` 通（27.5 ms）；`nslookup` 走 `/etc/resolv.conf` 正常；HTTPS 请求返回 `200` |
 | 容器可写 | `/root/t.txt` 写入并读回正常 |
+| 容器服务全系统可达 | 容器内 `nc -l -p 18080`，宿主 `echo ping-from-adb \| nc 127.0.0.1 18080` 数据到达终端 |
+| 会话保活 | 前台服务 `isForeground=true` + `PARTIAL_WAKE_LOCK 'dualterm:session'` 持有 |
 | 会话存活 | 本地 sh 与容器 proot 可同时常驻，切模式复用现场，无残留僵尸进程 |
 
 ---
@@ -383,7 +410,7 @@ files/container/
 2. **容器不是内核隔离**：共享内核和 `/proc`，没有 cgroup 限额，`nsenter` 之类不能用。要真隔离得换内核。
 3. **`/sdcard` 绑定默认只读/不可读**：Android 11+ 分区存储，要完整访问得申请 `MANAGE_EXTERNAL_STORAGE`（需上架说明），本工程没默认申请。
 4. **proot 依赖 Termux 的 bionic 构建**：脚本从 Termux 官方源取，避免自己交叉编译。若你换源，注意 proot 版本与内核 `ptrace` 策略的兼容性（部分 ROM 需要 `PROOT_NO_SECCOMP=1`）。
-5. **Docker 后端未在真机验证**：代码路径完整（探测 → 启 dockerd → `docker run -it`），但没有可测的带 namespace 内核的设备，所以按"实验"对待。
+5. **Docker 后端未在真机验证**：代码路径完整（探测 → 启 dockerd → `docker run -it --net=host`），但没有可测的带 namespace 内核的设备，所以按"实验"对待。固定 host 网络是刻意的：手机内核常常没有 iptables nat 表，bridge 模式容器会起来但两头都不通；host 模式复用宿主网络栈，语义与 PRoot 后端一致（代价是端口冲突直接 EADDRINUSE）。
 6. **只打了 arm64 的运行时**：`jniLibs/armeabi-v7a`、`x86_64` 需要分别跑一次 `fetch-runtime.ps1 -Abi …`，否则 32 位设备/模拟器上容器模式会提示缺运行时（本地模式不受影响）。
 7. **本地模式的 `PS1` 会被 `/system/etc/mkshrc` 覆盖**：所以看到的是 Android 默认提示符（`:当前目录$`），不是工程里设置的那个。纯外观问题。
 8. **软键盘弹出时终端会被压扁**：横屏全键盘能吃掉 600dp 以上，`adjustResize` 之后终端只剩两三行（此时更多键面板会自动收起）。接了物理键盘时不会触发（代码里有判断，有硬键盘就不强弹软键盘）。

@@ -12,6 +12,12 @@
         android:maxSdkVersion="28" />
     <!-- 终端类应用的正当用途：绑定 /sdcard 子目录进容器（等价于文件管理器） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- 会话保活：前台服务 + 唤醒锁，避免切后台后容器里的服务被冻结 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 声明但不主动申请：用户可以在系统设置里自己开，没开也不影响保活 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="false"
@@ -38,5 +44,14 @@
             android:exported="false"
             android:label="容器管理控制台"
             android:windowSoftInputMode="stateAlwaysHidden|adjustResize" />
+
+        <service
+            android:name=".term.SessionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="terminal session keep-alive" />
+        </service>
     </application>
 </manifest>

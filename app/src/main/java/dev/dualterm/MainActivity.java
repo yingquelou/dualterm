@@ -33,6 +33,7 @@ import dev.dualterm.container.Containers;
 import dev.dualterm.container.ImageImporter;
 import dev.dualterm.container.Volumes;
 import dev.dualterm.term.LaunchSpec;
+import dev.dualterm.term.SessionService;
 import dev.dualterm.term.Shells;
 import dev.dualterm.term.TermSession;
 import dev.dualterm.term.TerminalView;
@@ -438,10 +439,7 @@ public class MainActivity extends Activity
     }
 
     private void startLocal(boolean restart) {
-        TermSession existing = sessions.remove(MODE_LOCAL);
-        if (existing != null) {
-            existing.stop();
-        }
+        dropSession(MODE_LOCAL);
         try {
             boolean useRoot = prefs.getBoolean("root", false);
             LaunchSpec spec = Shells.localSpec(getApplicationContext(), useRoot);
@@ -456,10 +454,7 @@ public class MainActivity extends Activity
     }
 
     private void startContainer(final String containerName, boolean restart) {
-        TermSession existing = sessions.remove(MODE_CONTAINER);
-        if (existing != null) {
-            existing.stop();
-        }
+        dropSession(MODE_CONTAINER);
         Containers.setRunning(containerName, false);
 
         showOverlay("准备容器 " + containerName + " …");
@@ -549,6 +544,7 @@ public class MainActivity extends Activity
         }
         sessions.put(key, session);
         attach(session);
+        updateKeepAlive();
         // 接了物理键盘（蓝牙/USB）就别强弹软键盘：横屏时软键盘能吃掉大半个屏幕，
         // 终端会被压到只剩两三行，而且软键盘窗口是 secure 的，连截图都会被系统拦掉。
         if (!hasHardKeyboard()) {
@@ -558,6 +554,29 @@ public class MainActivity extends Activity
 
     private boolean hasHardKeyboard() {
         return detectHardKeyboard();
+    }
+
+    /** 掐掉某个模式的会话并收回保活。会话表的所有移除都该走这里。 */
+    private void dropSession(String key) {
+        TermSession existing = sessions.remove(key);
+        if (existing != null) {
+            existing.stop();
+        }
+        updateKeepAlive();
+    }
+
+    /**
+     * 会话数变了就同步保活状态：还有活着的会话就顶前台服务 + 唤醒锁，一个不剩就收摊。
+     * 只在 UI 线程调用（sessions 不是并发容器）。
+     */
+    private void updateKeepAlive() {
+        int alive = 0;
+        for (TermSession s : sessions.values()) {
+            if (s != null && s.isRunning()) {
+                alive++;
+            }
+        }
+        SessionService.sync(getApplicationContext(), alive);
     }
 
     private void attach(TermSession session) {
@@ -675,6 +694,7 @@ public class MainActivity extends Activity
                     showExitBar(code);
                     updateStatus(describeExit(code));
                 }
+                updateKeepAlive();
             }
         });
     }
@@ -1827,10 +1847,7 @@ public class MainActivity extends Activity
                         } else if ("停止".equals(action)) {
                             Containers.Item it = Containers.find(MainActivity.this, item.name);
                             if (it != null && it.isRunning()) {
-                                TermSession existing = sessions.remove(MODE_CONTAINER);
-                                if (existing != null) {
-                                    existing.stop();
-                                }
+                                dropSession(MODE_CONTAINER);
                                 Containers.setRunning(item.name, false);
                                 updateStatus("已停止 " + item.name);
                             }
@@ -1857,10 +1874,7 @@ public class MainActivity extends Activity
                 .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
-                        TermSession existing = sessions.remove(MODE_CONTAINER);
-                        if (existing != null) {
-                            existing.stop();
-                        }
+                        dropSession(MODE_CONTAINER);
                         boolean wasActive = item.name.equals(Containers.activeName(MainActivity.this));
                         if (!Containers.remove(MainActivity.this, item.name)) {
                             toast("删除失败：" + item.name + " 的目录还在被占用");
@@ -2288,10 +2302,7 @@ public class MainActivity extends Activity
                 .setPositiveButton("确定重建", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
-                        TermSession existing = sessions.remove(MODE_CONTAINER);
-                        if (existing != null) {
-                            existing.stop();
-                        }
+                        dropSession(MODE_CONTAINER);
                         Containers.setRunning(name, false);
                         showOverlay("重建容器 " + name + " …");
                         background.execute(new Runnable() {
@@ -2407,6 +2418,7 @@ public class MainActivity extends Activity
             }
             sessions.clear();
             Containers.clearRunning();
+            SessionService.sync(getApplicationContext(), 0);
         }
         super.onDestroy();
     }
