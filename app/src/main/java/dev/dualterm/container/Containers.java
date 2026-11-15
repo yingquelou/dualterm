@@ -177,6 +177,14 @@ public final class Containers {
         return s;
     }
 
+    /**
+     * 镜像 ref 白名单。ref 会成为镜像目录名（dirName 只替换 : 和 /，其余字符原样
+     * 落盘），还会被 Docker 后端拼进 su -c——所以来自外部 tar 的 ref 必须过这里。
+     */
+    public static boolean validImageRef(String ref) {
+        return ref != null && ref.matches("[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}");
+    }
+
     public static List<Item> items(Context ctx) {
         List<Item> out = new ArrayList<>();
         String raw = prefs(ctx).getString(KEY_ITEMS, "");

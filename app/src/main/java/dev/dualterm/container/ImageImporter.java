@@ -387,7 +387,7 @@ public final class ImageImporter {
         return f;
     }
 
-    private static String pickRef(Context ctx, String refHint, String fromArchive) {
+    private static String pickRef(Context ctx, String refHint, String fromArchive) throws IOException {
         String ref = refHint == null ? "" : refHint.trim();
         if (ref.isEmpty() && fromArchive != null) {
             ref = fromArchive.trim();
@@ -399,7 +399,13 @@ public final class ImageImporter {
         if (ref.startsWith("docker.io/library/")) {
             ref = ref.substring("docker.io/library/".length());
         }
-        return Containers.normalizeImage(ref);
+        ref = Containers.normalizeImage(ref);
+        // ref 来自外部 tar 的 manifest.json / OCI 注解，是不可信输入：它既会变成
+        // 镜像目录名，也会被 Docker 后端拼进 su -c。字符集不合法直接拒绝导入。
+        if (!Containers.validImageRef(ref)) {
+            throw new IOException("镜像名含非法字符，拒绝导入：" + ref);
+        }
+        return ref;
     }
 
     private static void report(ContainerRuntime.Progress progress, String message) {

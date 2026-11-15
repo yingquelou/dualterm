@@ -65,18 +65,24 @@ public final class DockerRuntime extends ContainerRuntime {
         Containers.Item item = Containers.find(ctx, name);
         String image = item == null ? "alpine:latest" : item.image;
 
+        // 下面这些值要拼进 su -c 的 root shell 字符串：容器名理论上在
+        // Containers.create 已过白名单，镜像 ref 却来自外部 tar（不可信输入），
+        // 绑定路径来自用户配置。全部先校验/引号包裹，注入链在源头和拼装两处都堵死。
+        Shells.checkSafeName("容器名", name);
+        Shells.checkSafeName("镜像名", image);
+
         StringBuilder script = new StringBuilder();
         script.append(bootScript())
-                .append("; exec docker run -it --name ").append(name)
+                .append("; exec docker run -it --name ").append(Shells.shQuote(name))
                 .append(" -v /sdcard:/mnt/sdcard");
         // 用户自定义绑定目录，与 PRoot 后端共用同一份配置
         for (String[] vol : Volumes.list(ctx)) {
             if (!new java.io.File(vol[0]).exists()) {
                 continue;
             }
-            script.append(" -v ").append(Volumes.dockerVolumeArg(vol));
+            script.append(" -v ").append(Shells.shQuote(Volumes.dockerVolumeArg(vol)));
         }
-        script.append(" ").append(image).append(" /bin/sh");
+        script.append(" ").append(Shells.shQuote(image)).append(" /bin/sh");
         return new LaunchSpec("容器 · " + name + "（Docker）", new String[]{"su", "-c", script.toString()}, env(), "/",
                 false, true);
     }

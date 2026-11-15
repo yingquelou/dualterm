@@ -98,4 +98,24 @@ public final class Shells {
             }
         }
     }
+
+    /**
+     * 把一个字符串变成 POSIX shell 里字面安全的单词：单引号包裹 + 内部 ' 转义。
+     *
+     * 凡是拼进 `su -c "…"` 这类 root shell 字符串的外来值（容器名、镜像 ref、
+     * 绑定路径）都必须过这里——镜像 ref 来自外部 tar 的 manifest.json，是不可信输入。
+     */
+    public static String shQuote(String s) {
+        return "'" + s.replace("'", "'\\''") + "'";
+    }
+
+    /**
+     * 白名单校验一个将拼进 shell 的标识符（容器名 / 镜像 ref）。
+     * 不合法抛 IllegalArgumentException；message 里带上是什么字段，方便定位。
+     */
+    public static void checkSafeName(String what, String value) {
+        if (value == null || !value.matches("[A-Za-z0-9][A-Za-z0-9_.:/-]*")) {
+            throw new IllegalArgumentException(what + "含非法字符，拒绝执行：" + value);
+        }
+    }
 }
