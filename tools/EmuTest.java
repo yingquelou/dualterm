@@ -263,6 +263,49 @@ public class EmuTest {
                 lw2.text[8] == '8' && lw2.text[9] == ' ',
                 "t8=" + lw2.text[8] + " t9=" + lw2.text[9]);
 
+        // 25) DL（删除行）在子滚动区里必须真正"上移+底部补空"，
+        //     且不能因为 arraycopy 搬引用 + 原地 blank 让行对象别名共享
+        //     （曾实测：vim 滚轮每个 tick 发 DL 3，屏幕内容以 3 行为周期重复平铺）
+        TerminalEmulator d = new TerminalEmulator(8, 10, 100, 0xFFE6E6E6, 0xFF101014);
+        for (int r = 1; r <= 10; r++) {
+            feed(d, "\u001b[" + r + ";1HR" + r);
+        }
+        feed(d, "\u001b[1;9r\u001b[1;1H\u001b[3M\u001b[1;10r");
+        String[] afterDl = new String[10];
+        for (int r = 0; r < 10; r++) {
+            afterDl[r] = lineText(d, r).trim();
+        }
+        check("DL3 in region 1..9 shifts tail up, keeps row 10",
+                afterDl[0].equals("R4") && afterDl[3].equals("R7")
+                        && afterDl[6].isEmpty() && afterDl[9].equals("R10"),
+                java.util.Arrays.toString(afterDl));
+        feed(d, "\u001b[7;1HNEW7\u001b[8;1HNEW8\u001b[9;1HNEW9");
+        check("DL vacated rows do not alias shifted rows",
+                lineText(d, 3).trim().equals("R7")
+                        && lineText(d, 6).trim().equals("NEW7")
+                        && !lineText(d, 3).contains("NEW"),
+                "r4=" + lineText(d, 3).trim() + " r7=" + lineText(d, 6).trim());
+
+        // 26) IL（插入行）同样：下方内容下移、末尾行被挤掉，不能出现别名
+        TerminalEmulator il = new TerminalEmulator(8, 10, 100, 0xFFE6E6E6, 0xFF101014);
+        for (int r = 1; r <= 10; r++) {
+            feed(il, "\u001b[" + r + ";1HR" + r);
+        }
+        feed(il, "\u001b[1;9r\u001b[1;1H\u001b[2L\u001b[1;10r");
+        // 区域 1..9 里插 2 行：头两行空，R1..R7 下移，R8/R9 被挤出区域，row10 不动
+        check("IL2 in region 1..9 shifts down, drops region bottom",
+                lineText(il, 0).trim().isEmpty()
+                        && lineText(il, 1).trim().isEmpty()
+                        && lineText(il, 2).trim().equals("R1")
+                        && lineText(il, 8).trim().equals("R7")
+                        && lineText(il, 9).trim().equals("R10"),
+                "r1=" + lineText(il, 0).trim() + " r3=" + lineText(il, 2).trim()
+                        + " r9=" + lineText(il, 8).trim());
+        feed(il, "\u001b[1;1HT0P");
+        check("IL vacated rows do not alias shifted rows",
+                lineText(il, 2).trim().equals("R1") && lineText(il, 0).trim().equals("T0P"),
+                "r1=" + lineText(il, 0).trim() + " r3=" + lineText(il, 2).trim());
+
         System.out.println(fails == 0 ? "ALL PASS" : fails + " FAILURES");
         System.exit(fails == 0 ? 0 : 1);
     }

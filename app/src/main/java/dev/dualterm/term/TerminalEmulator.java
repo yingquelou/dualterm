@@ -175,6 +175,24 @@ public final class TerminalEmulator {
     /** 终端应答出口，null 表示只做屏模型不回应（例如纯回放）。 */
     private volatile ReplySink replySink;
 
+    /**
+     * 文字区与单元格的像素尺寸，供 XTWINOPS（CSI 14/16/18 t）应答用。
+     * 渲染层在字号/视口变化时推送；0 表示未知（此时对应查询不应答，
+     * 程序会走 TIOCGWINSZ 兜底——vim 拿不到这个应答时会多等一个超时）。
+     */
+    private volatile int textAreaWidthPx;
+    private volatile int textAreaHeightPx;
+    private volatile int cellWidthPx;
+    private volatile int cellHeightPx;
+
+    /** 渲染层同步像素度量（单元格尺寸随字号变化，vim 捏合缩放后依赖它重新对齐几何）。 */
+    public void setTextMetrics(int areaW, int areaH, int cellW, int cellH) {
+        textAreaWidthPx = areaW;
+        textAreaHeightPx = areaH;
+        cellWidthPx = cellW;
+        cellHeightPx = cellH;
+    }
+
     /** DECSET 2004：括号粘贴。开启后粘贴内容要用 ESC[200~ … ESC[201~ 包起来。 */
     private boolean bracketedPaste;
 
@@ -491,6 +509,18 @@ public final class TerminalEmulator {
         for (int i = 0; i < scrollback.size(); i++) {
             appendLineText(sb, scrollback.get(i));
         }
+        for (int r = 0; r < rows; r++) {
+            appendLineText(sb, lines[r]);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 只取当前屏（不含 scrollback）。「复制全部输出」在跑过编译/日志之后
+     * 动辄几万行，用户真正想要的多半是「刚才这一屏」，所以单独给一个入口。
+     */
+    public synchronized String getScreenText() {
+        StringBuilder sb = new StringBuilder();
         for (int r = 0; r < rows; r++) {
             appendLineText(sb, lines[r]);
         }
@@ -1008,6 +1038,39 @@ public final class TerminalEmulator {
                     reply("\u001b[>0;10;1c");
                 } else if (prefix == 0) {
                     reply("\u001b[?62;22c");
+                }
+                break;
+            case 't':
+                // XTWINOPS 窗口操作。查询类要应答（vim 收到 SIGWINCH 后靠它
+                // 重新对齐几何；实测不应答会把「几何不一致」拖长到秒级，
+                // 期间程序往屏幕外画，内容落错位置）。设置类（22/23 推拉
+                // 标题栈）静默忽略。
+                if (prefix == 0) {
+                    int op = arg(0, 0);
+                    switch (op) {
+                        case 14:
+                            // 文字区像素尺寸
+                            if (textAreaWidthPx > 0 && textAreaHeightPx > 0) {
+                                reply("\u001b[4;" + textAreaHeightPx + ";" + textAreaWidthPx + "t");
+                            }
+                            break;
+                        case 16:
+                            // 单元格像素尺寸
+                            if (cellWidthPx > 0 && cellHeightPx > 0) {
+                                reply("\u001b[6;" + cellHeightPx + ";" + cellWidthPx + "t");
+                            }
+                            break;
+                        case 18:
+                            // 字符行列数
+                            reply("\u001b[8;" + rows + ";" + cols + "t");
+                            break;
+                        case 19:
+                            // 屏幕字符尺寸（我们没有分离的"屏幕/文字区"，同 18）
+                            reply("\u001b[9;" + rows + ";" + cols + "t");
+                            break;
+                        default:
+                            break;
+                    }
                 }
                 break;
             default:
@@ -1678,8 +1741,16 @@ public final class TerminalEmulator {
         }
     }
 
+    /**
+     * 清空一行——必须换成新的 Line 对象，不能原地 blank()。
+     *
+     * IL/DL/滚屏都用 arraycopy 搬「引用」，被搬走的行和新清空的行会指向
+     * 同一个 Line 实例；原地清空会把搬上去的内容一起擦掉，之后写入又会
+     * 同时显示在多行（实测：vim 滚轮 tick = DL 3 行，屏幕上内容以 3 行为
+     * 周期重复平铺）。换新对象让行内容真正「移动」。
+     */
     private void blankLine(int row) {
-        lines[row].blank(cols, defaultFg, defaultBg);
+        lines[row] = newLine();
     }
 
     /* -------------------- 擦除与插删 -------------------- */
