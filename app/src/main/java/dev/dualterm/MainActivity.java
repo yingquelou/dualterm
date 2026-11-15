@@ -695,11 +695,20 @@ public class MainActivity extends Activity
         TermSession session = terminal.getSession();
         StringBuilder sb = new StringBuilder();
         if (session != null) {
-            // 容器模式下 chip 已经写了容器名，状态行不重复它
+            // 容器模式下 chip 写的就是「容器 · 名字」，状态行不重复它。
+            // 之前拿整个 title 跟裸容器名 equals，"容器 · v24".equals("v24")
+            // 永远不成立，去重从未生效（实测状态行还是 "容器 · v24 · 96x63…"）。
+            // title 里 chip 没写的尾巴要保留：Docker 的 title 是
+            // 「容器 · v24（Docker）」，状态行补一个「（Docker）」标运行时。
             String title = session.getSpec().title;
-            boolean titleOnChip = MODE_CONTAINER.equals(mode)
-                    && title.equals(Containers.activeName(this));
-            if (!titleOnChip) {
+            String chipTitle = "容器 · " + Containers.activeName(this);
+            if (MODE_CONTAINER.equals(mode) && title.startsWith("容器 · ")
+                    && title.startsWith(chipTitle)) {
+                String tail = title.substring(chipTitle.length()).trim();
+                if (!tail.isEmpty()) {
+                    sb.append(tail).append(" · ");
+                }
+            } else {
                 sb.append(title).append(" · ");
             }
             sb.append(terminal.getGridCols()).append('x').append(terminal.getGridRows());
