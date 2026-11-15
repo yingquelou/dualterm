@@ -69,6 +69,23 @@ DECALN、`ESC % G` 参数字节吞除、DECSTR、DECOM 原点模式、SGR 冒号
 modifyOtherKeys 不当 SGR、制表位（HTS/TBC）、组合字符、DCH 宽字符修复、BCE。
 改仿真器后先跑这个，再去真机看 vim。
 
+**tar/OCI 解包回归**（不需要设备；`TarGzExtractor` 纯 Java，需 android.jar 作编译桩）：
+
+```bash
+javac -encoding UTF-8 -cp $ANDROID_HOME/platforms/android-34/android.jar \
+      -sourcepath app/src/main/java -d /tmp/tt tools/TarTest.java
+java -cp "/tmp/tt:$ANDROID_HOME/platforms/android-34/android.jar" TarTest
+```
+
+覆盖 `..` 穿越拒绝、`.wh.`/opq 白化、pax 与 GNU 长文件名、ustar prefix 拼接、
+硬链接/绝对符号链接实体化退路、目录与文件互相顶替、gzip 自动识别。
+它抓到过一个真实缺陷：Windows 的 TEMP 是 8.3 短名，guard 用 canonical 长名
+重建后与目标路径前缀对不上，删除被误判「根外」而静默失效——opq 白化全部落空。
+
+**镜像导入回归**（同款跑法，`tools/ImportTest.java`）：`detectArch` ELF 架构识别
++ `pickRef` 闸门（恶意 RepoTags 白名单拒绝——P0 注入修复的回归）。
+整包 `importArchive` 依赖 Context 和真 org.json 实现，仍需上真机验证。
+
 **零第三方依赖**：没有 AndroidX、没有 Kotlin、没有 commons-compress。只有 Framework API + 一个 200 行的 C 文件 + 手写 tar.gz 解包器。这样做的目的是让构建链尽可能不炸。
 
 ---

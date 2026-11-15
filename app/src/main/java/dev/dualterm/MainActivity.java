@@ -37,6 +37,7 @@ import dev.dualterm.term.Shells;
 import dev.dualterm.term.TermSession;
 import dev.dualterm.term.TerminalView;
 import dev.dualterm.ui.ConsoleActivity;
+import dev.dualterm.ui.SoftKeyboard;
 
 /**
  * 主界面：两个模式共用一个终端视图。
@@ -96,18 +97,8 @@ public class MainActivity extends Activity
     /** 键行里的「⋯」按钮：面板驻留后要靠它高亮显示开关状态。 */
     private Button keyPanelKey;
 
-    /* -------------------- 自绘软键盘 -------------------- */
-    /** 字母页 / 符号页容器（同一个 kbd 下互斥显示）。 */
-    private LinearLayout kbd;
-    private LinearLayout kbdLetters;
-    private LinearLayout kbdSymbols;
-    /** 两页里所有按键行，横竖屏切换时统一改行高。 */
-    private final java.util.List<LinearLayout> kbdRows = new java.util.ArrayList<>();
-    /** SHIFT 键（两页各一个），按一次亮、打完一个字母自动熄灭。 */
-    private final java.util.List<Button> shiftKeys = new java.util.ArrayList<>();
-    private boolean kbdVisible;
-    private boolean shiftLatch;
-    private boolean symbolPage;
+    /** 自绘软键盘（dev.dualterm.ui.SoftKeyboard）：从本类拆出的构建与键语义。 */
+    private SoftKeyboard softKbd;
 
     /** 会话结束条：和键条互斥，占同一块屏幕位置。 */
     private View exitBar;
@@ -154,7 +145,6 @@ public class MainActivity extends Activity
         btnMenu = findViewById(R.id.btn_menu);
         keyBar = findViewById(R.id.key_bar);
         keyRow = findViewById(R.id.key_row);
-        kbd = findViewById(R.id.kbd);
         keyPanel = findViewById(R.id.key_panel);
         exitBar = findViewById(R.id.exit_bar);
         exitText = findViewById(R.id.exit_text);
@@ -235,17 +225,17 @@ public class MainActivity extends Activity
                     closeKeyPanel();
                     return;
                 }
-                toggleSoftKbd();
+                softKbd.toggle();
             }
 
             @Override
             public void onShowKeypad() {
-                setSoftKbd(true);
+                softKbd.setVisible(true);
             }
 
             @Override
             public void onHideKeypad() {
-                setSoftKbd(false);
+                softKbd.setVisible(false);
             }
         });
         btnMenu.setOnClickListener(new View.OnClickListener() {
@@ -865,7 +855,7 @@ public class MainActivity extends Activity
         btnKeyboard.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                toggleSoftKbd();
+                softKbd.toggle();
             }
         });
         keyRow.addView(btnKeyboard);
@@ -1053,231 +1043,56 @@ public class MainActivity extends Activity
         keyPanelKey.setBackgroundResource(keyPanelOpen ? R.drawable.key_bg_on : R.drawable.key_bg);
     }
 
-    /* -------------------- 自绘软键盘 -------------------- */
+    /* -------------------- 自绘软键盘（构建在 dev.dualterm.ui.SoftKeyboard） -------------------- */
 
-    private static final String K_SHIFT = "\u21e7";   // ⇧
-    private static final String K_SYM = "?123";
-    private static final String K_ABC = "ABC";
-    private static final String K_SPACE = "\u2423";   // ␣
-    private static final String K_BACK = "\u232b";    // ⌫
-    private static final String K_ENTER = "\u23ce";   // ⏎
-    /** 粘贴键：终端里粘贴是高频动作（贴命令、token、diff），藏在 ⋮ 菜单里要两步。 */
-    private static final String K_PASTE = "粘贴";
-
-    private static final String[] KBD_DIGITS = {
-            "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-    };
-
-    private static final String[][] KBD_LETTERS = {
-            // 顶部数字行：真键盘有，终端里也用得多（端口、chmod 755、kill -9、
-            // 行号）。两页都放，切页不影响打数字
-            KBD_DIGITS,
-            {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
-            {"a", "s", "d", "f", "g", "h", "j", "k", "l"},
-            {K_SHIFT, "z", "x", "c", "v", "b", "n", "m", ",", "."},
-            {K_SYM, K_PASTE, K_BACK, K_SPACE, K_ENTER},
-    };
-
-    /**
-     * 符号页只放 shell 里真会用到的那批：管道/重定向/括号/引号/通配符。
-     * 这些符号在系统软键盘上要翻两三页才找得到，这里一屏全在。
-     */
-    private static final String[][] KBD_SYMBOLS = {
-            // 数字行两页一致；第一行补上 }（之前 { 有、} 全键盘找不到，
-            // EOF 重定向写不了）；第三行删掉 , . （字母页已有），换上 ; 和 %
-            KBD_DIGITS,
-            {"|", "&", "<", ">", "(", ")", "[", "]", "{", "}"},
-            {"$", "`", "\\", "\"", "'", "*", "?", "!", "~", "^"},
-            {"=", "+", "-", "_", ":", ";", "/", "@", "#", "%"},
-            {K_ABC, K_PASTE, K_BACK, K_SPACE, K_ENTER},
-    };
-
-    /**
-     * 建自绘键盘：字母页 + 符号页各四行，底下那行是页切换/退格/空格/回车。
-     * 上面的 CTRL/ALT/ESC/方向键工具行保持常驻，和键盘连用。
-     */
     private void buildSoftKeyboard() {
-        if (kbd == null) {
-            return;
-        }
-        kbdLetters = buildKbdPage(KBD_LETTERS);
-        kbdSymbols = buildKbdPage(KBD_SYMBOLS);
-        kbdSymbols.setVisibility(View.GONE);
-        kbd.addView(kbdLetters);
-        kbd.addView(kbdSymbols);
-        applyKbdMetrics(getResources().getConfiguration().orientation
-                == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
-    }
+        softKbd = new SoftKeyboard(new SoftKeyboard.Host() {
+            @Override
+            public TerminalView terminal() {
+                return terminal;
+            }
 
-    private LinearLayout buildKbdPage(String[][] rows) {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
-        page.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        for (String[] spec : rows) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setLayoutParams(new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            kbdRows.add(row);
-            for (final String label : spec) {
-                Button b = makeKeyButton(label);
-                b.setTextSize(K_SPACE.equals(label) ? 15 : 14);
-                float weight = K_SPACE.equals(label) ? 3.0f : 1f;
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), weight);
-                lp.setMargins(dp(2), dp(2), dp(2), 0);
-                b.setLayoutParams(lp);
-                b.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        onKbdKey(label);
-                    }
-                });
-                if (K_SHIFT.equals(label)) {
-                    shiftKeys.add(b);
+            @Override
+            public Button makeKeyButton(String label) {
+                return MainActivity.this.makeKeyButton(label);
+            }
+
+            @Override
+            public int dp(int value) {
+                return MainActivity.this.dp(value);
+            }
+
+            @Override
+            public boolean hardKeyboard() {
+                return hardKeyboard;
+            }
+
+            @Override
+            public boolean sessionEnded() {
+                return sessionEnded;
+            }
+
+            @Override
+            public void paste() {
+                MainActivity.this.paste();
+            }
+
+            @Override
+            public void onSoftKbdVisibilityChanged(boolean visible) {
+                btnKeyboard.setTextColor(visible ? COLOR_ACCENT : COLOR_TEXT);
+                updateChrome();
+                // kbd 高度变了，终端那一份 weight 必须重算：只让 key_bar 重新测量
+                // 会留下「键盘多高、终端还是老高度」的错位（实测最后一行被挤到屏幕外）
+                View flow = (View) keyBar.getParent();
+                if (flow != null) {
+                    flow.requestLayout();
                 }
-                row.addView(b);
+                updateStatus(null);
             }
-            page.addView(row);
-        }
-        return page;
-    }
-
-    /**
-     * 横竖屏、键盘弹收时统一调行高：横屏一行 27dp 已经够点，省下的全给终端。
-     *
-     * 键盘自身高度写死（行数 × 行高），不用 wrap_content：三层嵌套的
-     * wrap_content 在首次布局时会被测成「三行半」，最后一行整行被裁掉
-     * （实测 ⏎ 键边界是 [0,0][0,0]，点了没反应）。写死之后 key_bar 的
-     * wrap_content 也变成确定值，weight 分配才不会错位。
-     */
-    private void applyKbdMetrics(boolean landscape) {
-        int h = dp(landscape ? 27 : 34);
-        int margin = dp(2);
-        for (LinearLayout row : kbdRows) {
-            for (int i = 0; i < row.getChildCount(); i++) {
-                View c = row.getChildAt(i);
-                ViewGroup.LayoutParams lp = c.getLayoutParams();
-                if (lp.height != h) {
-                    lp.height = h;
-                    c.setLayoutParams(lp);
-                }
-            }
-        }
-        ViewGroup.LayoutParams klp = kbd.getLayoutParams();
-        if (klp != null) {
-            // 按实际行数算，不写死：键盘页从 4 行加到 5 行时写死会把底行裁掉
-            int pageRows = kbdLetters == null ? 5 : kbdLetters.getChildCount();
-            int kbdH = pageRows * (h + margin);
-            if (klp.height != kbdH) {
-                klp.height = kbdH;
-                kbd.setLayoutParams(klp);
-            }
-        }
-    }
-
-    private void toggleSoftKbd() {
-        setSoftKbd(!kbdVisible);
-    }
-
-    /**
-     * 自绘键盘显隐。终端尺寸变化会走 onSizeChanged → computeGrid → TIOCSWINSZ，
-     * 所以 vim/htop 会跟着新行数重排，不需要额外通知。
-     */
-    private void setSoftKbd(boolean show) {
-        if (kbd == null || show == kbdVisible) {
-            return;
-        }
-        if (show && (hardKeyboard || sessionEnded)) {
-            return;
-        }
-        kbdVisible = show;
-        if (show) {
-            // 面板不再被键盘顶掉：面板 2 行 + 键盘 4 行 ≈ 6 行，竖屏 67 行、
-            // 横屏 18 行都吃得下，而「Ctrl+方向键」这类操作正需要两者同屏。
-            // 每次都从字母页、无 SHIFT 开始
-            shiftLatch = false;
-            switchKbdPage(false);
-            applyShiftStyle();
-        }
-        kbd.setVisibility(show ? View.VISIBLE : View.GONE);
-        btnKeyboard.setTextColor(show ? COLOR_ACCENT : COLOR_TEXT);
-        updateChrome();
-        // kbd 高度变了，终端那一份 weight 必须重算：只让 key_bar 重新测量
-        // 会留下「键盘多高、终端还是老高度」的错位（实测最后一行被挤到屏幕外）
-        View flow = (View) keyBar.getParent();
-        if (flow != null) {
-            flow.requestLayout();
-        }
-        updateStatus(null);
-    }
-
-    private void switchKbdPage(boolean symbols) {
-        symbolPage = symbols;
-        kbdLetters.setVisibility(symbols ? View.GONE : View.VISIBLE);
-        kbdSymbols.setVisibility(symbols ? View.VISIBLE : View.GONE);
-    }
-
-    private void applyShiftStyle() {
-        for (Button b : shiftKeys) {
-            b.setTextColor(shiftLatch ? 0xFF101014 : COLOR_TEXT);
-            b.setBackgroundResource(shiftLatch ? R.drawable.key_bg_on : R.drawable.key_bg);
-        }
-    }
-
-    /** 一个按键的语义：修饰键/翻页/编辑键走专用动作，普通字符走 PTY。 */
-    private void onKbdKey(String label) {
-        if (K_SHIFT.equals(label)) {
-            shiftLatch = !shiftLatch;
-            applyShiftStyle();
-            return;
-        }
-        if (K_SYM.equals(label)) {
-            switchKbdPage(true);
-            return;
-        }
-        if (K_ABC.equals(label)) {
-            switchKbdPage(false);
-            return;
-        }
-        if (K_SPACE.equals(label)) {
-            terminal.sendRaw(" ");
-            return;
-        }
-        if (K_BACK.equals(label)) {
-            terminal.sendRaw("\u007f");
-            return;
-        }
-        if (K_ENTER.equals(label)) {
-            terminal.sendRaw("\r");
-            return;
-        }
-        if (K_PASTE.equals(label)) {
-            paste();
-            return;
-        }
-        if (label.length() != 1) {
-            return;
-        }
-        char c = label.charAt(0);
-        if (shiftLatch && Character.isLetter(c)) {
-            c = Character.toUpperCase(c);
-        }
-        String out;
-        if (terminal.isCtrlDown()) {
-            // Ctrl+a..z → 0x01..0x1a；Ctrl+[ / \ / ] 也吃同一个公式（0x1b/0x1c/0x1d）
-            out = String.valueOf((char) (Character.toLowerCase(c) & 0x1f));
-        } else if (terminal.isAltDown()) {
-            out = "\u001b" + c;
-        } else {
-            out = String.valueOf(c);
-        }
-        // sendRaw 内部会清掉 CTRL/ALT 锁定：修饰键是一次性的，不会粘住
-        terminal.sendRaw(out);
-        if (shiftLatch) {
-            shiftLatch = false;
-            applyShiftStyle();
-        }
+        });
+        softKbd.build((ViewGroup) findViewById(R.id.kbd),
+                getResources().getConfiguration().orientation
+                        == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
     }
 
     /* -------------------- 模式选择 -------------------- */
@@ -1353,7 +1168,7 @@ public class MainActivity extends Activity
     private void updateChrome() {
         boolean landscape = getResources().getConfiguration().orientation
                 == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
-        boolean tight = (kbdVisible || imeVisible) && landscape;
+        boolean tight = (kbdShowing() || imeVisible) && landscape;
         // 自绘键盘没那么高，横屏也留得住顶栏；只有系统 IME（对话框里的输入框）
         // 才会把窗口压到 100dp，那时顶栏让位
         topBar.setVisibility((fullscreen || (imeVisible && landscape))
@@ -1367,10 +1182,15 @@ public class MainActivity extends Activity
             btnFullscreen.setVisibility(auxVis);
         }
         setKeyRowCompact(tight);
-        if (kbdVisible && (hardKeyboard || sessionEnded)) {
-            setSoftKbd(false);
+        if (kbdShowing() && (hardKeyboard || sessionEnded)) {
+            softKbd.setVisible(false);
         }
-        applyKbdMetrics(landscape);
+        softKbd.applyMetrics(landscape);
+    }
+
+    /** 键盘还没构建时（onCreate 前段）updateChrome 也会跑，统一从这里取。 */
+    private boolean kbdShowing() {
+        return softKbd != null && softKbd.isVisible();
     }
 
     /** 横屏键盘弹出时把键条压矮一档（40dp→28dp），每像素都要还给终端。 */
@@ -1443,7 +1263,7 @@ public class MainActivity extends Activity
                                 // 键盘和面板同时开着，终端只剩两行
                                 closeKeyPanel();
                                 // 对话框里的输入框把系统键盘叫出来了，自绘键盘让位
-                                setSoftKbd(false);
+                                softKbd.setVisible(false);
                             }
                         }
                     }
@@ -2537,8 +2357,8 @@ public class MainActivity extends Activity
             closeKeyPanel();
             return;
         }
-        if (kbdVisible) {
-            setSoftKbd(false);
+        if (kbdShowing()) {
+            softKbd.setVisible(false);
             return;
         }
         if (imeVisible) {

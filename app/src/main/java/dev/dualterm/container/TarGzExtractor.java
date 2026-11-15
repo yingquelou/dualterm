@@ -157,7 +157,7 @@ public final class TarGzExtractor {
                 }
 
                 if (whiteouts && isWhiteout(clean)) {
-                    applyWhiteout(destDir, destRoot, clean);
+                    applyWhiteout(destDir, clean);
                     skipEntry(in, size);
                     continue;
                 }
@@ -170,12 +170,12 @@ public final class TarGzExtractor {
                 }
 
                 if (type == '5') {
-                    ensureDir(out, destRoot);
+                    ensureDir(out, destDir);
                     skipEntry(in, size);
                 } else if (type == '0' || type == 0 || type == '7') {
-                    writeFile(in, out, size, copyBuf, (mode & 0111) != 0, destRoot);
+                    writeFile(in, out, size, copyBuf, (mode & 0111) != 0, destDir);
                 } else if (type == '2') {
-                    makeSymlink(destDir, destRoot, out, linkName);
+                    makeSymlink(destDir, out, linkName);
                     skipEntry(in, size);
                 } else if (type == '1') {
                     makeHardLink(destDir, out, linkName);
@@ -204,7 +204,7 @@ public final class TarGzExtractor {
         return base.startsWith(".wh.");
     }
 
-    private static void applyWhiteout(File destDir, String destRoot, String clean) {
+    private static void applyWhiteout(File destDir, String clean) {
         int slash = clean.lastIndexOf('/');
         String parent = slash < 0 ? "" : clean.substring(0, slash);
         String base = slash < 0 ? clean : clean.substring(slash + 1);
@@ -214,7 +214,7 @@ public final class TarGzExtractor {
             File[] kids = dir.listFiles();
             if (kids != null) {
                 for (File kid : kids) {
-                    deleteTree(kid, destRoot);
+                    deleteTree(kid, destDir);
                 }
             }
             return;
@@ -223,20 +223,20 @@ public final class TarGzExtractor {
         if (target.isEmpty()) {
             return;
         }
-        deleteTree(new File(dir, target), destRoot);
+        deleteTree(new File(dir, target), destDir);
     }
 
     /* -------------------- 条目处理 -------------------- */
 
     private static void writeFile(InputStream in, File out, long size, byte[] buf,
-                                  boolean executable, String destRoot) throws IOException {
+                                  boolean executable, File destDir) throws IOException {
         File parent = out.getParentFile();
         if (parent != null) {
-            ensureDir(parent, destRoot);
+            ensureDir(parent, destDir);
         }
         if (out.isDirectory()) {
             // 上层是目录、这层是文件：目录让位
-            deleteTree(out, destRoot);
+            deleteTree(out, destDir);
         }
         try (FileOutputStream fos = new FileOutputStream(out)) {
             long remaining = size;
@@ -257,31 +257,31 @@ public final class TarGzExtractor {
     }
 
     /** mkdirs，但碰到同名文件时先把文件删掉（镜像层里目录替换文件是合法的）。 */
-    private static void ensureDir(File dir, String destRoot) throws IOException {
+    private static void ensureDir(File dir, File destDir) throws IOException {
         if (dir.isDirectory()) {
             return;
         }
         if (dir.exists()) {
-            deleteTree(dir, destRoot);
+            deleteTree(dir, destDir);
         }
         File parent = dir.getParentFile();
         if (parent != null && !parent.exists()) {
-            ensureDir(parent, destRoot);
+            ensureDir(parent, destDir);
         }
         if (!dir.mkdir() && !dir.isDirectory()) {
             throw new IOException("无法创建目录：" + dir);
         }
     }
 
-    private static void makeSymlink(File destDir, String destRoot, File link, String target)
+    private static void makeSymlink(File destDir, File link, String target)
             throws IOException {
         File parent = link.getParentFile();
         if (parent != null) {
-            ensureDir(parent, destRoot);
+            ensureDir(parent, destDir);
         }
         if (link.exists() || Files.isSymbolicLink(link.toPath())) {
             // 可能是上层留下的文件/目录，直接清掉再建
-            deleteTree(link, destRoot);
+            deleteTree(link, destDir);
         }
         try {
             Path path = link.toPath();
@@ -292,29 +292,28 @@ public final class TarGzExtractor {
         }
         // 退路：把链接目标实体化复制过来。/bin/sh -> busybox 这类关键链接必须可用，
         // 否则容器里连 shell 都起不来（busybox 靠 argv[0] 分派，复制过去照样能跑）。
-        File resolved = resolveLinkTarget(destDir, destRoot, link, target);
+        File resolved = resolveLinkTarget(destDir, link, target);
         if (resolved != null && resolved.isFile()) {
             copyFile(resolved, link);
             //noinspection ResultOfMethodCallIgnored
             link.setExecutable(resolved.canExecute(), true);
         } else if (resolved != null && resolved.isDirectory()) {
-            ensureDir(link, destRoot);
+            ensureDir(link, destDir);
         } else {
-            deleteTree(link, destRoot);
+            deleteTree(link, destDir);
             //noinspection ResultOfMethodCallIgnored
             link.createNewFile();
         }
     }
 
     /** 解析符号链接目标（支持绝对路径与相对路径，最多跟随 5 跳）。 */
-    private static File resolveLinkTarget(File destDir, String destRoot, File link, String target) {
-        File base = new File(destRoot);
+    private static File resolveLinkTarget(File destDir, File link, String target) {
         File current;
         if (target.startsWith("/")) {
-            current = new File(destRoot, target.substring(1));
+            current = new File(destDir, target.substring(1));
         } else {
             File parent = link.getParentFile();
-            current = new File(parent == null ? base : parent, target);
+            current = new File(parent == null ? destDir : parent, target);
         }
         for (int hop = 0; hop < 5; hop++) {
             try {
@@ -441,9 +440,14 @@ public final class TarGzExtractor {
      * 这里原来是 getCanonicalPath 版本，rootfs 里 bin/sh -> /bin/busybox 这类
      * 绝对链接会被解析出根外路径而提前返回，链接删不掉、父目录也删不掉，
      * 白化（whiteout）语义就此失效——收敛到唯一实现。
+     *
+     * guard 传 destDir 本体而不是 new File(destDir.getCanonicalPath())：
+     * Windows 的 TEMP 常是 8.3 短名（YINGQU~1），canonical 展开成长名后
+     * 与 File.getAbsoluteFile 产生的短名路径前缀对不上，guard 会误判
+     * 「根外」而放弃删除——opq 白化、目录顶替全部静默失效。
      */
-    private static void deleteTree(File target, String destRoot) {
-        Containers.deleteRecursive(target, new File(destRoot));
+    private static void deleteTree(File target, File destDir) {
+        Containers.deleteRecursive(target, destDir);
     }
 
     private static boolean isZeroBlock(byte[] header) {
