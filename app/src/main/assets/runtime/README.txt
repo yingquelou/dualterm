@@ -1,22 +1,25 @@
-容器模式的运行时资源放在这个目录，文件名必须严格匹配：
+容器模式的运行时资源。这些文件由构建脚本生成，不进 git（见 .gitignore）。
 
-  runtime/
-    proot-arm64-v8a          ← PRoot 可执行文件（按 ABI 命名）
-    proot-armeabi-v7a
-    proot-x86_64
-    rootfs-arm64-v8a.tar.gz  ← 容器根文件系统（Alpine / Debian minirootfs 均可）
-    rootfs-armeabi-v7a.tar.gz
-    rootfs-x86_64.tar.gz
-    lib/                     ← 可选：proot 依赖的 .so（如 libtalloc.so）
+assets/runtime/
+  rootfs-arm64-v8a.pack       ← Alpine minirootfs（tar.gz 流，按 ABI 命名）
+  rootfs-armeabi-v7a.pack
+  rootfs-x86_64.pack
 
-不想手动准备的话，在工程根目录跑：
+proot 本体和依赖不在 assets，而是作为 jniLibs 打进 APK 的 lib/<abi>/：
+  libproot.so          proot 可执行文件（装到 nativeLibraryDir，那里允许 exec）
+  libproot_loader.so   静态 ELF 加载器，proot 靠它 mmap + 跳转
+  libtalloc2.so        proot 依赖
+  libandroid-shmem.so  proot 依赖
+之所以放 jniLibs：Android 10+ 对 targetSdk≥29 的应用私有数据目录强制
+noexec，exec() 会被 SELinux 拒绝；native lib 目录是唯一允许执行的地方。
 
-  powershell -ExecutionPolicy Bypass -File scripts\fetch-runtime.ps1
+生成脚本（工程根目录，构建前跑一次）：
+  bash scripts/fetch-runtime.sh <abi>                      ← Linux / macOS / Git Bash
+  powershell -ExecutionPolicy Bypass -File scripts\fetch-runtime.ps1 [-Abi <abi>]
 
-App 首次进入容器模式时会把这些文件拷到
-  /data/data/dev.dualterm/files/container/
-然后 chmod +x（assets 里的文件本身没有执行权限，必须落盘）。
+App 首次进入容器模式时把对应 .pack 解包成镜像 rootfs，写好 DNS 与
+绑定目录，之后由 marker 文件（.rootfs-<abi>.ok）走快路径。
 
-没有放这些文件时：
+缺文件时的表现：
   - 本地 Shell 模式完全正常；
-  - 容器模式会弹出明确提示，告诉你缺哪个文件。
+  - 容器模式会弹出明确提示，说明缺哪个文件、如何生成。

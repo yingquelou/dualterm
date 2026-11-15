@@ -59,6 +59,10 @@ public class MainActivity extends Activity
 
     private static final int REQ_IMPORT_TAR = 3301;
 
+    /** 菜单「帮助」指向的在线文档；改文档路径时同步这里。 */
+    private static final String HELP_URL =
+            "https://github.com/yingquelou/dualterm/blob/master/docs/usage.md";
+
     private SharedPreferences prefs;
 
     /**
@@ -117,6 +121,14 @@ public class MainActivity extends Activity
     private boolean uiReady;
 
     private final Map<String, TermSession> sessions = new HashMap<>();
+
+    /**
+     * MODE_CONTAINER 会话所属的容器名，随会话一起记录。
+     * 退出回调清 running 标记时用这个名字，而不是当下的 activeName()——
+     * 旧容器的退出回调若在切到新容器之后才跑到，拿 live activeName()
+     * 会把新容器误标成「未运行」。
+     */
+    private String containerSessionName;
     private String mode = MODE_LOCAL;
 
     /** 调试入口：启动后自动敲入的一条命令（正常使用为 null）。 */
@@ -487,6 +499,7 @@ public class MainActivity extends Activity
                             hideOverlay();
                             fallbackTried = false;
                             Containers.setActive(MainActivity.this, containerName);
+                            containerSessionName = containerName;
                             startSession(MODE_CONTAINER, spec);
                             Containers.setRunning(containerName, true);
                             updateStatus(null);
@@ -559,6 +572,9 @@ public class MainActivity extends Activity
     /** 掐掉某个模式的会话并收回保活。会话表的所有移除都该走这里。 */
     private void dropSession(String key) {
         TermSession existing = sessions.remove(key);
+        if (MODE_CONTAINER.equals(key)) {
+            containerSessionName = null;
+        }
         if (existing != null) {
             existing.stop();
         }
@@ -684,10 +700,14 @@ public class MainActivity extends Activity
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                // 会话真的退出了，容器就该从 running 里摘掉
+                // 会话真的退出了，容器就该从 running 里摘掉；
+                // 用会话自带的容器名，避免与 setActive 的竞态误清新容器
                 if (session == sessions.get(MODE_CONTAINER)
                         && !session.isRunning()) {
-                    Containers.setRunning(Containers.activeName(MainActivity.this), false);
+                    String name = containerSessionName;
+                    if (name != null) {
+                        Containers.setRunning(name, false);
+                    }
                 }
                 if (terminal.getSession() == session) {
                     lastExitCode = code;
@@ -1312,6 +1332,7 @@ public class MainActivity extends Activity
         menu.getMenu().add(0, 12, 10, "绑定目录（" + Volumes.list(this).size() + "）");
         menu.getMenu().add(0, 13, 11, "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"));
         menu.getMenu().add(0, 11, 12, fullscreen ? "退出全屏" : "全屏模式");
+        menu.getMenu().add(0, 19, 13, "帮助（使用说明）…");
         menu.getMenu().add(0, 10, 13, "关于");
         // 返回键只退到后台（会话不丢），真正结束会话放在这里
         menu.getMenu().add(0, 17, 14, "退出应用（结束会话）");
@@ -1390,6 +1411,9 @@ public class MainActivity extends Activity
                 return true;
             case 17:
                 confirmQuit();
+                return true;
+            case 19:
+                openUrl(HELP_URL);
                 return true;
             default:
                 return false;
@@ -1847,7 +1871,10 @@ public class MainActivity extends Activity
                         } else if ("停止".equals(action)) {
                             Containers.Item it = Containers.find(MainActivity.this, item.name);
                             if (it != null && it.isRunning()) {
-                                dropSession(MODE_CONTAINER);
+                                // 会话只属于活动容器；停非活动容器时不能误杀活动会话
+                                if (item.name.equals(Containers.activeName(MainActivity.this))) {
+                                    dropSession(MODE_CONTAINER);
+                                }
                                 Containers.setRunning(item.name, false);
                                 updateStatus("已停止 " + item.name);
                             }
@@ -1874,8 +1901,11 @@ public class MainActivity extends Activity
                 .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
-                        dropSession(MODE_CONTAINER);
                         boolean wasActive = item.name.equals(Containers.activeName(MainActivity.this));
+                        if (wasActive) {
+                            // 只有删的是活动容器才停会话；删别的容器不该误杀正在跑的终端
+                            dropSession(MODE_CONTAINER);
+                        }
                         if (!Containers.remove(MainActivity.this, item.name)) {
                             toast("删除失败：" + item.name + " 的目录还在被占用");
                             return;
@@ -2213,7 +2243,7 @@ public class MainActivity extends Activity
                                     + "格式：" + result.format + "\n"
                                     + "层数：" + result.layers + "\n\n"
                                     + "下一步：菜单 → 容器管理 → 新建容器；"
-                                    + "或在容器终端里 docker run --name c1 " + result.ref;
+                                    + "或控制台里 docker run --name c1 " + result.ref;
                             if (result.note != null) {
                                 message = result.note + "\n\n" + message;
                             }
@@ -2333,8 +2363,28 @@ public class MainActivity extends Activity
                 .show();
     }
 
+    /**
+     * 用浏览器打开文档。没有可用浏览器时（精简 ROM、无痕设备）退化为复制链接，
+     * 至少让用户能把地址带走，而不是点了一点反应都没有。
+     */
+    private void openUrl(String url) {
+        try {
+            android.content.Intent intent = new android.content.Intent(
+                    android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            startActivity(intent);
+        } catch (android.content.ActivityNotFoundException e) {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(ClipData.newPlainText("url", url));
+            }
+            toast("没有可用浏览器，链接已复制：" + url);
+        } catch (Exception e) {
+            toast("打开失败：" + describe(e));
+        }
+    }
+
     private void showAbout() {
-        String message = "双态终端 DualTerm 3.5\n\n"
+        String message = "双态终端 DualTerm " + versionLabel() + "\n\n"
                 + "模式 A｜本地：直接 fork 应用沙箱内的 /system/bin/sh，"
                 + "可选 su 提权。共享 Android 内核与文件系统。\n\n"
                 + "模式 B｜容器：PRoot 用户态重定向，每个容器自带独立 rootfs（Alpine），"
@@ -2353,8 +2403,23 @@ public class MainActivity extends Activity
         new AlertDialog.Builder(this)
                 .setTitle("关于")
                 .setMessage(message)
+                .setNeutralButton("使用说明", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        openUrl(HELP_URL);
+                    }
+                })
                 .setPositiveButton("好的", null)
                 .show();
+    }
+
+    /** 版本名取自身装包信息，避免关于对话框里的版本号与构建脱节。 */
+    private String versionLabel() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     /* -------------------- 生命周期 -------------------- */

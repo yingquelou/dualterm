@@ -88,7 +88,8 @@ public final class ContainerBootstrap {
         }
         // nativeLibraryDir 里没有 libproot.so：说明这个 ABI 的运行时没打进 APK
         throw new IOException("缺少本机架构（" + abi() + "）的 proot 运行时"
-                + "\n请在工程根目录执行：powershell -ExecutionPolicy Bypass -File scripts\\fetch-runtime.ps1 -Abi " + abi()
+                + "\n请在工程根目录执行：bash scripts/fetch-runtime.sh " + abi()
+                + "（或 powershell -File scripts\\fetch-runtime.ps1 -Abi " + abi() + "）"
                 + "\n然后重新构建安装（本地模式不受影响）");
     }
 
@@ -109,7 +110,8 @@ public final class ContainerBootstrap {
         String asset = "runtime/rootfs-" + abi() + ".pack";
         if (!assetExists(ctx, asset)) {
             throw new IOException("assets 中缺少 " + asset
-                    + "\n请先在工程根目录执行：powershell -ExecutionPolicy Bypass -File scripts\\fetch-runtime.ps1");
+                    + "\n请先在工程根目录执行：bash scripts/fetch-runtime.sh " + abi()
+                    + "（或 powershell -File scripts\\fetch-runtime.ps1 -Abi " + abi() + "）");
         }
 
         final ContainerRuntime.Progress sink = progress;

@@ -6,7 +6,7 @@ import java.nio.charset.StandardCharsets;
  * 一个终端会话 = 一个 PTY + 一个子进程 + 一块屏幕模型。
  *
  * 生命周期：start() 建立 PTY 并 fork 子进程；读线程把 PTY 输出喂给屏幕模型；
- * stop() 只需给子进程发信号，读线程在 read 返回 <=0 后自己收尾。
+ * stop() 给整个进程组发信号（不留孤儿），读线程在 read 返回 <=0 后自己收尾。
  */
 public final class TermSession {
 
@@ -175,15 +175,80 @@ public final class TermSession {
         }
     }
 
+    /**
+     * 结束会话。先给进程组发 SIGHUP（子进程是 setsid 出来的会话首，pgid == pid），
+     * 再在后台线程把 /proc 里同会话（sid == pid）的成员全部找出来补 HUP、
+     * 停 150ms 后还没退的逐个 SIGKILL——交互式 shell 开作业控制后前台/后台任务
+     * 各有独立 pgid，单靠进程组信号杀不到（比如 `sleep 300 &` 会成孤儿）。
+     * 不在这里关 master fd：成员死透后 slave 端关闭，read 自然返回 EIO/0，
+     * 读线程自己收尾。
+     */
     public void stop() {
         running = false;
-        int p = pid;
-        if (p > 0) {
-            NativePty.sendSignal(p, SIG_HUP);
+        final int p = pid;
+        if (p <= 0) {
+            return;
         }
-        if (p > 0) {
-            NativePty.sendSignal(p, SIG_KILL);
+        NativePty.sendSignal(-p, SIG_HUP);
+        Thread killer = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                for (int m : sessionMembers(p)) {
+                    NativePty.sendSignal(m, SIG_HUP);
+                }
+                try {
+                    Thread.sleep(150);
+                } catch (InterruptedException ignored) {
+                }
+                for (int m : sessionMembers(p)) {
+                    NativePty.sendSignal(m, SIG_KILL);
+                }
+                NativePty.sendSignal(-p, SIG_KILL);
+            }
+        }, "pty-stop");
+        killer.setDaemon(true);
+        killer.start();
+    }
+
+    /**
+     * /proc 扫描：控制终端会话号等于 sid 的所有进程（含 sid 自己）。
+     * pty 子进程与 App 同 uid，/proc/&lt;pid&gt;/stat 可读；其他应用的进程读不到，
+     * 解析失败就跳过。
+     */
+    private static int[] sessionMembers(int sid) {
+        java.util.ArrayList<Integer> found = new java.util.ArrayList<>();
+        java.io.File[] procs = new java.io.File("/proc").listFiles();
+        if (procs != null) {
+            for (java.io.File f : procs) {
+                int p;
+                try {
+                    p = Integer.parseInt(f.getName());
+                } catch (NumberFormatException e) {
+                    continue;
+                }
+                try {
+                    byte[] raw = java.nio.file.Files.readAllBytes(
+                            f.toPath().resolve("stat"));
+                    String s = new String(raw, StandardCharsets.US_ASCII);
+                    int r = s.lastIndexOf(')');
+                    if (r < 0) {
+                        continue;
+                    }
+                    // stat 去掉 "(comm)" 后依次是 state ppid pgrp session …
+                    String[] tok = s.substring(r + 2).split(" ");
+                    if (tok.length > 3 && Integer.parseInt(tok[3]) == sid) {
+                        found.add(p);
+                    }
+                } catch (Exception ignored) {
+                    // 进程刚好退出或不可读，跳过
+                }
+            }
         }
+        int[] out = new int[found.size()];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = found.get(i);
+        }
+        return out;
     }
 
     private void notifyExit(int status) {

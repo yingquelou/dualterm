@@ -175,6 +175,7 @@ public final class DockerCli {
         String image = null;
         List<String> cmd = new ArrayList<>();
         List<String> portSpecs = new ArrayList<>();
+        List<String> ignoredFlags = new ArrayList<>();
         for (int i = 0; i < args.length; i++) {
             String a = args[i];
             if (a.startsWith("--name=")) {
@@ -198,7 +199,8 @@ public final class DockerCli {
             } else if (a.startsWith("-p") && a.length() > 2) {
                 portSpecs.add(a.substring(2));
             } else if (a.startsWith("-")) {
-                // -it / -d / --rm / -e 等：PRoot 后端无对应概念，忽略
+                // -it / -d / --rm / -e / -w 等：本后端无对应概念，忽略但明确告知
+                ignoredFlags.add(a);
             } else if (image == null) {
                 image = a;
             } else {
@@ -243,6 +245,10 @@ public final class DockerCli {
         if (!cmd.isEmpty()) {
             sb.append("提示: 本后端不执行一次性命令，进入容器后手动运行：")
                     .append(String.join(" ", cmd)).append('\n');
+        }
+        if (!ignoredFlags.isEmpty()) {
+            sb.append("提示: 这些参数本后端不支持，已忽略：")
+                    .append(String.join(" ", ignoredFlags)).append('\n');
         }
         sb.append("进入容器：容器管理 → 启动并切换（控制台只管增删，不接管终端）\n");
         return sb.toString();
@@ -300,8 +306,8 @@ public final class DockerCli {
                 sb.append("docker: 没有这个容器：").append(name).append('\n');
                 continue;
             }
-            // 这条命令是从容器里的 shim 发出来的，删掉自己所在的容器等于把脚下的地板拆了：
-            // 会话当场 Hangup，连报错都回不去（还会留下半个目录）。直接拒绝。
+            // 删除当前终端所在的容器等于把脚下的地板拆了：会话当场 Hangup，
+            // 连报错都回不去（还会留下半个目录）。直接拒绝。
             if (name.equals(Containers.activeName(ctx))) {
                 sb.append("docker: 不能删除当前终端所在的容器 ").append(name)
                         .append("（先在 容器管理 → 启动并切换 到别的容器）\n");
@@ -507,7 +513,7 @@ public final class DockerCli {
                 + "容器\n"
                 + "  ps [-a]                  列出容器（-a 含已停止）\n"
                 + "  run [--name N] [-v h:g] [-p 端口] IMAGE\n"
-                + "                           用镜像创建容器并切换过去\n"
+                + "                           用镜像创建容器（进入：容器管理 → 启动并切换）\n"
                 + "  rm NAME                  删除容器（不动镜像）\n"
                 + "  start / stop NAME        只给提示：启停在 容器管理 里做\n"
                 + "\n"

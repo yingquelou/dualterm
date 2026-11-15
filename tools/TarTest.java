@@ -205,8 +205,11 @@ public class TarTest {
         b.link("bin/sh", "/bin/busybox", '2');
         extract(b, dest, false);
         File sh = new File(dest, "bin/sh");
-        boolean ok = sh.exists() && (Files.isSymbolicLink(sh.toPath())
-                || Arrays.equals(readBytes(dest, "bin/sh"), "BUSYBOX2".getBytes("UTF-8")));
+        // 建链成功时落的是「悬空绝对链接」——/bin/busybox 在解包宿主上不存在，
+        // File.exists() 跟链返回 false，这是预期形态（真机上 proot 在 rootfs 内解析）。
+        // 判定用 NOFOLLOW：要么是链接本身，要么是实体化退路（内容正确）。
+        boolean ok = Files.isSymbolicLink(sh.toPath())
+                || Arrays.equals(readBytes(dest, "bin/sh"), "BUSYBOX2".getBytes("UTF-8"));
         check("绝对符号链接：建链或实体化退路", ok);
     }
 

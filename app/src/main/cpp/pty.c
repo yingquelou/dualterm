@@ -271,7 +271,9 @@ Java_dev_dualterm_term_NativePty_setWindowSize(JNIEnv *env, jclass clazz, jint f
 
 JNIEXPORT jint JNICALL
 Java_dev_dualterm_term_NativePty_sendSignal(JNIEnv *env, jclass clazz, jint pid, jint sig) {
-    if (pid <= 0) {
+    /* pid < 0 表示信号发给整个进程组（kill 的标准语义）；子进程经 setsid
+     * 成为会话首进程，pgid == pid，传 -pid 即可连 shell 的子进程一起收掉。 */
+    if (pid == 0) {
         return -EINVAL;
     }
     if (kill((pid_t) pid, sig) < 0) {

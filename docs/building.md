@@ -1,0 +1,98 @@
+# 构建、测试与发布
+
+## 环境
+
+JDK 17、Android SDK（compileSdk 34）、NDK 26.1.10909125、CMake 3.22.1。AGP 与应用配置见 `app/build.gradle`。
+
+## 构建
+
+```bash
+# 1. 打开工程
+#    Android Studio → Open → dualterm/（首次 Sync 会提示安装 NDK 与 CMake，同意即可）
+
+# 2. 准备容器运行时（只影响容器模式；不跑也能编译，本地模式照常可用）
+powershell -ExecutionPolicy Bypass -File scripts\fetch-runtime.ps1     # Windows
+bash scripts/fetch-runtime.sh                                          # Linux / macOS / Git Bash
+#    → proot / loader / 依赖库 落进 app/src/main/jniLibs/<abi>/
+#    → Alpine minirootfs 落进 app/src/main/assets/runtime/rootfs-<abi>.pack
+
+# 3. 出包（仓库自带 wrapper，Gradle 8.7）
+./gradlew assembleDebug
+#    产物：app/build/outputs/apk/debug/app-debug.apk
+```
+
+运行时脚本默认准备单一 ABI（脚本参数可指定 `arm64-v8a` / `armeabi-v7a` / `x86_64`），发布流水线会依次准备三个。
+
+wrapper 首次运行会从 `services.gradle.org` 下载 Gradle 8.7（约 100MB）；离线环境可自备同版本分发，或直接用本机 Gradle：
+
+```bash
+gradle assembleDebug           # 等价，跳过 wrapper 下载
+```
+
+> 命令行构建需要 `ANDROID_HOME`（或 `local.properties` 里的 `sdk.dir`）与 `JAVA_HOME` 指向 JDK 17。
+
+## 桌面回归测试
+
+五套测试都不需要设备，用桌面 JVM 直接跑。除 EmuTest 外，其余用 `android.jar` 作编译桩（只为类加载，不调用桩方法）。
+
+**终端仿真器**（纯 Java，无依赖）：
+
+```bash
+javac -encoding UTF-8 -d /tmp/etest \
+      app/src/main/java/dev/dualterm/term/TerminalEmulator.java tools/EmuTest.java
+java -cp /tmp/etest EmuTest      # 全部通过时打印 ALL PASS
+```
+
+覆盖 DEC 画线字符集、延迟换行、DECAWM、CJK 占位、DECSCUSR、鼠标序列、焦点上报、备用屏 scrollback 隔离、SO/SI、CPR、resize（顶裁/底补/scrollback 保留/宽字符跨界）、DECALN、`ESC % G` 参数字节吞除、DECSTR、DECOM 原点模式、SGR 冒号真彩、modifyOtherKeys 不当 SGR、制表位（HTS/TBC）、组合字符、DCH 宽字符修复、BCE。修改仿真器后先跑这一套，再上真机看 vim。
+
+**tar/OCI 解包**（`tools/TarTest.java`）：
+
+```bash
+javac -encoding UTF-8 -cp $ANDROID_HOME/platforms/android-34/android.jar \
+      -sourcepath app/src/main/java -d /tmp/tt tools/TarTest.java
+java -cp "/tmp/tt:$ANDROID_HOME/platforms/android-34/android.jar" TarTest
+```
+
+覆盖 `..` 穿越拒绝、`.wh.`/opq 白化、pax 与 GNU 长文件名、ustar prefix 拼接、硬链接与绝对符号链接实体化退路、目录与文件互相顶替、gzip 自动识别。
+
+**镜像导入**（`tools/ImportTest.java`，同款跑法）：`detectArch` 的 ELF 架构识别，`pickRef` 的镜像名闸门（恶意 RepoTags 白名单拒绝）。整包 `importArchive` 依赖 Context 与真 `org.json` 实现，仍需真机验证。
+
+**注入链**（`tools/SecTest.java`，同款跑法）：`shQuote` 转义还原、`checkSafeName`、恶意 RepoTags 拒绝、`dockerVolumeArg`、`su -c` 拼装层拦截。
+
+**端口声明**（`tools/PortsTest.java`，同款跑法）：`-p` 写法解析（同端口直通、重映射识别、udp / 范围 / IPv6 / 越界拒绝）与提示文案。
+
+## 发布
+
+`.github/workflows/release.yml` 负责发版。推送 `v*` tag 即出包并创建 Release：
+
+```bash
+git tag v3.6.0
+git push origin v3.6.0
+```
+
+也可在 Actions 页面手动 `Run workflow` 并填入 tag；勾选 `dry_run` 时只构建并上传 artifact，不创建 Release，用于验证构建链。
+
+流水线四件事：
+
+1. 用 `scripts/fetch-runtime.sh` 拉三个 ABI 的 proot 与 Alpine rootfs
+   （运行时二进制不入库，见 `.gitignore`；不拉就会产出「能安装、但容器模式一进就报缺运行时」的包）
+2. 跑五套桌面回归：EmuTest / SecTest / TarTest / ImportTest / PortsTest
+3. `assembleRelease`，产物重命名为 `dualterm-<版本>.apk` 并附 `SHA256SUMS`
+4. 校验 APK 内三个 ABI 的 `libproot.so` 与 arm64 的 rootfs 都在，缺失即失败
+
+Release 说明由流水线按 tag 区间生成（`上一个 tag..本次 tag` 的提交列表），不使用 `--generate-notes`：后者在没有上一个 Release 时只输出一行 Full Changelog，首个发布会等于没有变更说明。同一 tag 重跑时会补传产物并刷新说明，不会产生第二个 Release。
+
+**版本号**：tag `v3.6.0` → `versionName 3.6.0`、`versionCode 30600`（major×10000 + minor×100 + patch，单调递增，可覆盖升级）。
+
+**签名**：仓库内的 `keystore/dualterm-test.jks` 是**测试签名**——等同 debug key，口令即 `dualterm`，公开可查，只为让 Release 包开箱能装、能连续覆盖升级，**不构成任何身份保证**。正式分发请在仓库 Secrets 中配置下列四项，流水线会自动改用：
+
+| Secret | 内容 |
+|---|---|
+| `KEYSTORE_BASE64` | `base64 -w0 your.jks` 的输出 |
+| `KEYSTORE_PASSWORD` | 密钥库口令 |
+| `KEY_ALIAS` | 别名 |
+| `KEY_PASSWORD` | 别名口令 |
+
+本地出签名包走同一条路：`./gradlew assembleRelease`（未设置环境变量时使用测试签名），环境变量 `DT_KEYSTORE` / `DT_STORE_PASSWORD` / `DT_KEY_ALIAS` / `DT_KEY_PASSWORD` 可覆盖。
+
+**升级安装**：覆盖安装要求与已装版本同签名。debug 包与本工程 Release 包签名不同，互装会报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，需先卸载（应用内的容器与设置会一并清空）。

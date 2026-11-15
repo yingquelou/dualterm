@@ -31,7 +31,6 @@ import dev.dualterm.util.Fs;
  *     images/alpine-3.20/rootfs/     ← 镜像（只读模板，解包自 assets 或 pull 下载）
  *     containers/default/rootfs/     ← 容器（镜像的一份可写副本）
  *     containers/default/home/       ← 挂到容器内 /root
- *     cli/                           ← 和容器内 docker shim 通信的信箱
  *
  * 语义对齐 docker：
  *   image   是模板，容器从镜像"物化"出一份可写 rootfs，互不影响；
@@ -1025,10 +1024,12 @@ public final class Containers {
         }
     }
 
-    private static String sanitize(String name) {
+    /** 容器名规则：字母/数字开头，只含字母数字._-，最长 32。不合法直接拒绝，不做静默改名。 */
+    private static String sanitize(String name) throws IOException {
         String s = name == null ? "" : name.trim();
         if (!s.matches("[a-zA-Z0-9][a-zA-Z0-9_.-]{0,31}")) {
-            return DEFAULT_CONTAINER;
+            throw new IOException("容器名不合法：" + s
+                    + "（要求：字母或数字开头，只含字母/数字/._-，不超过 32 字符）");
         }
         return s;
     }
