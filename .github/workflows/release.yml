@@ -1,0 +1,160 @@
+name: Release
+
+# 推 v* tag 触发正式发布；也可以在 Actions 页面手动跑，勾 dry_run 只出 artifact 不发 Release。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '版本标签（如 v3.5.0）'
+        required: true
+      dry_run:
+        description: '只构建并上传 artifact，不创建 Release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取源码
+        uses: actions/checkout@v4
+
+      - name: 装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: 装 Android SDK 组件
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 platform / build-tools / NDK / CMake
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.1.10909125" \
+            "cmake;3.22.1" > /dev/null
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+      - name: 计算版本号
+        id: ver
+        run: |
+          RAW="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          TAG="${RAW#v}"
+          IFS=. read -r MAJ MIN PAT <<< "$TAG"
+          MAJ=${MAJ:-0}; MIN=${MIN:-0}; PAT=${PAT:-0}
+          CODE=$(( MAJ * 10000 + MIN * 100 + PAT ))
+          echo "tag=$RAW"     >> "$GITHUB_OUTPUT"
+          echo "name=$TAG"    >> "$GITHUB_OUTPUT"
+          echo "code=$CODE"   >> "$GITHUB_OUTPUT"
+          echo "版本名 $TAG / versionCode $CODE"
+
+      # 运行时二进制不入库（见 .gitignore），CI 必须自己拉一遍，
+      # 否则打出来的包能装、但容器模式一进就提示缺运行时。
+      - name: 准备容器运行时（三个 ABI）
+        run: |
+          chmod +x scripts/fetch-runtime.sh
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            echo "::group::fetch-runtime $abi"
+            bash scripts/fetch-runtime.sh "$abi"
+            echo "::endgroup::"
+          done
+
+      # 只跑桌面 JVM 的那几套（不碰 Context），几十秒内结束
+      - name: 回归测试
+        run: |
+          set -euo pipefail
+          AJ="$ANDROID_SDK_ROOT/platforms/android-34/android.jar"
+          mkdir -p /tmp/t/emu
+          javac -encoding UTF-8 -d /tmp/t/emu \
+            app/src/main/java/dev/dualterm/term/TerminalEmulator.java tools/EmuTest.java
+          java -Dfile.encoding=UTF-8 -cp /tmp/t/emu EmuTest
+          for t in SecTest TarTest ImportTest PortsTest; do
+            d="/tmp/t/$t"; mkdir -p "$d"
+            javac -encoding UTF-8 -cp "$AJ" -sourcepath app/src/main/java -d "$d" "tools/$t.java"
+            java -Dfile.encoding=UTF-8 -cp "$d:$AJ" "$t"
+          done
+
+      - name: 准备签名密钥
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "${KS_B64:-}" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            {
+              echo "DT_KEYSTORE=$RUNNER_TEMP/release.jks"
+              echo "DT_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
+              echo "DT_KEY_ALIAS=${{ secrets.KEY_ALIAS }}"
+              echo "DT_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}"
+            } >> "$GITHUB_ENV"
+            echo "使用仓库 secrets 里的正式签名密钥"
+          else
+            echo "未配置 KEYSTORE_BASE64，改用仓库内测试签名（仅供测试分发）"
+          fi
+
+      - name: 构建 Release APK
+        env:
+          DT_VERSION_NAME: ${{ steps.ver.outputs.name }}
+          DT_VERSION_CODE: ${{ steps.ver.outputs.code }}
+        run: |
+          # 仓库里的 gradlew 是在 Windows 上提交的，执行位可能没带过来
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: 校验产物
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          [ -f "$APK" ] || { echo "没有产出 app-release.apk"; exit 1; }
+          # 三个 ABI 的 proot 运行时必须都在包里，否则容器模式在对应设备上直接不可用
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l "$APK" | grep -q "lib/$abi/libproot.so" \
+              || { echo "APK 缺少 lib/$abi/libproot.so"; exit 1; }
+            echo "OK  lib/$abi/libproot.so"
+          done
+          unzip -l "$APK" | grep -q "assets/runtime/rootfs-arm64-v8a.pack" \
+            || { echo "APK 缺少 arm64 rootfs"; exit 1; }
+          echo "OK  assets/runtime/rootfs-arm64-v8a.pack"
+
+      - name: 整理产物
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.name }}"
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk "out/dualterm-$VERSION.apk"
+          ( cd out && sha256sum ./*.apk > SHA256SUMS && cat SHA256SUMS )
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualterm-${{ steps.ver.outputs.name }}
+          path: out/
+          if-no-files-found: error
+
+      - name: 创建 Release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.name }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+            gh release create "$TAG" out/dualterm-"$VERSION".apk out/SHA256SUMS \
+              --title "DualTerm $VERSION" --generate-notes
+          else
+            gh release create "$TAG" out/dualterm-"$VERSION".apk out/SHA256SUMS \
+              --title "DualTerm $VERSION" --target "$GITHUB_SHA" --generate-notes
+          fi

@@ -96,6 +96,45 @@ java -cp "/tmp/tt:$ANDROID_HOME/platforms/android-34/android.jar" TarTest
 
 ---
 
+## 发布（GitHub Actions）
+
+`.github/workflows/release.yml` 管发版。推 `v*` tag 就出包并建 Release：
+
+```bash
+git tag v3.6.0
+git push origin v3.6.0
+```
+
+也可以在 Actions 页面手动 `Run workflow`（填 tag），勾上 `dry_run` 则只构建、上传 artifact，
+不创建 Release —— 用来验证构建链而不产生对外版本。
+
+流水线四件事：
+
+1. 用 `scripts/fetch-runtime.sh` 拉三个 ABI 的 proot + Alpine rootfs
+   （运行时二进制不入库，见 `.gitignore`；CI 不拉就会打出「能装但容器模式一进就报缺运行时」的包）
+2. 跑桌面回归：EmuTest / SecTest / TarTest / ImportTest / PortsTest
+3. `assembleRelease`，产物重命名为 `dualterm-<版本>.apk` 并附 `SHA256SUMS`
+4. 校验 APK 里三个 ABI 的 `libproot.so` 与 arm64 的 rootfs 都在，缺了直接失败
+
+**版本号**：tag `v3.6.0` → `versionName 3.6.0`、`versionCode 30600`
+（major×10000 + minor×100 + patch，单调递增，能覆盖升级）。
+
+**签名**：仓库里的 `keystore/dualterm-test.jks` 是**测试签名**——等同 debug key，
+口令就是 `dualterm`，公开可查，只为让 Release 开箱能装、能连续覆盖升级，
+**不构成任何身份保证**。正式分发请在仓库 Secrets 里配好下面四个，流水线会自动改用：
+
+| Secret | 内容 |
+|---|---|
+| `KEYSTORE_BASE64` | `base64 -w0 your.jks` 的输出 |
+| `KEYSTORE_PASSWORD` | 密钥库口令 |
+| `KEY_ALIAS` | 别名 |
+| `KEY_PASSWORD` | 别名口令 |
+
+本地出签名包同一条路：`./gradlew assembleRelease`（不设环境变量就用测试签名），
+环境变量 `DT_KEYSTORE` / `DT_STORE_PASSWORD` / `DT_KEY_ALIAS` / `DT_KEY_PASSWORD` 可覆盖。
+
+---
+
 ## 工程结构
 
 ```

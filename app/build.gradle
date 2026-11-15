@@ -5,13 +5,19 @@ plugins {
 android {
     namespace 'dev.dualterm'
     compileSdk 34
+    // 固定 NDK 版本：CI 与本地装同一套，避免"AGP 默认 NDK"随插件版本漂移
+    ndkVersion '26.1.10909125'
+
+    // 发布时由 CI 按 tag 推导（v3.5.0 → versionCode 30500）；本地不设就走默认值
+    def dtVersionName = System.getenv('DT_VERSION_NAME')
+    def dtVersionCode = System.getenv('DT_VERSION_CODE')
 
     defaultConfig {
         applicationId 'dev.dualterm'
         minSdk 26
         targetSdk 34
-        versionCode 26
-        versionName '3.5'
+        versionCode dtVersionCode ? dtVersionCode.toInteger() : 26
+        versionName dtVersionName ?: '3.5'
         // 需要 NDK：首次 Sync 时 Android Studio 会提示安装 NDK + CMake，直接同意即可。
         // 若要指定版本，取消下一行注释并改成你已安装的版本。
         // ndkVersion '26.1.10909125'
@@ -26,12 +32,32 @@ android {
         }
     }
 
+    // 发布流水线只需要可复现地产出 APK；lint 在本地按需跑（./gradlew lint）。
+    // 否则 assembleRelease 会额外拉 lint-gradle，离线构建直接失败。
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    // 仓库里自带的是"测试签名"（等同 debug key，密码公开），只为让 Release 开箱能装、
+    // 能覆盖升级。正式分发请用环境变量换成自己的 keystore（见 README「发布」一节）。
+    signingConfigs {
+        release {
+            def ks = System.getenv('DT_KEYSTORE')
+            storeFile ks ? file(ks) : new File(rootDir, 'keystore/dualterm-test.jks')
+            storePassword System.getenv('DT_STORE_PASSWORD') ?: 'dualterm'
+            keyAlias System.getenv('DT_KEY_ALIAS') ?: 'dualterm'
+            keyPassword System.getenv('DT_KEY_PASSWORD') ?: 'dualterm'
+        }
+    }
+
     buildTypes {
         debug {
             minifyEnabled false
         }
         release {
             minifyEnabled false
+            signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
