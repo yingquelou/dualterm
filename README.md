@@ -116,6 +116,10 @@ git push origin v3.6.0
 3. `assembleRelease`，产物重命名为 `dualterm-<版本>.apk` 并附 `SHA256SUMS`
 4. 校验 APK 里三个 ABI 的 `libproot.so` 与 arm64 的 rootfs 都在，缺了直接失败
 
+Release 说明是自己按 tag 区间生成的（`上一个 tag..本次 tag` 的提交列表），
+不用 `--generate-notes`：它在"没有上一个 Release"时只吐一行 Full Changelog，
+首个发布等于没有变更说明。同一个 tag 重跑时会补传产物并刷新说明，不会新建第二个 Release。
+
 **版本号**：tag `v3.6.0` → `versionName 3.6.0`、`versionCode 30600`
 （major×10000 + minor×100 + patch，单调递增，能覆盖升级）。
 
