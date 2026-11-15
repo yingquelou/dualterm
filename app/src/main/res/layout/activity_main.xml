@@ -17,7 +17,11 @@
         android:layout_height="match_parent"
         android:orientation="vertical">
 
-        <!-- 顶栏：模式 chip + 一行状态 + 键盘/菜单 -->
+        <!--
+          顶栏：模式 chip + 一行状态 + 菜单。键盘开关和全屏开关挪进了下面
+          的功能键行——它们在语义上属于「操作终端」，和 CTRL/ALT 是一类，
+          常驻顶栏还白占 40dp（状态行能多显示十几列路径）。
+        -->
         <LinearLayout
             android:id="@+id/top_bar"
             android:layout_width="match_parent"
@@ -55,17 +59,6 @@
                 android:singleLine="true"
                 android:textColor="@color/text_dim"
                 android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btn_keyboard"
-                style="@style/BarButton"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:contentDescription="@string/keyboard"
-                android:paddingLeft="0dp"
-                android:paddingRight="0dp"
-                android:text="@string/keyboard"
-                android:textSize="16sp" />
 
             <Button
                 android:id="@+id/btn_menu"
@@ -114,6 +107,19 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal" />
+
+            <!--
+              自绘软键盘。不再调用系统输入法：MIUI 的 IME 横屏要吃掉 67% 屏幕
+              （1080 里 728px），还带一排没用的候选/工具留白。这里的字母页/符号页
+              高度只有 IME 的一半左右，且和上面一行 CTRL/ALT/ESC/方向键连用，
+              敲 Ctrl 组合键不用换手。
+            -->
+            <LinearLayout
+                android:id="@+id/kbd"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone" />
         </LinearLayout>
 
         <!--

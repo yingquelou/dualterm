@@ -1,5 +1,7 @@
 package dev.dualterm.term;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -13,7 +15,6 @@ import android.view.View;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
-import android.view.inputmethod.InputMethodManager;
 import android.view.ScaleGestureDetector;
 
 /**
@@ -53,7 +54,8 @@ public class TerminalView extends View {
         void onInputWhileDead();
     }
 
-    /** 长按终端（全屏模式下没有顶栏按钮，靠它打开菜单）。 */
+    /** 长按钩子。菜单已经从这个手势上挪走了（见 MainActivity），现在保留它是给
+     *  将来的「长按选词 → 复制」用：选区一旦落地，长按必须先归选区。 */
     public interface LongPressListener {
         void onLongPress();
     }
@@ -77,16 +79,19 @@ public class TerminalView extends View {
     private final Runnable longPressRunnable = new Runnable() {
         @Override
         public void run() {
-            if (longPressListener != null) {
-                longPressFired = true;
-                // 鼠标模式下长按是「打开菜单」，得先给程序补一个松开，
-                // 否则 vim 会一直以为左键按着不放
-                if (mouseDown && session != null) {
-                    mouseDown = false;
-                    send(session.getEmulator().mouseReport(0, lastMouseCol, lastMouseRow, true, false));
-                }
-                longPressListener.onLongPress();
+            // 不管有没有监听者，长按都算「被长按吃掉」：否则按住稍久再松手会
+            // 退化成一次点击（点终端 = 切键盘），手感上像误触
+            longPressFired = true;
+            if (longPressListener == null) {
+                return;
             }
+            // 鼠标模式下长按是「打开菜单」，得先给程序补一个松开，
+            // 否则 vim 会一直以为左键按着不放
+            if (mouseDown && session != null) {
+                mouseDown = false;
+                send(session.getEmulator().mouseReport(0, lastMouseCol, lastMouseRow, true, false));
+            }
+            longPressListener.onLongPress();
         }
     };
 
@@ -114,7 +119,10 @@ public class TerminalView extends View {
     private long lastDeadNotice;
     private ScaleGestureDetector scaleDetector;
     private boolean scaling;
+    /** 捏合起点字号（锚点），配合 {@link #scaleAccum} 累计比例算目标字号。 */
     private float scaleStartSize;
+    /** getScaleFactor() 是逐事件增量（相对上一次回调），必须累乘才有「相对起点」的比例。 */
+    private float scaleAccum;
 
     /** 「回到底部」胶囊的命中区（scrollOffset > 0 时才有意义）。 */
     private final RectF scrollPill = new RectF();
@@ -156,13 +164,19 @@ public class TerminalView extends View {
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     @Override
                     public boolean onScaleBegin(ScaleGestureDetector detector) {
-                        // 鼠标上报模式下双指是滚轮，捏合缩放让位
-                        if (session != null && session.getEmulator().isMouseTracking()) {
-                            return false;
-                        }
                         scaling = true;
                         scaleStartSize = textSizeSp;
+                        scaleAccum = 1f;
                         removeCallbacks(longPressRunnable);
+                        // 鼠标上报模式：第一根手指落下时多半已给程序发了「按下」，
+                        // 捏合抢走手势后必须补一个释放，否则 vim 卡在拖拽选中态
+                        if (mouseDown && session != null) {
+                            mouseDown = false;
+                            wheelMode = false;
+                            send(session.getEmulator().mouseReport(
+                                    0, lastMouseCol, lastMouseRow, true, false));
+                        }
+                        android.util.Log.i("DualTerm", "pinch begin: " + textSizeSp + "sp");
                         return true;
                     }
 
@@ -171,7 +185,11 @@ public class TerminalView extends View {
                         if (!scaling) {
                             return false;
                         }
-                        int target = Math.round(scaleStartSize * detector.getScaleFactor());
+                        // 锚点 × 累计比例。直接用 getScaleFactor() 是错的：它是
+                        // 「本事件相对上一事件」的瞬时值（≈1.0 抖动），拿它乘锚点
+                        // 会导致字号在大一级和原值之间来回跳（实测复现过）。
+                        scaleAccum *= detector.getScaleFactor();
+                        int target = Math.round(scaleStartSize * scaleAccum);
                         if (target != textSizeSp) {
                             setTextSizeSp(target);
                         }
@@ -181,6 +199,8 @@ public class TerminalView extends View {
                     @Override
                     public void onScaleEnd(ScaleGestureDetector detector) {
                         scaling = false;
+                        android.util.Log.i("DualTerm",
+                                "pinch end: " + scaleStartSize + "sp -> " + textSizeSp + "sp");
                         if (fontListener != null) {
                             fontListener.onFontSizeChanged(textSizeSp);
                         }
@@ -226,8 +246,21 @@ public class TerminalView extends View {
         this.session = value;
         this.scrollOffset = 0;
         if (value != null) {
+            pushTextMetrics(value);
             invalidate();
         }
+    }
+
+    /** 把像素度量同步给仿真器，程序查询 XTWINOPS（CSI 14/16/18 t）时要用。 */
+    private void pushTextMetrics(TermSession target) {
+        if (target == null || gridCols <= 0) {
+            return;
+        }
+        target.getEmulator().setTextMetrics(
+                (int) (cellWidth * gridCols),
+                (int) (cellHeight * gridRows),
+                Math.round(cellWidth),
+                Math.round(cellHeight));
     }
 
     public TermSession getSession() {
@@ -278,20 +311,49 @@ public class TerminalView extends View {
         }
     }
 
+    /**
+     * 自绘键盘的开关回调。
+     *
+     * 不再调系统输入法：MIUI 的 IME 横屏要占 67% 屏幕，还带候选栏留白，
+     * 而终端要的是「字母 + CTRL/ALT/ESC/方向键」，自己画一套只有一半高。
+     * 活动层负责真正的显隐（键盘挂在键条里，属于布局的一部分）。
+     */
+    public interface KeypadListener {
+        /** 点终端：切换自绘键盘。 */
+        void onToggleKeypad();
+
+        /** 会话启动、恢复输入时需要键盘（幂等，已经开着就什么都不做）。 */
+        void onShowKeypad();
+
+        /** 需要收起时（返回键、点击外部等）。 */
+        void onHideKeypad();
+    }
+
+    private KeypadListener keypadListener;
+
+    public void setKeypadListener(KeypadListener listener) {
+        this.keypadListener = listener;
+    }
+
+    /** 确保键盘可见（会话启动时用；已经开着不会把它关掉）。 */
     public void showKeyboard() {
         requestFocus();
-        InputMethodManager imm =
-                (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) {
-            imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT);
+        if (keypadListener != null) {
+            keypadListener.onShowKeypad();
+        }
+    }
+
+    /** 点击终端来的：切换，开着的再点一下收起。 */
+    public void toggleKeyboard() {
+        requestFocus();
+        if (keypadListener != null) {
+            keypadListener.onToggleKeypad();
         }
     }
 
     public void hideKeyboard() {
-        InputMethodManager imm =
-                (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) {
-            imm.hideSoftInputFromWindow(getWindowToken(), 0);
+        if (keypadListener != null) {
+            keypadListener.onHideKeypad();
         }
     }
 
@@ -320,8 +382,81 @@ public class TerminalView extends View {
         if (session == null || text == null || text.isEmpty()) {
             return;
         }
+        if (text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0) {
+            // 多行粘贴必须确认：每一行都会作为独立输入立即发给 PTY（相当于
+            // 逐行按回车）。实测把整屏复制再粘贴，shell 就把 63 行提示符当
+            // 命令逐条"执行"了——屏幕内容若含 rm -rf 之类的行就是事故。
+            // Windows Terminal / PuTTY 对多行粘贴都有确认框，这里对齐。
+            confirmMultilinePaste(text);
+            return;
+        }
+        doPaste(text);
+    }
+
+    private void confirmMultilinePaste(final String text) {
+        int lineCount = 1;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '\n' || text.charAt(i) == '\r') {
+                lineCount++;
+            }
+        }
+        new android.app.AlertDialog.Builder(getContext())
+                .setTitle("粘贴多行文本")
+                .setMessage("内容包含约 " + lineCount + " 行。每一行都会作为独立输入"
+                        + "\n立即发给终端（相当于逐行按回车）。\n\n确定粘贴？")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("粘贴", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        doPaste(text);
+                    }
+                })
+                .show();
+    }
+
+    private void doPaste(String text) {
         boolean bracketed = session.getEmulator().isBracketedPaste();
         sendText(bracketed ? "\u001b[200~" + text + "\u001b[201~" : text);
+    }
+
+    /** 硬件键盘 Ctrl+Shift+V：从系统剪贴板粘贴（走 pasteText，带 bracketed paste）。 */
+    private void pasteFromClipboard() {
+        ClipboardManager cm =
+                (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip() == null) {
+            hint("剪贴板是空的");
+            return;
+        }
+        ClipData.Item item = cm.getPrimaryClip().getItemAt(0);
+        CharSequence text = item == null ? null : item.coerceToText(getContext());
+        if (text == null || text.length() == 0) {
+            return;
+        }
+        pasteText(text.toString());
+        hint("已粘贴 " + text.length() + " 个字符");
+    }
+
+    /**
+     * 硬件键盘 Ctrl+Shift+C：复制当前屏（不含 scrollback）。
+     * 全部输出动辄几万行，真要复制某一屏时那个入口用不上；选区的完整支持
+     * （手柄 + 高亮 + 自动滚动）还没有，当前屏是最实用的粒度。
+     */
+    private void copyScreenToClipboard() {
+        if (session == null) {
+            return;
+        }
+        String text = session.getEmulator().getScreenText();
+        ClipboardManager cm =
+                (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null) {
+            return;
+        }
+        cm.setPrimaryClip(ClipData.newPlainText("terminal", text));
+        hint("已复制当前屏 " + text.length() + " 个字符");
+    }
+
+    private void hint(String message) {
+        android.widget.Toast.makeText(getContext(), message, android.widget.Toast.LENGTH_SHORT).show();
     }
 
     /**
@@ -454,6 +589,8 @@ public class TerminalView extends View {
                 gridListener.onGridChanged(gridRows, gridCols);
             }
         }
+        // 字号/视口变了，单元格像素尺寸跟着变，及时同步（XTWINOPS 应答依赖）
+        pushTextMetrics(session);
     }
 
     /* -------------------- 绘制 -------------------- */
@@ -654,7 +791,9 @@ public class TerminalView extends View {
         textPaint.setFakeBoldText(false);
         textPaint.setUnderlineText(false);
         textPaint.setStrikeThruText(false);
-        String hint = "点左上角「本地 / 容器」开始 · 长按终端打开菜单";
+        // 长按不再绑菜单（长按留给将来的选区），所以这里只教「怎么起会话」，
+        // 菜单入口在可见控件上：顶栏 ⋮ / 长按键行的 ⋯
+        String hint = "点左上角「本地 / 容器」开始 · 菜单在顶栏 ⋮";
         float w = textPaint.measureText(hint);
         canvas.drawText(hint, Math.max(padX, (getWidth() - w) / 2f),
                 getHeight() / 2f, textPaint);
@@ -667,9 +806,6 @@ public class TerminalView extends View {
         TerminalEmulator emulator = session == null ? null : session.getEmulator();
         // vim 的 set mouse=a 会开鼠标上报；这时触摸要变成鼠标事件交给它，而不是本地滚屏
         boolean tracking = emulator != null && emulator.isMouseTracking();
-        if (tracking) {
-            return handleMouseTouch(event, emulator);
-        }
         // 先看是不是点在「回到底部」胶囊上：上滚状态下的这一下不该弹键盘
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN
                 && scrollPillVisible && scrollPill.contains(event.getX(), event.getY())) {
@@ -678,12 +814,18 @@ public class TerminalView extends View {
             invalidate();
             return true;
         }
-        // 捏合改字号；进入缩放后这一串事件都归手势，不再当作拖动
+        // 捏合改字号；进入缩放后这一串事件都归手势，不再当作拖动。
+        // 鼠标上报模式（vim/htop）下同样要喂：否则双指捏合会被整段当
+        // 鼠标事件吞掉，字号永远调不了（实测复现）。双指纯上下滑跨度
+        // 不变，不会误触发缩放，滚轮模式照常工作。
         scaleDetector.onTouchEvent(event);
         if (scaling) {
             removeCallbacks(longPressRunnable);
             dragging = true;
             return true;
+        }
+        if (tracking) {
+            return handleMouseTouch(event, emulator);
         }
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
@@ -693,6 +835,11 @@ public class TerminalView extends View {
                 longPressFired = false;
                 removeCallbacks(longPressRunnable);
                 postDelayed(longPressRunnable, LONG_PRESS_MS);
+                return true;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                // 第二根手指落下：无论接下来是捏合还是滚轮，长按都不该再触发，
+                // 否则双指手势的准备阶段就会弹菜单（用户实测复现）
+                removeCallbacks(longPressRunnable);
                 return true;
             case MotionEvent.ACTION_MOVE: {
                 float dy = event.getY() - lastY;
@@ -718,7 +865,7 @@ public class TerminalView extends View {
                         // 键盘弹出来也没处输入，直接引导去重启
                         notifyDead();
                     } else {
-                        showKeyboard();
+                        toggleKeyboard();
                     }
                 }
                 return true;
@@ -860,9 +1007,16 @@ public class TerminalView extends View {
 
     /* -------------------- 键盘与 IME -------------------- */
 
+    /**
+     * 终端不再用系统输入法（键盘是自绘的），所以对系统声明「我不是文本编辑器」。
+     *
+     * 返回 true 时系统会在视图获得焦点时自动把 IME 推上来——实测 MIUI 启动就把
+     * 窗口从 2340 压到 1314，横屏更狠（1080 里只剩 276）。返回 false 之后
+     * 聚焦不再触发 IME，硬件键盘的按键仍然照常走 onKeyDown。
+     */
     @Override
     public boolean onCheckIsTextEditor() {
-        return true;
+        return false;
     }
 
     @Override
@@ -1002,6 +1156,18 @@ public class TerminalView extends View {
         boolean alt = event.isAltPressed();
         boolean shift = event.isShiftPressed();
         int mod = (shift ? M_SHIFT : 0) | (alt ? M_ALT : 0) | (ctrl ? M_CTRL : 0);
+
+        // Ctrl+Shift+C / Ctrl+Shift+V 是终端的标准复制/粘贴键位（xterm、GNOME Terminal、
+        // Windows Terminal 都这么定）。必须先拦：Ctrl+Shift+C 漏下去就成了 Ctrl+C =
+        // SIGINT，用户想复制却把正在跑的编译打断了；Ctrl+Shift+V 漏下去是 0x16，程序收到乱码。
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_V) {
+            pasteFromClipboard();
+            return true;
+        }
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_C) {
+            copyScreenToClipboard();
+            return true;
+        }
 
         String sequence = specialKey(keyCode, mod, emulator.isAppCursorKeys());
         if (sequence != null) {
