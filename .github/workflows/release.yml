@@ -56,14 +56,19 @@ jobs:
         id: ver
         run: |
           RAW="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          TAG="${RAW#v}"
-          IFS=. read -r MAJ MIN PAT <<< "$TAG"
+          # 去掉前缀 v 与 -beta 之类的后缀，只留 major[.minor[.patch]]
+          NAME="$(printf '%s' "${RAW#v}" | sed -E 's/^([0-9]+(\.[0-9]+){0,2}).*/\1/')"
+          IFS=. read -r MAJ MIN PAT <<< "$NAME"
           MAJ=${MAJ:-0}; MIN=${MIN:-0}; PAT=${PAT:-0}
           CODE=$(( MAJ * 10000 + MIN * 100 + PAT ))
+          if [ "$CODE" -lt 1 ]; then
+            echo "::error::标签 '$RAW' 解析出的 versionCode 是 $CODE，必须为正整数（形如 v3.5.0）"
+            exit 1
+          fi
           echo "tag=$RAW"     >> "$GITHUB_OUTPUT"
-          echo "name=$TAG"    >> "$GITHUB_OUTPUT"
+          echo "name=$NAME"   >> "$GITHUB_OUTPUT"
           echo "code=$CODE"   >> "$GITHUB_OUTPUT"
-          echo "版本名 $TAG / versionCode $CODE"
+          echo "版本名 $NAME / versionCode $CODE"
 
       # 运行时二进制不入库（见 .gitignore），CI 必须自己拉一遍，
       # 否则打出来的包能装、但容器模式一进就提示缺运行时。
