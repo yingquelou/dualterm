@@ -127,6 +127,11 @@ public class MainActivity extends Activity
         status = findViewById(R.id.status);
         topBar = findViewById(R.id.top_bar);
         btnMode = findViewById(R.id.btn_mode);
+        // chip 文本随容器名（以及 root/docker 标记）变长，限宽 + 尾部省略，
+        // 别让它把右边的状态行挤没
+        btnMode.setSingleLine(true);
+        btnMode.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        btnMode.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * 0.46f));
         btnMenu = findViewById(R.id.btn_menu);
         keyBar = findViewById(R.id.key_bar);
         keyRow = findViewById(R.id.key_row);
@@ -667,9 +672,37 @@ public class MainActivity extends Activity
 
     /* -------------------- 状态与提示 -------------------- */
 
+    /**
+     * 模式 chip = 顶栏唯一的「我现在在哪儿」。
+     *
+     * 除了模式名，还捎上两个只在 chip 上能看见的身份：本地会话是否 su 提权（root）、
+     * 容器会话是否走 docker 运行时。信息取自**会话的 LaunchSpec**而不是 prefs——
+     * 菜单里切 Root Shell / 运行时是「下次启动生效」，拿配置值会显示成已经切了，
+     * 实际还在旧身份里跑；会话没起来时才回退到配置值（这时显示的就是预期值）。
+     */
     private void updateModeButtons() {
         boolean local = MODE_LOCAL.equals(mode);
-        btnMode.setText(local ? "本地" : "容器 · " + Containers.activeName(this) + " ▾");
+        TermSession session = terminal.getSession();
+        LaunchSpec spec = session == null ? null : session.getSpec();
+        boolean root = spec != null ? spec.root : prefs.getBoolean("root", false);
+        boolean docker = spec != null
+                ? spec.docker
+                : "docker".equals(prefs.getString("runtime", "proot"));
+
+        StringBuilder label = new StringBuilder(
+                local ? "本地" : "容器 · " + Containers.activeName(this));
+        if (local && root) {
+            label.append(" · root");
+        }
+        if (!local && docker) {
+            label.append(" · docker");
+        }
+        // ▾ 是「可下拉」的提示，本地/容器两边保持一致
+        label.append(" ▾");
+        // 每帧状态刷新都会走到这里，同文本就不重设，免得白触发一次 layout
+        if (!label.toString().contentEquals(btnMode.getText())) {
+            btnMode.setText(label);
+        }
         btnMode.setTextColor(local ? COLOR_TEXT : COLOR_ACCENT);
     }
 
@@ -720,6 +753,9 @@ public class MainActivity extends Activity
             }
         }
         status.setText(sb.toString());
+        // 会话刚起来时 LaunchSpec 才拿到手（root / docker 标记在里面），
+        // 所以 chip 跟着状态一起刷：省得另外找"会话启动完成"的回调点
+        updateModeButtons();
     }
 
     private void showOverlay(String message) {
@@ -2350,12 +2386,15 @@ public class MainActivity extends Activity
         } else {
             toast(next ? "本地模式将尝试 su 提权（重启会话生效）" : "已关闭 root");
         }
+        // 没有活动会话时 chip 回退显示配置值，切换后立刻反映出来
+        updateModeButtons();
     }
 
     private void toggleRuntime() {
         boolean docker = "docker".equals(prefs.getString("runtime", "proot"));
         prefs.edit().putString("runtime", docker ? "proot" : "docker").apply();
         toast("容器运行时：" + runtimeLabel() + "（切换后请重启容器会话）");
+        updateModeButtons();
     }
 
     private void confirmWipe() {

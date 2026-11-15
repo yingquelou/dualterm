@@ -32,7 +32,8 @@ public final class Shells {
 
         if (useRoot && isRootAvailable()) {
             String[] env = localEnv(home, tmp, prefix);
-            return new LaunchSpec("本地 Shell (root)", new String[]{"su"}, env, home.getAbsolutePath());
+            return new LaunchSpec("本地 Shell (root)", new String[]{"su"}, env, home.getAbsolutePath(),
+                    true, false);
         }
 
         String shell = new File("/system/bin/sh").exists() ? "/system/bin/sh" : "sh";

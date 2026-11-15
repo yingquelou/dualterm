@@ -77,7 +77,8 @@ public final class DockerRuntime extends ContainerRuntime {
             script.append(" -v ").append(Volumes.dockerVolumeArg(vol));
         }
         script.append(" ").append(image).append(" /bin/sh");
-        return new LaunchSpec("容器 · " + name + "（Docker）", new String[]{"su", "-c", script.toString()}, env(), "/");
+        return new LaunchSpec("容器 · " + name + "（Docker）", new String[]{"su", "-c", script.toString()}, env(), "/",
+                false, true);
     }
 
     /** 幂等启动 dockerd，并把 DOCKER_HOST 指到 TCP/Unix socket。 */
