@@ -695,22 +695,11 @@ public class MainActivity extends Activity
         TermSession session = terminal.getSession();
         StringBuilder sb = new StringBuilder();
         if (session != null) {
-            // 容器模式下 chip 写的就是「容器 · 名字」，状态行不重复它。
-            // 之前拿整个 title 跟裸容器名 equals，"容器 · v24".equals("v24")
-            // 永远不成立，去重从未生效（实测状态行还是 "容器 · v24 · 96x63…"）。
-            // title 里 chip 没写的尾巴要保留：Docker 的 title 是
-            // 「容器 · v24（Docker）」，状态行补一个「（Docker）」标运行时。
-            String title = session.getSpec().title;
-            String chipTitle = "容器 · " + Containers.activeName(this);
-            if (MODE_CONTAINER.equals(mode) && title.startsWith("容器 · ")
-                    && title.startsWith(chipTitle)) {
-                String tail = title.substring(chipTitle.length()).trim();
-                if (!tail.isEmpty()) {
-                    sb.append(tail).append(" · ");
-                }
-            } else {
-                sb.append(title).append(" · ");
-            }
+            // 状态行只说终端自己的几何信息：行列数、字号、pid。
+            // 模式/容器名不写——左边 chip 本身就是下拉选择器，点开就是完整列表，
+            // 顶栏右侧再写一遍纯属重复。早先试过「按 title 去重」，那是自找麻烦：
+            // title（"容器 · v24"）和 chip 文本是两套字符串，还得为 Docker 的
+            // 「（Docker）」尾巴写规则。不显示就没有重复可去。
             sb.append(terminal.getGridCols()).append('x').append(terminal.getGridRows());
             // 字号跟着行列数一起变，捏合时看这里就知道停在几号（用户反馈：光看字猜不出 sp 值）
             sb.append(" · ").append(terminal.getTextSizeSp()).append("sp");
@@ -722,7 +711,7 @@ public class MainActivity extends Activity
                 sb.append(" · 已退出");
             }
         } else {
-            sb.append(MODE_LOCAL.equals(mode) ? "本地 Shell：等待启动" : "容器：等待启动");
+            sb.append("等待启动");
         }
         if (extra != null && !extra.isEmpty()) {
             sb.append(" · ").append(extra);
