@@ -122,7 +122,10 @@ fetch_data_tar() {
 
 # 在 tar 归档里找第一个普通文件（$1 首字符是 "-"，符号链接是 "l"，正好跳过）
 member_of() {
-    tar -tvf "$1" | awk -v re="$2" '$1 ~ /^-/ && $NF ~ re { print $NF; exit }'
+    # 清单先落到文件再筛：`tar -tvf | awk '{print;exit}'` 会让 tar 收到 SIGPIPE，
+    # CI 的 GNU tar 上直接 "tar: stdout: write error" 退出码 2，pipefail 一开整步就挂
+    tar -tvf "$1" > "$TMP/members.$$.txt"
+    awk -v re="$2" '$1 ~ /^-/ && $NF ~ re { print $NF; exit }' "$TMP/members.$$.txt"
 }
 
 extract_member() {
