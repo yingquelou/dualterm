@@ -614,22 +614,28 @@ public class TerminalView extends View {
         textPaint.setTextSize(sp(textSizeSp));
         textPaint.setTypeface(Typeface.MONOSPACE);
 
-        for (int row = 0; row < gridRows; row++) {
-            int virtualRow = row - scrollOffset;
-            TerminalEmulator.Line line;
-            if (virtualRow >= 0) {
-                line = emulator.getLine(virtualRow);
-            } else {
-                int index = scrollbackCount + virtualRow;
-                line = index >= 0 ? emulator.getScrollbackLine(index) : null;
+        // Line 是可变对象（读线程 append 会原地改写字符/属性数组），锁外遍历会出现
+        // 一帧里半行旧半行新的撕裂。绘制整帧持 emulator 的监视器锁拿一致性视图：
+        // 写入端按 4~16KB 块持锁，这里最多等一个块的处理时间（毫秒级），可接受。
+        // 注意 getLine/getScrollbackLine 是 synchronized 方法，监视器可重入，无死锁面。
+        synchronized (emulator) {
+            for (int row = 0; row < gridRows; row++) {
+                int virtualRow = row - scrollOffset;
+                TerminalEmulator.Line line;
+                if (virtualRow >= 0) {
+                    line = emulator.getLine(virtualRow);
+                } else {
+                    int index = scrollbackCount + virtualRow;
+                    line = index >= 0 ? emulator.getScrollbackLine(index) : null;
+                }
+                if (line != null) {
+                    drawLine(canvas, line, row);
+                }
             }
-            if (line != null) {
-                drawLine(canvas, line, row);
-            }
-        }
 
-        if (scrollOffset == 0 && emulator.isCursorVisible()) {
-            drawCursor(canvas, emulator);
+            if (scrollOffset == 0 && emulator.isCursorVisible()) {
+                drawCursor(canvas, emulator);
+            }
         }
 
         scrollPillVisible = scrollOffset > 0;

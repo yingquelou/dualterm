@@ -91,13 +91,19 @@ public final class DockerCli {
                 + " 说明:      这不是真 dockerd，不支持 build/push/compose。\n";
     }
 
+    /** 镜像大小：先读缓存（导入时已算好），缺失才递归统计。本类在容器线程里跑，可以现算。 */
+    private static long sizeOf(Context ctx, Containers.Image img) {
+        long cached = Containers.cachedImageSize(ctx, img.name);
+        return cached < 0 ? img.size() : cached;
+    }
+
     private static String info(Context ctx) {
         List<Containers.Item> items = Containers.items(ctx);
         int running = Containers.runningItems(ctx).size();
         List<Containers.Image> images = Containers.images(ctx);
         long total = 0;
         for (Containers.Image img : images) {
-            total += img.size();
+            total += sizeOf(ctx, img);
         }
         StringBuilder sb = new StringBuilder();
         sb.append("Containers: ").append(items.size()).append('\n');
@@ -125,7 +131,7 @@ public final class DockerCli {
             String[] name = splitRef(img.name);
             sb.append(pad(name[0], 16)).append(pad(name[1], 10))
                     .append(pad(idOf(img.name), 14))
-                    .append(pad(Containers.humanSize(img.size()), 10))
+                    .append(pad(Containers.humanSize(sizeOf(ctx, img)), 10))
                     .append(ago(img.createdAt)).append('\n');
         }
         return sb.toString();

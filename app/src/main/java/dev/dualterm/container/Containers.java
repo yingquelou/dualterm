@@ -45,6 +45,7 @@ public final class Containers {
     private static final String PREF = "dualterm";
     private static final String KEY_IMAGES = "images";
     private static final String KEY_ITEMS = "containers";
+    private static final String KEY_SIZES = "image_sizes";
     private static final String KEY_ACTIVE = "active_container";
 
     /** 当前有活会话的容器名（运行态不落盘，进程死了就是没在跑）。 */
@@ -158,6 +159,73 @@ public final class Containers {
                 || new File(rootfs, "etc").isDirectory();
     }
 
+    /* -------------------- 镜像大小缓存 -------------------- */
+
+    /**
+     * dirSize 要递归数几万个文件，绝不能在 UI 线程调（ANR 风险）。所以在导入/
+     * 拉取完成时（本来就在后台线程）算一次缓存起来，UI 只读缓存；缓存缺失
+     * 返回 -1，由调用方决定显示「…」还是触发后台刷新。
+     */
+    public static long cachedImageSize(Context ctx, String ref) {
+        String want = normalizeImage(ref);
+        String raw = prefs(ctx).getString(KEY_SIZES, "");
+        if (raw != null) {
+            for (String line : raw.split("\n")) {
+                int bar = line.lastIndexOf('|');
+                if (bar > 0 && line.substring(0, bar).equals(want)) {
+                    try {
+                        return Long.parseLong(line.substring(bar + 1));
+                    } catch (NumberFormatException e) {
+                        return -1;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    /** 写一条大小缓存；bytes < 0 表示删除该条（镜像被删时调用）。 */
+    public static void cacheImageSize(Context ctx, String ref, long bytes) {
+        String want = normalizeImage(ref);
+        StringBuilder sb = new StringBuilder();
+        String raw = prefs(ctx).getString(KEY_SIZES, "");
+        if (raw != null) {
+            for (String line : raw.split("\n")) {
+                int bar = line.lastIndexOf('|');
+                if (bar <= 0) {
+                    continue;
+                }
+                String name = line.substring(0, bar);
+                if (name.equals(want)) {
+                    continue; // 覆盖 / 删除
+                }
+                if (sb.length() > 0) {
+                    sb.append('\n');
+                }
+                sb.append(line);
+            }
+        }
+        if (bytes >= 0) {
+            if (sb.length() > 0) {
+                sb.append('\n');
+            }
+            sb.append(want).append('|').append(bytes);
+        }
+        prefs(ctx).edit().putString(KEY_SIZES, sb.toString()).apply();
+    }
+
+    /** 逐个镜像补齐缺失的大小缓存（后台线程调用）。返回是否写入过。 */
+    public static boolean refreshImageSizes(Context ctx) {
+        boolean changed = false;
+        for (Image img : images(ctx)) {
+            if (cachedImageSize(ctx, img.name) < 0) {
+                cacheImageSize(ctx, img.name, dirSize(img.rootfs));
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
     public static Image findImage(Context ctx, String ref) {
         String want = normalizeImage(ref);
         for (Image img : images(ctx)) {
@@ -246,11 +314,13 @@ public final class Containers {
             if (list.get(i).name.equals(name)) {
                 list.set(i, new Image(name, rootfs, list.get(i).createdAt));
                 writeImages(ctx, list);
+                cacheImageSize(ctx, name, dirSize(rootfs));
                 return;
             }
         }
         list.add(new Image(name, rootfs, System.currentTimeMillis() / 1000));
         writeImages(ctx, list);
+        cacheImageSize(ctx, name, dirSize(rootfs));
     }
 
     /* -------------------- 容器生命周期 -------------------- */
@@ -351,6 +421,7 @@ public final class Containers {
             throw new IOException("镜像不存在：" + name);
         }
         deleteRecursive(img.rootfs.getParentFile(), imagesDir(ctx));
+        cacheImageSize(ctx, name, -1); // 大小缓存一并清掉
         List<Image> list = images(ctx);
         for (int i = 0; i < list.size(); i++) {
             if (list.get(i).name.equals(name)) {

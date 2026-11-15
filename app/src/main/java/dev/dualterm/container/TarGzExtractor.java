@@ -436,23 +436,14 @@ public final class TarGzExtractor {
         return out.toByteArray();
     }
 
+    /**
+     * 删除保持在解包根内的路径。委托 Containers.deleteRecursive：
+     * 这里原来是 getCanonicalPath 版本，rootfs 里 bin/sh -> /bin/busybox 这类
+     * 绝对链接会被解析出根外路径而提前返回，链接删不掉、父目录也删不掉，
+     * 白化（whiteout）语义就此失效——收敛到唯一实现。
+     */
     private static void deleteTree(File target, String destRoot) {
-        try {
-            String path = target.getCanonicalPath();
-            if (!path.equals(destRoot) && !path.startsWith(destRoot + File.separator)) {
-                return;
-            }
-        } catch (IOException e) {
-            return;
-        }
-        File[] children = target.listFiles();
-        if (children != null) {
-            for (File child : children) {
-                deleteTree(child, destRoot);
-            }
-        }
-        //noinspection ResultOfMethodCallIgnored
-        target.delete();
+        Containers.deleteRecursive(target, new File(destRoot));
     }
 
     private static boolean isZeroBlock(byte[] header) {

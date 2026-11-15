@@ -59,6 +59,25 @@ public class MainActivity extends Activity
 
     private SharedPreferences prefs;
 
+    /**
+     * 后台任务的唯一执行器（单线程串行，与 UI 无关的磁盘/进程活都在这）。
+     * 以前六处裸 new Thread：切模式/退出后任务照跑、回调时 Activity 可能已销毁。
+     * onDestroy 里 shutdownNow 统一收口。
+     */
+    private final java.util.concurrent.ExecutorService background =
+            java.util.concurrent.Executors.newSingleThreadExecutor(
+                    new java.util.concurrent.ThreadFactory() {
+                        @Override
+                        public Thread newThread(Runnable r) {
+                            Thread t = new Thread(r, "dualterm-bg");
+                            t.setDaemon(true);
+                            return t;
+                        }
+                    });
+    /** 容器启动任务的代次号：每次 startContainer 递增，旧任务的 UI 回调直接丢弃。 */
+    private final java.util.concurrent.atomic.AtomicInteger startGen =
+            new java.util.concurrent.atomic.AtomicInteger();
+
     private TerminalView terminal;
     private TextView status;
     private TextView btnMode;
@@ -456,8 +475,11 @@ public class MainActivity extends Activity
         showOverlay("准备容器 " + containerName + " …");
         final String preferred = prefs.getString("runtime", "proot");
         final Context appContext = getApplicationContext();
+        // 代次号：连续切换容器时，前一个启动任务的回调作废，避免旧容器
+        // 启动完成后把界面拉回已经被放弃的容器
+        final int gen = startGen.incrementAndGet();
 
-        Thread worker = new Thread(new Runnable() {
+        background.execute(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -465,7 +487,7 @@ public class MainActivity extends Activity
                     runtime.prepare(new ContainerRuntime.Progress() {
                         @Override
                         public void onProgress(final String message) {
-                            runOnUiThread(new Runnable() {
+                            postUi(new Runnable() {
                                 @Override
                                 public void run() {
                                     overlayText.setText(message);
@@ -474,7 +496,7 @@ public class MainActivity extends Activity
                         }
                     });
                     final LaunchSpec spec = runtime.launchSpec(containerName);
-                    runOnUiThread(new Runnable() {
+                    postUiGen(gen, new Runnable() {
                         @Override
                         public void run() {
                             hideOverlay();
@@ -486,7 +508,7 @@ public class MainActivity extends Activity
                         }
                     });
                 } catch (final Throwable t) {
-                    runOnUiThread(new Runnable() {
+                    postUiGen(gen, new Runnable() {
                         @Override
                         public void run() {
                             hideOverlay();
@@ -507,9 +529,22 @@ public class MainActivity extends Activity
                     });
                 }
             }
-        }, "container-bootstrap");
-        worker.setDaemon(true);
-        worker.start();
+        });
+    }
+
+    /** 容器启动代次守卫的 UI 回调：代次过期或 Activity 已销毁就丢弃。 */
+    private void postUiGen(int gen, Runnable r) {
+        if (gen != startGen.get()) {
+            return;
+        }
+        postUi(r);
+    }
+
+    /** UI 回调统一入口：Activity 已销毁/正在结束时不再回调，防止摸已拆的视图。 */
+    private void postUi(Runnable r) {
+        if (!isFinishing() && !isDestroyed()) {
+            runOnUiThread(r);
+        }
     }
 
     private void startSession(String key, LaunchSpec spec) {
@@ -1869,7 +1904,23 @@ public class MainActivity extends Activity
 
     /* -------------------- 容器管理 -------------------- */
 
+    /** 后台补齐镜像大小缓存（对话框只读缓存，绝不在线程里递归数几万个文件）。 */
+    private void refreshImageSizesAsync() {
+        final Context app = getApplicationContext();
+        background.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Containers.refreshImageSizes(app);
+                } catch (Throwable ignored) {
+                    // 缓存补齐失败不影响列表打开
+                }
+            }
+        });
+    }
+
     private void showContainersDialog() {
+        refreshImageSizesAsync();
         final java.util.List<Containers.Item> containers = Containers.items(this);
         final java.util.List<Containers.Image> images = Containers.images(this);
         final String active = Containers.activeName(this);
@@ -1890,7 +1941,11 @@ public class MainActivity extends Activity
         }
         for (int i = 0; i < images.size(); i++) {
             Containers.Image img = images.get(i);
-            labels.add("镜像   " + img.name + "   " + Containers.humanSize(img.size()));
+            // 大小只读缓存：dirSize 要递归数几万个文件，在 UI 线程跑必卡。
+            // 缓存缺失显示「…」，refreshImageSizesAsync 补齐后下次打开就有值。
+            long sz = Containers.cachedImageSize(this, img.name);
+            labels.add("镜像   " + img.name + "   "
+                    + (sz < 0 ? "…" : Containers.humanSize(sz)));
             meta.add(new int[]{1, i});
         }
         labels.add("⇣ 拉取 Alpine 镜像…");
@@ -2007,6 +2062,7 @@ public class MainActivity extends Activity
     }
 
     private void chooseImageForNewContainer() {
+        refreshImageSizesAsync();
         final java.util.List<Containers.Image> images = Containers.images(this);
         if (images.isEmpty()) {
             toast("还没有镜像，先拉取一个");
@@ -2018,7 +2074,8 @@ public class MainActivity extends Activity
         }
         String[] names = new String[images.size()];
         for (int i = 0; i < images.size(); i++) {
-            names[i] = images.get(i).name + "   " + Containers.humanSize(images.get(i).size());
+            long sz = Containers.cachedImageSize(this, images.get(i).name);
+            names[i] = images.get(i).name + "   " + (sz < 0 ? "…" : Containers.humanSize(sz));
         }
         new AlertDialog.Builder(this)
                 .setTitle("选择镜像")
@@ -2037,9 +2094,13 @@ public class MainActivity extends Activity
         input.setSingleLine(true);
         input.setHint("容器名，如 web");
         input.setText("c" + (Containers.items(this).size() + 1));
+        long sz = Containers.cachedImageSize(this, image.name);
+        String message = sz < 0
+                ? "会复制一份可写 rootfs，与镜像互不影响。"
+                : "会复制一份可写 rootfs（" + Containers.humanSize(sz) + "），与镜像互不影响。";
         new AlertDialog.Builder(this)
                 .setTitle("从 " + image.name + " 新建容器")
-                .setMessage("会复制一份可写 rootfs（" + Containers.humanSize(image.size()) + "），与镜像互不影响。")
+                .setMessage(message)
                 .setView(input)
                 .setNegativeButton("取消", null)
                 .setPositiveButton("创建", new android.content.DialogInterface.OnClickListener() {
@@ -2053,7 +2114,7 @@ public class MainActivity extends Activity
 
     private void createContainerAsync(final String name, final String image) {
         showOverlay("创建容器 " + name + " …");
-        new Thread(new Runnable() {
+        background.execute(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -2079,7 +2140,7 @@ public class MainActivity extends Activity
                     });
                 }
             }
-        }, "create-container").start();
+        });
     }
 
     private void showImageActions(final Containers.Image image) {
@@ -2141,7 +2202,7 @@ public class MainActivity extends Activity
     private void pullImageAsync(final String tag) {
         showOverlay("拉取 alpine:" + tag + " …");
         final Context appContext = getApplicationContext();
-        new Thread(new Runnable() {
+        background.execute(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -2174,7 +2235,7 @@ public class MainActivity extends Activity
                     });
                 }
             }
-        }, "pull-image").start();
+        });
     }
 
     /* -------------------- 从 tar 导入镜像 -------------------- */
@@ -2205,7 +2266,7 @@ public class MainActivity extends Activity
             return;
         }
         showOverlay("读取归档…");
-        new Thread(new Runnable() {
+        background.execute(new Runnable() {
             @Override
             public void run() {
                 File copied = null;
@@ -2229,7 +2290,7 @@ public class MainActivity extends Activity
                     });
                 }
             }
-        }, "copy-archive").start();
+        });
     }
 
     private File copyUriToCache(android.net.Uri uri) throws Exception {
@@ -2292,7 +2353,7 @@ public class MainActivity extends Activity
     private void importArchiveAsync(final File archive, final String refHint) {
         showOverlay("导入镜像…");
         final Context app = getApplicationContext();
-        new Thread(new Runnable() {
+        background.execute(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -2341,7 +2402,7 @@ public class MainActivity extends Activity
                     });
                 }
             }
-        }, "import-image").start();
+        });
     }
 
     /* -------------------- 存储权限 -------------------- */
@@ -2413,7 +2474,7 @@ public class MainActivity extends Activity
                         }
                         Containers.setRunning(name, false);
                         showOverlay("重建容器 " + name + " …");
-                        new Thread(new Runnable() {
+                        background.execute(new Runnable() {
                             @Override
                             public void run() {
                                 try {
@@ -2435,7 +2496,7 @@ public class MainActivity extends Activity
                                     });
                                 }
                             }
-                        }, "recreate-container").start();
+                        });
                     }
                 })
                 .show();
@@ -2520,6 +2581,7 @@ public class MainActivity extends Activity
             inputDeviceListener = null;
         }
         if (isFinishing()) {
+            background.shutdownNow(); // 排队/在跑的后台任务全部中断
             for (TermSession session : sessions.values()) {
                 session.stop();
             }

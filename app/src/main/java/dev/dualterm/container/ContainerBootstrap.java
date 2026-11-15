@@ -102,7 +102,7 @@ public final class ContainerBootstrap {
                                            ContainerRuntime.Progress progress) throws IOException {
         report(progress, "首次使用，准备解包容器根文件系统…");
         if (rootfs.exists()) {
-            deleteRecursive(rootfs, ctx.getFilesDir());
+            Containers.deleteRecursive(rootfs, ctx.getFilesDir());
         }
         Fs.ensureDir(rootfs);
 
@@ -143,7 +143,7 @@ public final class ContainerBootstrap {
 
     public static void wipeRootfs(Context ctx) {
         File container = containerDir(ctx);
-        deleteRecursive(rootfsDir(ctx), container);
+        Containers.deleteRecursive(rootfsDir(ctx), container);
         File marker = new File(container, ".rootfs-" + abi() + ".ok");
         //noinspection ResultOfMethodCallIgnored
         marker.delete();
@@ -182,26 +182,5 @@ public final class ContainerBootstrap {
         try (FileOutputStream out = new FileOutputStream(file)) {
             out.write(content.getBytes("UTF-8"));
         }
-    }
-
-    /** 只允许删除应用私有 container 目录内的东西。 */
-    private static void deleteRecursive(File target, File guardRoot) {
-        try {
-            String root = guardRoot.getCanonicalPath();
-            String path = target.getCanonicalPath();
-            if (!path.equals(root) && !path.startsWith(root + File.separator)) {
-                return;
-            }
-        } catch (IOException e) {
-            return;
-        }
-        File[] children = target.listFiles();
-        if (children != null) {
-            for (File child : children) {
-                deleteRecursive(child, guardRoot);
-            }
-        }
-        //noinspection ResultOfMethodCallIgnored
-        target.delete();
     }
 }

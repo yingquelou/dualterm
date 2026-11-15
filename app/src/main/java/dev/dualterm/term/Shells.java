@@ -72,23 +72,51 @@ public final class Shells {
         return false;
     }
 
-    /** 执行一条命令并返回 stdout（最多 64KB），失败返回 null。 */
+    /** 执行一条命令并返回 stdout（最多 64KB），失败/超时（默认 20s）返回 null。 */
     public static String execCapture(String[] argv) {
+        return execCapture(argv, 20_000);
+    }
+
+    /**
+     * 执行一条命令并返回 stdout，带总超时。
+     *
+     * 为什么不能用「读流 + waitFor(timeout)」：进程若挂着不出输出（典型场景是
+     * su 弹授权框等人点），read() 会永远阻塞，waitFor 根本轮不到。所以输出
+     * 交给独立读线程，主调用线程只带超时等退出。
+     *
+     * 超时视为失败（返回 null），进程 destroyForcibly。
+     */
+    public static String execCapture(String[] argv, long timeoutMs) {
         Process process = null;
         try {
             process = new ProcessBuilder(argv).redirectErrorStream(true).start();
-            StringBuilder sb = new StringBuilder();
-            try (InputStream in = process.getInputStream()) {
-                byte[] buf = new byte[4096];
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    sb.append(new String(buf, 0, n, "UTF-8"));
-                    if (sb.length() > 65536) {
-                        break;
+            final Process p = process;
+            final StringBuilder sb = new StringBuilder();
+            Thread reader = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try (InputStream in = p.getInputStream()) {
+                        byte[] buf = new byte[4096];
+                        int n;
+                        while ((n = in.read(buf)) > 0) {
+                            sb.append(new String(buf, 0, n, "UTF-8"));
+                            if (sb.length() > 65536) {
+                                break;
+                            }
+                        }
+                    } catch (Exception ignored) {
+                        // 进程被杀或流关闭时读到 IOException，正常路径
                     }
                 }
+            }, "exec-capture-reader");
+            reader.setDaemon(true);
+            reader.start();
+
+            if (!process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+                return null; // 超时按失败处理，调用方只关心内容
             }
-            process.waitFor();
+            reader.join(2000);
             return sb.toString();
         } catch (Exception e) {
             return null;

@@ -54,7 +54,8 @@ public final class DockerRuntime extends ContainerRuntime {
         }
 
         progress.onProgress("启动 dockerd…");
-        Shells.execCapture(new String[]{"su", "-c", bootScript() + "; docker info | head -n 5"});
+        // bootScript 里 dockerd 起不来的等待循环最长 15s，超时给宽一档
+        Shells.execCapture(new String[]{"su", "-c", bootScript() + "; docker info | head -n 5"}, 30_000);
         progress.onProgress("Docker 就绪");
     }
 

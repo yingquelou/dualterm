@@ -293,6 +293,10 @@ adb shell 'am start -n dev.dualterm/.MainActivity --es mode container --es keyte
 - 菜单 → **容器管理**：点着做（新建 / 启动并切换 / 停止 / 删除 / 拉镜像 / 导入 tar / 删镜像）
 - 菜单 → **容器管理控制台**：习惯命令行的用这个
 
+镜像大小显示的是导入/拉取完成时缓存好的值（dirSize 要递归数几万个文件，
+绝不能在 UI 线程算）；刚导入的立即可见，旧会话遗留的镜像第一次打开显示
+「…」，后台补齐缓存后下次就有。删镜像时缓存一并清掉。
+
 ```sh
 images                     # 列出镜像
 pull 3.21                  # 从 Alpine 官方源拉一个 minirootfs 当镜像
