@@ -35,18 +35,22 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: 装 Android SDK 组件
-        uses: android-actions/setup-android@v3
-
+      # ubuntu-latest 自带 Android SDK 与 ANDROID_HOME，不引 setup-android：
+      # 它默认要装 "tools" 包，而该包早已从 SDK 仓库下架，直接 exit 1。
       - name: 安装 platform / build-tools / NDK / CMake
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager --install \
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM="$(command -v sdkmanager)"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" --install \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "ndk;26.1.10909125" \
             "cmake;3.22.1" > /dev/null
-          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          echo "sdk.dir=$SDK" > local.properties
+          echo "ANDROID_SDK=$SDK"
 
       - name: 计算版本号
         id: ver
