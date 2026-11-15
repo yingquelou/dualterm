@@ -12,6 +12,7 @@ import java.util.Locale;
 import dev.dualterm.container.ContainerRuntime;
 import dev.dualterm.container.Containers;
 import dev.dualterm.container.ImageImporter;
+import dev.dualterm.container.Ports;
 import dev.dualterm.container.Volumes;
 
 /**
@@ -173,6 +174,7 @@ public final class DockerCli {
         String name = null;
         String image = null;
         List<String> cmd = new ArrayList<>();
+        List<String> portSpecs = new ArrayList<>();
         for (int i = 0; i < args.length; i++) {
             String a = args[i];
             if (a.startsWith("--name=")) {
@@ -187,6 +189,14 @@ public final class DockerCli {
                 addVolume(ctx, a.substring("--volume=".length()));
             } else if (a.startsWith("-v") && a.length() > 2) {
                 addVolume(ctx, a.substring(2));
+            } else if ("-p".equals(a) || "--publish".equals(a)) {
+                if (i + 1 < args.length) {
+                    portSpecs.add(args[++i]);
+                }
+            } else if (a.startsWith("--publish=")) {
+                portSpecs.add(a.substring("--publish=".length()));
+            } else if (a.startsWith("-p") && a.length() > 2) {
+                portSpecs.add(a.substring(2));
             } else if (a.startsWith("-")) {
                 // -it / -d / --rm / -e 等：PRoot 后端无对应概念，忽略
             } else if (image == null) {
@@ -196,10 +206,28 @@ public final class DockerCli {
             }
         }
         if (image == null) {
-            return "docker: 用法 docker run [--name NAME] [-v 宿主:容器] IMAGE\n";
+            return "docker: 用法 docker run [--name NAME] [-v 宿主:容器] [-p 端口] IMAGE\n";
         }
         if (name == null || name.isEmpty()) {
             name = "c" + (System.currentTimeMillis() / 1000 % 100000);
+        }
+
+        // 端口先校验再建容器：重映射在这里就拒掉，比建完再让人对着连不上的端口猜要好
+        List<Ports.Mapping> mappings = new ArrayList<>();
+        for (String spec : portSpecs) {
+            Ports.Mapping m;
+            try {
+                m = Ports.parse(spec);
+            } catch (IllegalArgumentException e) {
+                return "docker: " + e.getMessage() + "\n";
+            }
+            if (!m.passthrough()) {
+                return "docker: 本后端不做端口重映射（-p " + spec + "）。\n"
+                        + "容器和手机共用同一个网络栈，只能同端口直通：改成 -p "
+                        + m.container + ":" + m.container
+                        + "，再让服务在容器里监听 0.0.0.0:" + m.container + "。\n";
+            }
+            mappings.add(m);
         }
 
         Containers.Item item = Containers.create(ctx, name, image);
@@ -208,6 +236,10 @@ public final class DockerCli {
                 ? Containers.findImage(ctx, image).name : Containers.normalizeImage(image);
         sb.append(idOf(item.name)).append('\n');
         sb.append("已创建容器 ").append(item.name).append("（镜像 ").append(target).append("）\n");
+        if (!mappings.isEmpty()) {
+            Ports.save(ctx, item.name, mappings);
+            sb.append(Ports.hint(mappings));
+        }
         if (!cmd.isEmpty()) {
             sb.append("提示: 本后端不执行一次性命令，进入容器后手动运行：")
                     .append(String.join(" ", cmd)).append('\n');
@@ -474,7 +506,7 @@ public final class DockerCli {
                 + "\n"
                 + "容器\n"
                 + "  ps [-a]                  列出容器（-a 含已停止）\n"
-                + "  run [--name N] [-v h:g] IMAGE\n"
+                + "  run [--name N] [-v h:g] [-p 端口] IMAGE\n"
                 + "                           用镜像创建容器并切换过去\n"
                 + "  rm NAME                  删除容器（不动镜像）\n"
                 + "  start / stop NAME        只给提示：启停在 容器管理 里做\n"
@@ -493,6 +525,8 @@ public final class DockerCli {
                 + "      这些命令只在 App 的「容器管理控制台」里可用，容器内没有 docker 命令，\n"
                 + "      所以不会和镜像自带的同名程序冲突。\n"
                 + "      不支持 build / push / compose / 网络管理。\n"
+                + "      -p 只收同端口直通（8080 或 8080:8080）：容器和手机共用网络栈，\n"
+                + "      没有 NAT 可做映射；容器内监听 0.0.0.0:8080，手机即可访问 127.0.0.1:8080。\n"
                 + "      导入的镜像架构必须与设备一致（如 arm64-v8a）。\n";
     }
 

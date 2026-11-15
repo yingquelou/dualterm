@@ -403,6 +403,8 @@ public final class Containers {
         }
         writeItems(ctx, list);
         RUNNING.remove(name);
+        // 同名重建不该继承旧容器声明的端口
+        Ports.clear(ctx, name);
         if (name.equals(activeName(ctx))) {
             prefs(ctx).edit().remove(KEY_ACTIVE).apply();
         }

@@ -74,7 +74,11 @@ public final class DockerRuntime extends ContainerRuntime {
 
         StringBuilder script = new StringBuilder();
         script.append(bootScript())
-                .append("; exec docker run -it --name ").append(Shells.shQuote(name))
+                // 固定 host 网络：Android 上 dockerd 的 bridge 要 veth + iptables NAT，
+                // 手机内核常常没有 nat 表，容器会起得来但出不去、外面也进不来。
+                // host 模式直接复用宿主网络栈，容器内监听 8080 就等于手机监听 8080，
+                // 和 PRoot 后端的语义一致（代价是端口冲突会直接 EADDRINUSE）。
+                .append("; exec docker run -it --net=host --name ").append(Shells.shQuote(name))
                 .append(" -v /sdcard:/mnt/sdcard");
         // 用户自定义绑定目录，与 PRoot 后端共用同一份配置
         for (String[] vol : Volumes.list(ctx)) {
