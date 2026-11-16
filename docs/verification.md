@@ -17,5 +17,7 @@
 | 会话保活 | 前台服务 `isForeground=true`，`PARTIAL_WAKE_LOCK 'dualterm:session'` 持有 |
 | 会话存活 | 本地 sh 与容器 proot 可同时常驻，切模式复用现场，无残留僵尸进程 |
 | Release 包安装 | CI 产物签名校验通过，安装后本地 shell 与容器模式均正常，首次进容器自动解包 Alpine 3.20.3 |
+| 主菜单分组 | 横屏顶层 6 组完整显示无裁剪；「屏幕内容」二级展开正常，点「复制当前屏」回调生效（toast 计数正确） |
+| 键面板 F7–F12 | 17 键 3 行完整；`cat -v` 下按 F7 回显 `ESC[18~` 的可见部分 `8~`，序列正确 |
 
 未经真机验证的部分：Docker 后端（缺少带 namespace 内核的设备）、整包 `ImageImporter.importArchive`（依赖 Context 与真 `org.json`，仅有单元级测试）。

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 菜单行涟漪：按下高亮，松开还原（透明底，面板背景透出来） -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#40FFFFFF">
+    <item android:drawable="@android:color/transparent" />
+</ripple>

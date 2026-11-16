@@ -930,45 +930,53 @@ public class MainActivity extends Activity
     }
 
     /**
-     * 更多键：HOME/END/PGUP/PGDN/DEL/INS + F1-F6。
+     * 更多键：HOME/END/PGUP/PGDN/DEL/INS + F1-F12。
      * 最初这里还有 12 个符号（/ - | ~ \ * & $ > < " '），和符号页完全重复
      * （面板展开时 4 行 + 键行 + 键盘占掉半屏）。符号统一收敛到键盘符号页，
      * 面板只留键盘上没有的编辑键/功能键。
+     *
+     * 按行分组而不是平坦 6 键换行：编辑键一行、F1–F12 一行——F 键是按序号
+     * 找的，一行排开视线不用跨行跳，且面板从 3 行降到 2 行（每行 34dp）。
      */
-    private static final String[][] PANEL_KEYS = {
-            {"HOME", "\u001b[H"}, {"END", "\u001b[F"}, {"PGUP", "\u001b[5~"},
-            {"PGDN", "\u001b[6~"}, {"DEL", "\u001b[3~"}, {"INS", "\u001b[2~"},
-            {"F1", "\u001bOP"}, {"F2", "\u001bOQ"}, {"F3", "\u001bOR"},
-            {"F4", "\u001bOS"}, {"F5", "\u001b[15~"}, {"F6", "\u001b[17~"},
+    private static final String[][][] PANEL_ROWS = {
+            {
+                    {"HOME", "\u001b[H"}, {"END", "\u001b[F"}, {"PGUP", "\u001b[5~"},
+                    {"PGDN", "\u001b[6~"}, {"DEL", "\u001b[3~"}, {"INS", "\u001b[2~"},
+            },
+            {
+                    {"F1", "\u001bOP"}, {"F2", "\u001bOQ"}, {"F3", "\u001bOR"},
+                    {"F4", "\u001bOS"}, {"F5", "\u001b[15~"}, {"F6", "\u001b[17~"},
+                    {"F7", "\u001b[18~"}, {"F8", "\u001b[19~"}, {"F9", "\u001b[20~"},
+                    {"F10", "\u001b[21~"}, {"F11", "\u001b[23~"}, {"F12", "\u001b[24~"},
+            },
     };
 
     private void buildKeyPanel() {
-        final int perRow = 6;
-        LinearLayout row = null;
-        for (int i = 0; i < PANEL_KEYS.length; i++) {
-            if (i % perRow == 0) {
-                row = new LinearLayout(this);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setLayoutParams(new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                keyPanel.addView(row);
+        for (String[][] rowKeys : PANEL_ROWS) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setLayoutParams(new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            keyPanel.addView(row);
+            for (String[] key : rowKeys) {
+                Button b = makeKeyButton(key[0]);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1f);
+                // 12 键一行比 6 键行挤：键间距从 2dp 收到 1dp，宽度换给文字
+                lp.setMargins(dp(1), dp(2), dp(1), 0);
+                b.setLayoutParams(lp);
+                final String sequence = key[1];
+                b.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        // 不收起：面板里全是「发送即生效」的编辑键/F 键，连按 PGUP、
+                        // HOME 之后接 END 是常见操作。收起一次就会重排一次终端
+                        // （TIOCSWINSZ → SIGWINCH），vim/htop 跟着整屏重绘，画面抖动
+                        // 比多点一次难受得多。收起交给「⋯」再点一次 / 返回键 / 点终端。
+                        terminal.sendRaw(sequence);
+                    }
+                });
+                row.addView(b);
             }
-            Button b = makeKeyButton(PANEL_KEYS[i][0]);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1f);
-            lp.setMargins(dp(2), dp(2), dp(2), 0);
-            b.setLayoutParams(lp);
-            final String sequence = PANEL_KEYS[i][1];
-            b.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    // 不收起：面板里全是「发送即生效」的编辑键/F 键，连按 PGUP、
-                    // HOME 之后接 END 是常见操作。收起一次就会重排一次终端
-                    // （TIOCSWINSZ → SIGWINCH），vim/htop 跟着整屏重绘，画面抖动
-                    // 比多点一次难受得多。收起交给「⋯」再点一次 / 返回键 / 点终端。
-                    terminal.sendRaw(sequence);
-                }
-            });
-            row.addView(b);
         }
     }
 
@@ -1312,38 +1320,186 @@ public class MainActivity extends Activity
 
     /* -------------------- 菜单 -------------------- */
 
-    private void showMenu(View anchor) {
-        PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add(0, 1, 0, "重启当前会话");
-        menu.getMenu().add(0, 2, 1, "复制全部输出");
-        menu.getMenu().add(0, 18, 2, "复制当前屏");
-        menu.getMenu().add(0, 3, 3, "粘贴");
-        menu.getMenu().add(0, 4, 4, "清屏");
-        menu.getMenu().add(0, 5, 4, "字号 +");
-        menu.getMenu().add(0, 6, 5, "字号 -");
-        menu.getMenu().add(0, 7, 6, prefs.getBoolean("root", false) ? "Root Shell：开" : "Root Shell：关");
-        menu.getMenu().add(0, 8, 7, "容器运行时：" + runtimeLabel());
-        menu.getMenu().add(0, 16, 8, "容器管理控制台（docker 命令）…");
-        menu.getMenu().add(0, 14, 8, "容器管理（"
-                + Containers.items(this).size() + " 个容器 / "
-                + Containers.images(this).size() + " 个镜像）");
-        menu.getMenu().add(0, 15, 9, "导入镜像（docker save/export 的 tar）…");
-        menu.getMenu().add(0, 9, 9, "重建当前容器（清空其 rootfs）");
-        menu.getMenu().add(0, 12, 10, "绑定目录（" + Volumes.list(this).size() + "）");
-        menu.getMenu().add(0, 13, 11, "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"));
-        menu.getMenu().add(0, 11, 12, fullscreen ? "退出全屏" : "全屏模式");
-        menu.getMenu().add(0, 19, 13, "帮助（使用说明）…");
-        menu.getMenu().add(0, 10, 13, "关于");
-        // 返回键只退到后台（会话不丢），真正结束会话放在这里
-        menu.getMenu().add(0, 17, 14, "退出应用（结束会话）");
+    /** 当前显示的自绘菜单（null = 未打开）。非焦点窗口，返回键由 onBackPressed 接管。 */
+    private android.widget.PopupWindow menuPopup;
+    /** 菜单打开期间的层级现场：返回键「二级→顶层→收起」要用。 */
+    private View menuAnchor;
+    private java.util.List<MenuGroup> menuGroups;
+    private int menuGroupIndex = -1;
 
-        menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
-            @Override
-            public boolean onMenuItemClick(android.view.MenuItem item) {
-                return onMenuClick(item.getItemId());
+    /** 一组菜单：组名（二级首行）+ 动作列表（label 与 id 一一对应，id 走 onMenuClick）。 */
+    private static final class MenuGroup {
+        final String title;
+        final String[] labels;
+        final int[] ids;
+
+        MenuGroup(String title, String[] labels, int[] ids) {
+            this.title = title;
+            this.labels = labels;
+            this.ids = ids;
+        }
+    }
+
+    /**
+     * 菜单数据在每次打开时现算：容器数/镜像数、运行时、Root 开关这些标签
+     * 都随状态变，缓存反而要到处失效。
+     */
+    private java.util.List<MenuGroup> buildMenuGroups() {
+        java.util.List<MenuGroup> groups = new java.util.ArrayList<>();
+        groups.add(new MenuGroup("会话",
+                new String[]{"重启当前会话", "退出应用（结束会话）"},
+                new int[]{1, 17}));
+        groups.add(new MenuGroup("屏幕内容",
+                new String[]{"复制全部输出", "复制当前屏", "粘贴", "清屏"},
+                new int[]{2, 18, 3, 4}));
+        groups.add(new MenuGroup("容器",
+                new String[]{
+                        "容器管理（" + Containers.items(this).size() + " 个容器 / "
+                                + Containers.images(this).size() + " 个镜像）",
+                        "管理控制台（docker 命令）…",
+                        "导入镜像（docker save/export 的 tar）…",
+                        "重建当前容器（清空其 rootfs）",
+                        "绑定目录（" + Volumes.list(this).size() + "）",
+                        "运行时：" + runtimeLabel(),
+                },
+                new int[]{14, 16, 15, 9, 12, 8}));
+        groups.add(new MenuGroup("外观",
+                new String[]{fullscreen ? "退出全屏" : "全屏模式", "字号 +", "字号 -"},
+                new int[]{11, 5, 6}));
+        groups.add(new MenuGroup("设置",
+                new String[]{
+                        prefs.getBoolean("root", false) ? "Root Shell：开" : "Root Shell：关",
+                        "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"),
+                },
+                new int[]{7, 13}));
+        groups.add(new MenuGroup("帮助",
+                new String[]{"使用说明…", "关于"},
+                new int[]{19, 10}));
+        return groups;
+    }
+
+    /**
+     * 菜单入口。横屏只有约 360dp 高，早年平铺的 19 项会超出屏幕，后半段
+     * （存储权限、帮助、关于、退出应用）既看不见也点不到。按职责收成 6 组。
+     *
+     * 用自绘面板而不是 PopupMenu：PopupMenu 的二级子菜单是级联窗口，顶部那行
+     * 绿色组名只是标题摆设——点不动、也没法回到上一层。自绘后层级在同一窗口
+     * 内切换：二级首行（绿色组名）点一下回顶层，返回键同理逐层退。
+     */
+    private void showMenu(View anchor) {
+        showMenuPopup(anchor, buildMenuGroups(), -1);
+    }
+
+    private void showMenuPopup(final View anchor, final java.util.List<MenuGroup> groups,
+                               final int groupIndex) {
+        dismissMenu();
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackgroundResource(R.drawable.menu_bg);
+        panel.setMinimumWidth(dp(200));
+
+        // 行先装进 rowsBox 再套 ScrollView：菜单超过锚点下方可用高度时
+        // （横屏的容器二级最高）像系统菜单一样可滚，而不是被屏幕裁掉底行。
+        LinearLayout rowsBox = new LinearLayout(this);
+        rowsBox.setOrientation(LinearLayout.VERTICAL);
+
+        if (groupIndex < 0) {
+            // 顶层：6 个组名，点击展开对应二级
+            for (int i = 0; i < groups.size(); i++) {
+                final int idx = i;
+                TextView row = addMenuRow(rowsBox, groups.get(i).title, false);
+                row.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        showMenuPopup(anchor, groups, idx);
+                    }
+                });
             }
-        });
-        menu.show();
+        } else {
+            final MenuGroup g = groups.get(groupIndex);
+            // 二级首行：绿色组名 = 返回按钮（"‹" 提示可点回顶层）
+            TextView back = addMenuRow(rowsBox, "‹ " + g.title, true);
+            back.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showMenuPopup(anchor, groups, -1);
+                }
+            });
+            for (int i = 0; i < g.ids.length; i++) {
+                final int id = g.ids[i];
+                TextView row = addMenuRow(rowsBox, g.labels[i], false);
+                row.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        dismissMenu();
+                        onMenuClick(id);
+                    }
+                });
+            }
+        }
+
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.addView(rowsBox);
+        panel.addView(scroll);
+        // 内容超过可用高度就把滚动区压到 avail，其余交给滚轮/拖动
+        android.graphics.Point sz = new android.graphics.Point();
+        getWindowManager().getDefaultDisplay().getSize(sz);
+        android.graphics.Rect frame = new android.graphics.Rect();
+        getWindow().getDecorView().getWindowVisibleDisplayFrame(frame);
+        int[] loc = new int[2];
+        anchor.getLocationOnScreen(loc);
+        int avail = sz.y - frame.top - (loc[1] + anchor.getHeight()) - dp(12);
+        rowsBox.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        if (rowsBox.getMeasuredHeight() > avail) {
+            scroll.setLayoutParams(new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, avail));
+        }
+
+        android.widget.PopupWindow popup = new android.widget.PopupWindow(panel,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, false);
+        // 背景必须是任意非空 drawable，否则 outsideTouchable 不生效（点外部不收起）
+        popup.setBackgroundDrawable(
+                new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+        popup.setOutsideTouchable(true);
+        popup.setElevation(dp(8));
+        menuPopup = popup;
+        menuAnchor = anchor;
+        menuGroups = groups;
+        menuGroupIndex = groupIndex;
+        popup.showAsDropDown(anchor, 0, dp(4), Gravity.END);
+    }
+
+    private TextView addMenuRow(LinearLayout rowsBox, String text, boolean accent) {
+        TextView row = new TextView(this);
+        row.setText(text);
+        row.setTextSize(15);
+        row.setSingleLine(true);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setTextColor(accent ? COLOR_ACCENT : COLOR_TEXT);
+        row.setBackgroundResource(R.drawable.menu_item_bg);
+        row.setPadding(dp(18), 0, dp(18), 0);
+        // 整行可点：宽度铺满面板。之前 WRAP_CONTENT 时短行右侧的大片面板空白
+        // 是死区——看得见点不着、也不收起菜单，系统 PopupMenu 是整行宽响应。
+        // 48dp 是 Material 建议的最小触控高度。
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        row.setLayoutParams(lp);
+        rowsBox.addView(row);
+        return row;
+    }
+
+    private void dismissMenu() {
+        if (menuPopup != null) {
+            if (menuPopup.isShowing()) {
+                menuPopup.dismiss();
+            }
+            menuPopup = null;
+        }
+        menuAnchor = null;
+        menuGroups = null;
+        menuGroupIndex = -1;
     }
 
     private String runtimeLabel() {
@@ -2441,6 +2597,15 @@ public class MainActivity extends Activity
 
     @Override
     public void onBackPressed() {
+        // 自绘菜单是非焦点窗口，返回键落到这里：二级退回顶层，顶层才收起
+        if (menuPopup != null) {
+            if (menuGroupIndex >= 0) {
+                showMenuPopup(menuAnchor, menuGroups, -1);
+            } else {
+                dismissMenu();
+            }
+            return;
+        }
         if (overlay.getVisibility() == View.VISIBLE) {
             return;
         }
@@ -2473,6 +2638,8 @@ public class MainActivity extends Activity
     public void onConfigurationChanged(android.content.res.Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         // 旋转 / 键盘支架开合都会走这里
+        // 菜单锚在 ⋮ 按钮上，转屏后位置会挪，直接收起最干净
+        dismissMenu();
         refreshInputMode();
         updateChrome();
         updateStatus(null);

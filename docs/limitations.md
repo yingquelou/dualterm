@@ -10,16 +10,15 @@
 6. **运行时按 ABI 单独准备**：`scripts/fetch-runtime.*` 默认只处理一个 ABI。未准备的 ABI 上容器模式会提示缺运行时；本地模式不受影响。发布流水线会准备三个 ABI。
 7. **本地模式的 `PS1` 会被 `/system/etc/mkshrc` 覆盖**：因此提示符是 Android 默认的 `:当前目录$`，而非工程设置的值。纯外观问题。
 8. **软键盘弹出时终端会被压扁**：横屏全键盘可占 600dp 以上，`adjustResize` 之后终端只剩两三行（此时更多键面板自动收起）。接入物理键盘时不触发。
-9. **部分终端协议有意不实现**：`IRM` / `LNM`、`modifyOtherKeys` 与 kitty 键盘协议、OSC 52（程序写系统剪贴板，vim 的 `"+y`）、OSC 0/2 标题、OSC 8 超链接、Sixel 图片、同步输出 `?2026`、ZWJ emoji 合成序列。取舍理由见 [internals.md](internals.md#与-xterm-对表的取舍)，这些程序都会静默降级。
+9. **部分终端协议有意不实现**：`IRM` / `LNM`、`modifyOtherKeys` 与 kitty 键盘协议、OSC 0/2 标题、OSC 8 超链接、Sixel 图片、同步输出 `?2026`、ZWJ emoji 合成序列。取舍理由见 [internals.md](internals.md#与-xterm-对表的取舍)，这些程序都会静默降级。OSC 52 不在此列，已在计划中（见 [roadmap.md](roadmap.md)）。
 10. **开启软键盘时无法截图**：输入法窗口带 `FLAG_SECURE`，系统会拒绝整屏截图并提示「该应用不允许屏幕截图」。应用自身未设置 `FLAG_SECURE`，可用 `adb logcat -s DualTerm | grep "window flags"` 确认。截图前先收起键盘。
 11. **每模式只有一个会话**：暂不支持多标签。
 
 ## 后续计划
 
-- 多标签会话
-- 文本选中与复制（当前只有「复制全部输出」与「复制当前屏」）
-- 触屏文本选择：长按手势已空出（菜单已移至 `⋯` 长按），目标是先选词再出「复制」浮动条
-- 键条面板第二页（`F7`–`F12` 目前只有物理键盘可以发送）
-- `Intent` 外部调用（`am start -a RUN_COMMAND`）
-- OSC 52：让 vim 的 `"+y` 写入系统剪贴板
-- rootfs 换成 Debian/Ubuntu minirootfs（替换运行时脚本中的 URL 即可，解包逻辑通用）
+逐项的可行性评估、实现边界与不做/缓做的理由统一收在 [roadmap.md](roadmap.md)。
+速览：
+
+- **做**：文本选中与复制（长按锚点 + 拖动 + 跨 scrollback，P1 缺口）
+- **缓做**：OSC 52（默认关，等选区落地后一起做）
+- **不做**（触发条件后重评）：多标签会话、终端间直达、Intent 外部调用、rootfs 换 Debian（用「导入镜像」通路替代）、MainActivity 全量拆分
