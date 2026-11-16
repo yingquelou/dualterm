@@ -156,11 +156,16 @@ public final class TermSession {
     }
 
     public void writeBytes(byte[] data) {
+        writeBytes(data, 0, data == null ? 0 : data.length);
+    }
+
+    /** 分段写（粘贴大文本时按块喂，读线程有机会穿插刷输出）。 */
+    public void writeBytes(byte[] data, int offset, int len) {
         int f = fd;
-        if (f < 0 || data == null || data.length == 0) {
+        if (f < 0 || data == null || len <= 0) {
             return;
         }
-        NativePty.write(f, data, 0, data.length);
+        NativePty.write(f, data, offset, len);
     }
 
     /** UI 尺寸变化时调用，同步 PTY 行列数并调整屏幕模型。 */

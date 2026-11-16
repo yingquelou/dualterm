@@ -692,12 +692,19 @@ public final class TerminalEmulator {
     }
 
     public synchronized String getText() {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < scrollback.size(); i++) {
-            appendLineText(sb, scrollback.get(i));
+        // 尾部空行只是屏幕比内容高时补的白，复制出去是一串没意义的换行——
+        // 裁到最后一个有内容的行为止（用户敲的空回车在中间，不受影响）
+        int end = scrollback.size() + rows - 1;
+        while (end >= 0) {
+            Line li = end < scrollback.size() ? scrollback.get(end) : lines[end - scrollback.size()];
+            if (!isBlankLine(li)) {
+                break;
+            }
+            end--;
         }
-        for (int r = 0; r < rows; r++) {
-            appendLineText(sb, lines[r]);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i <= end; i++) {
+            appendLineText(sb, i < scrollback.size() ? scrollback.get(i) : lines[i - scrollback.size()]);
         }
         return sb.toString();
     }
@@ -707,8 +714,12 @@ public final class TerminalEmulator {
      * 动辄几万行，用户真正想要的多半是「刚才这一屏」，所以单独给一个入口。
      */
     public synchronized String getScreenText() {
+        int end = rows - 1;
+        while (end >= 0 && isBlankLine(lines[end])) {
+            end--;
+        }
         StringBuilder sb = new StringBuilder();
-        for (int r = 0; r < rows; r++) {
+        for (int r = 0; r <= end; r++) {
             appendLineText(sb, lines[r]);
         }
         return sb.toString();

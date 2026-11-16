@@ -382,24 +382,28 @@ public class TerminalView extends View {
         if (session == null || text == null || text.isEmpty()) {
             return;
         }
-        if (text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0) {
+        boolean truncated = dev.dualterm.util.PasteSanitize.wasTruncated(text);
+        text = dev.dualterm.util.PasteSanitize.sanitize(text);
+        if (text.isEmpty()) {
+            hint("剪贴板里没有可粘贴的文本");
+            return;
+        }
+        if (dev.dualterm.util.PasteSanitize.countLines(text) > 1) {
             // 多行粘贴必须确认：每一行都会作为独立输入立即发给 PTY（相当于
             // 逐行按回车）。实测把整屏复制再粘贴，shell 就把 63 行提示符当
             // 命令逐条"执行"了——屏幕内容若含 rm -rf 之类的行就是事故。
             // Windows Terminal / PuTTY 对多行粘贴都有确认框，这里对齐。
             confirmMultilinePaste(text);
-            return;
+        } else {
+            doPaste(text);
         }
-        doPaste(text);
+        if (truncated) {
+            hint("内容过大，已截断到 512KB");
+        }
     }
 
     private void confirmMultilinePaste(final String text) {
-        int lineCount = 1;
-        for (int i = 0; i < text.length(); i++) {
-            if (text.charAt(i) == '\n' || text.charAt(i) == '\r') {
-                lineCount++;
-            }
-        }
+        int lineCount = dev.dualterm.util.PasteSanitize.countLines(text);
         new android.app.AlertDialog.Builder(getContext())
                 .setTitle("粘贴多行文本")
                 .setMessage("内容包含约 " + lineCount + " 行。每一行都会作为独立输入"
@@ -414,26 +418,78 @@ public class TerminalView extends View {
                 .show();
     }
 
+    /**
+     * 粘贴落地：后台线程分段写 PTY。
+     *
+     * <p>不走 sendText——粘贴内容不能被按住的 Ctrl/Alt 修饰键改写。
+     * 写入必须离开 UI 线程：PTY 缓冲区满（目标进程不读，比如 cat、sleep）
+     * 时 write 会阻塞，在主线程上就是 ANR。单线程执行器保证多次粘贴按序落盘；
+     * 分段 8KB 让读线程有机会穿插处理输出（长输出不至于整段憋到最后才刷屏）。
+     */
+    private static final java.util.concurrent.ExecutorService PASTE_EXECUTOR =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
     private void doPaste(String text) {
-        boolean bracketed = session.getEmulator().isBracketedPaste();
-        sendText(bracketed ? "\u001b[200~" + text + "\u001b[201~" : text);
+        final TermSession s = session;
+        if (s == null) {
+            return;
+        }
+        final boolean bracketed = s.getEmulator().isBracketedPaste();
+        final String payload = bracketed ? "\u001b[200~" + text + "\u001b[201~" : text;
+        PASTE_EXECUTOR.execute(new Runnable() {
+            @Override
+            public void run() {
+                byte[] data = payload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                int off = 0;
+                while (off < data.length && s.isRunning()) {
+                    int n = Math.min(8192, data.length - off);
+                    s.writeBytes(data, off, n);
+                    off += n;
+                }
+            }
+        });
+        scrollOffset = 0;
+        invalidate();
     }
 
     /** 硬件键盘 Ctrl+Shift+V：从系统剪贴板粘贴（走 pasteText，带 bracketed paste）。 */
     private void pasteFromClipboard() {
+        String text = readClipboardText();
+        if (text == null) {
+            return;
+        }
+        pasteText(text);
+        hint("已粘贴 " + text.length() + " 个字符");
+    }
+
+    /**
+     * 读剪贴板文本，失败返回 null。
+     *
+     * <p>必须只调一次 getPrimaryClip 并判空：MIUI 弹「允许读取剪贴板？」，
+     * 用户拒绝后 hasPrimaryClip 可能仍为 true 而 getPrimaryClip 返回 null——
+     * 曾经在两次调用之间返回了 null 直接 NPE 崩溃（crash buffer 实证）。
+     * 服务异常（SecurityException / DeadObject）也一并兜住。
+     */
+    private String readClipboardText() {
         ClipboardManager cm =
                 (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip() == null) {
-            hint("剪贴板是空的");
-            return;
+        if (cm == null) {
+            hint("剪贴板不可用");
+            return null;
         }
-        ClipData.Item item = cm.getPrimaryClip().getItemAt(0);
-        CharSequence text = item == null ? null : item.coerceToText(getContext());
-        if (text == null || text.length() == 0) {
-            return;
+        try {
+            ClipData clip = cm.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) {
+                hint("剪贴板是空的（或读取被拒绝）");
+                return null;
+            }
+            ClipData.Item item = clip.getItemAt(0);
+            CharSequence text = item == null ? null : item.coerceToText(getContext());
+            return text == null ? null : text.toString();
+        } catch (Exception e) {
+            hint("读取剪贴板失败：" + e.getMessage());
+            return null;
         }
-        pasteText(text.toString());
-        hint("已粘贴 " + text.length() + " 个字符");
     }
 
     /**
@@ -451,8 +507,12 @@ public class TerminalView extends View {
         if (cm == null) {
             return;
         }
-        cm.setPrimaryClip(ClipData.newPlainText("terminal", text));
-        hint("已复制当前屏 " + text.length() + " 个字符");
+        try {
+            cm.setPrimaryClip(ClipData.newPlainText("terminal", text));
+            hint("已复制当前屏 " + text.length() + " 个字符");
+        } catch (Exception e) {
+            hint("复制失败：" + e.getMessage());
+        }
     }
 
     private void hint(String message) {

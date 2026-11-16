@@ -1441,12 +1441,7 @@ public class MainActivity extends Activity
             toast("当前没有会话");
             return;
         }
-        String text = session.getEmulator().getText();
-        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm != null) {
-            cm.setPrimaryClip(ClipData.newPlainText("terminal", text));
-            toast("已复制 " + text.length() + " 个字符");
-        }
+        copyToClipboard(session.getEmulator().getText(), "已复制 %d 个字符");
     }
 
     /**
@@ -1459,22 +1454,42 @@ public class MainActivity extends Activity
             toast("当前没有会话");
             return;
         }
-        String text = session.getEmulator().getScreenText();
+        copyToClipboard(session.getEmulator().getScreenText(), "已复制当前屏 %d 个字符");
+    }
+
+    /** 写剪贴板的统一入口。MIUI 上个别 ROM 会对写操作抛安全异常，兜住提示而不是崩。 */
+    private void copyToClipboard(String text, String toastTemplate) {
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm != null) {
+        if (cm == null) {
+            return;
+        }
+        try {
             cm.setPrimaryClip(ClipData.newPlainText("terminal", text));
-            toast("已复制当前屏 " + text.length() + " 个字符");
+            toast(String.format(toastTemplate, text.length()));
+        } catch (Exception e) {
+            toast("复制失败：" + e.getMessage());
         }
     }
 
     private void paste() {
+        // 只调一次 getPrimaryClip 并判空：MIUI「读取剪贴板」弹窗被拒后，
+        // hasPrimaryClip 可能仍为 true 而 getPrimaryClip 返回 null，曾因此 NPE 崩溃
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip() == null) {
+        if (cm == null) {
             return;
         }
-        ClipData.Item item = cm.getPrimaryClip().getItemAt(0);
-        CharSequence text = item == null ? null : item.coerceToText(this);
-        if (text != null) {
+        CharSequence text = null;
+        try {
+            ClipData clip = cm.getPrimaryClip();
+            if (clip != null && clip.getItemCount() > 0) {
+                ClipData.Item item = clip.getItemAt(0);
+                text = item == null ? null : item.coerceToText(this);
+            }
+        } catch (Exception e) {
+            toast("读取剪贴板被拒绝或失败");
+            return;
+        }
+        if (text != null && text.length() > 0) {
             terminal.pasteText(text.toString());
         }
     }

@@ -23,6 +23,14 @@ public class EmuTest {
         e.append(b, b.length);
     }
 
+    static String repeat(char c, int n) {
+        StringBuilder sb = new StringBuilder(n);
+        for (int i = 0; i < n; i++) {
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
     static String lineText(TerminalEmulator e, int row) {
         return textOf(e.getLine(row));
     }
@@ -426,6 +434,46 @@ public class EmuTest {
         check("cursor in trailing spaces keeps position",
                 lineText(ec, 0).trim().equals("abc") && ec.getCursorCol() == 6,
                 "r0=[" + lineText(ec, 0).trim() + "] col=" + ec.getCursorCol());
+
+        // 33) 粘贴净化：CRLF 归一、控制字符剔除、TAB 保留、上限截断
+        check("sanitize normalizes CRLF to CR",
+                dev.dualterm.util.PasteSanitize.sanitize("a\r\nb").equals("a\rb")
+                        && dev.dualterm.util.PasteSanitize.sanitize("a\nb\nc").equals("a\rb\rc"),
+                "[" + dev.dualterm.util.PasteSanitize.sanitize("a\r\nb") + "]");
+        // ESC 剔除后剩下的可见字符保留（xterm paste-controls=off 同款）
+        check("sanitize strips escape sequences",
+                dev.dualterm.util.PasteSanitize.sanitize("\u001b[201~abc\u001b]0;x").equals("[201~abc]0;x"),
+                "[" + dev.dualterm.util.PasteSanitize.sanitize("\u001b[201~abc\u001b]0;x") + "]");
+        check("sanitize keeps tab drops DEL",
+                dev.dualterm.util.PasteSanitize.sanitize("a\tb\u007fc").equals("a\tbc"),
+                "[" + dev.dualterm.util.PasteSanitize.sanitize("a\tb\u007fc") + "]");
+        check("sanitize counts CRLF lines once",
+                dev.dualterm.util.PasteSanitize.countLines(dev.dualterm.util.PasteSanitize.sanitize("a\r\nb\r\nc")) == 3,
+                "lines=" + dev.dualterm.util.PasteSanitize.countLines(dev.dualterm.util.PasteSanitize.sanitize("a\r\nb\r\nc")));
+        check("sanitize truncates oversize paste",
+                dev.dualterm.util.PasteSanitize.sanitize(repeat('a', 600 * 1024)).length()
+                        == dev.dualterm.util.PasteSanitize.MAX_LENGTH,
+                "len=" + dev.dualterm.util.PasteSanitize.sanitize(repeat('a', 600 * 1024)).length());
+
+        // 34) 复制裁尾部空行：整屏只用前几行时，后面是屏幕填充不是内容
+        TerminalEmulator ct = new TerminalEmulator(20, 10, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(ct, "line1\r\nline2");
+        check("copy screen trims trailing blank rows",
+                ct.getScreenText().equals("line1\nline2\n"),
+                "[" + ct.getScreenText() + "]");
+
+        // 35) 中间空行（用户敲的空回车）必须保留
+        feed(ct, "\r\n\r\nafter-blank");
+        check("copy keeps interior blank lines",
+                ct.getScreenText().equals("line1\nline2\n\nafter-blank\n"),
+                "[" + ct.getScreenText() + "]");
+
+        // 36) getText 同样裁尾部空行、保留中间空行
+        TerminalEmulator cg = new TerminalEmulator(20, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(cg, "top\r\n\r\nbottom");
+        check("copy all keeps interior blanks trims tail",
+                cg.getText().equals("top\n\nbottom\n"),
+                "[" + cg.getText() + "]");
 
         System.out.println(fails == 0 ? "ALL PASS" : fails + " FAILURES");
         System.exit(fails == 0 ? 0 : 1);
