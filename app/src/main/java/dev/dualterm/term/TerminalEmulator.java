@@ -21,7 +21,10 @@ import java.util.ArrayList;
  * gh / fzf / survey 这类 TUI 在画提示符前会先问光标位置，收不到回报就卡在第一个提示上。
  *
  * resize 与 xterm 对齐：变矮时从顶部裁（裁掉的行进 scrollback），保证光标不离开屏幕；
- * 变高时在底部补空行；scrollback 不清空。
+ * 变高时在底部补空行，光标行列不变；scrollback 不清空。
+ * 变宽/变窄对主屏做双向 reflow：按行的软换行标记拆成逻辑行再按新宽度重新折行，
+ * 转屏变窄时右端内容折成续行而不是截断丢失（Line.wrapped）。
+ * 备用屏（vim/less 等全屏应用）不 reflow，只截断——应用收到 SIGWINCH 会整屏重画。
  *
  * 内部用「行对象数组 + 三套属性数组」存屏幕，滚动出屏的行进 scrollback。
  * 所有对外方法都加了 synchronized：PTY 读线程写、UI 线程读。
@@ -60,6 +63,11 @@ public final class TerminalEmulator {
         public final byte[] attr;
         /** 组合字符（零宽）挂在前一个格子上，懒分配：绝大多数行用不到。 */
         private String[] extra;
+        /**
+         * 软换行标记：true 表示本行内容因 autowrap 被折到下一行继续（不是显式 \n 结束）。
+         * resize 重排（reflow）靠它决定相邻两行要不要拆开/拼回，xterm 同款语义。
+         */
+        boolean wrapped;
 
         Line(int cols) {
             text = new int[cols];
@@ -299,8 +307,19 @@ public final class TerminalEmulator {
         if (newCols == cols && newRows == rows) {
             return;
         }
+        if (newRows != rows) {
+            // 先调高度：reflow 要用新的屏幕行数决定窗口，否则转竖屏时会按旧的 23 行算窗口，
+            // 多出来的内容被推进 scrollback、屏幕下方留一大片空
+            mainLines = resizeHeight(mainLines, newRows, true);
+            if (altLines != null) {
+                altLines = resizeHeight(altLines, newRows, false);
+            }
+            rows = newRows;
+        }
         if (newCols != cols) {
-            mainLines = resizeWidth(mainLines, newCols);
+            // 主屏 + scrollback 做双向 reflow（软换行行拆开/拼回，右端内容不丢）；
+            // 备用屏是全屏应用的地盘，应用收到 SIGWINCH 会整屏重画，截断即可。
+            reflowMain(newCols);
             if (altLines != null) {
                 altLines = resizeWidth(altLines, newCols);
             }
@@ -309,16 +328,184 @@ public final class TerminalEmulator {
             pendingWrap = false;
             initTabStops();
         }
-        if (newRows != rows) {
-            mainLines = resizeHeight(mainLines, newRows, true);
-            if (altLines != null) {
-                altLines = resizeHeight(altLines, newRows, false);
-            }
-            rows = newRows;
-        }
         lines = altActive && altLines != null ? altLines : mainLines;
         scrollTop = 0;
         scrollBottom = rows - 1;
+    }
+
+    /**
+     * 主屏宽度重排：把 scrollback + 当前屏视为一条流，按软换行标记拆成逻辑行，
+     * 再按新宽度重新折行。变窄时超长行折成续行（xterm 同款），内容不再截断丢失；
+     * 变宽时把续行拼回来。重排后光标落在其所在内容行的新位置上。
+     */
+    private void reflowMain(int newCols) {
+        int sbCount = scrollback.size();
+        int total = sbCount + rows;
+        int cursorInput = sbCount + cursorRow;
+        int cursorOutAbs = -1;
+        // 屏幕底部的填充空行不是内容：它们只是屏幕比内容高时补的白，
+        // 跟着一起重排的话会把窗口整体顶一格（转竖屏后首行被推进 scrollback）。
+        // 从末尾往前裁到最后一个有内容的行，但不越过光标（用户可能就停在空行上）。
+        int lastIdx = total - 1;
+        while (lastIdx > 0 && lastIdx != cursorInput) {
+            Line tail = lastIdx < sbCount ? scrollback.get(lastIdx) : mainLines[lastIdx - sbCount];
+            if (!isBlankLine(tail)) {
+                break;
+            }
+            lastIdx--;
+        }
+
+        ArrayList<Line> out = new ArrayList<>();
+        // 逻辑行累积缓冲（四套属性数组同步扩容）
+        int cap = Math.max(newCols, 256);
+        int[] aText = new int[cap];
+        int[] aFg = new int[cap];
+        int[] aBg = new int[cap];
+        byte[] aAttr = new byte[cap];
+        String[] aExtra = new String[cap];
+        int accLen = 0;
+        boolean runHasCursor = false;
+        int cursorCellInRun = 0;
+
+        for (int i = 0; i <= lastIdx; i++) {
+            Line li = i < sbCount ? scrollback.get(i) : mainLines[i - sbCount];
+            if (accLen == 0) {
+                runHasCursor = false;
+            }
+            if (i == cursorInput && !altActive) {
+                runHasCursor = true;
+                cursorCellInRun = accLen + cursorCol;
+            }
+            int len = li.text.length;
+            // 逻辑行的最后一块要剥掉行尾填充空格：屏幕行永远是满宽的（139 列的行末尾
+            // 可能全是空格），不剥的话窄屏重排会把这些空格折成整行空白的续行
+            // （转竖屏后每行之间多出空白行的直接原因）。软换行行不能剥——它本来就填满整行。
+            if (!(li.wrapped && i < lastIdx) && li.text.length == cols) {
+                int keep = li.text.length;
+                while (keep > 0 && isTrailingPadding(li, keep - 1)) {
+                    keep--;
+                }
+                if (i == cursorInput && !altActive) {
+                    // 光标停在行尾空白里（echo 尾部空格）时不能把光标位置剥掉
+                    keep = Math.max(keep, Math.min(cursorCol + 1, li.text.length));
+                }
+                len = keep;
+            }
+            if (accLen + len > cap) {
+                while (cap < accLen + len) {
+                    cap *= 2;
+                }
+                aText = java.util.Arrays.copyOf(aText, cap);
+                aFg = java.util.Arrays.copyOf(aFg, cap);
+                aBg = java.util.Arrays.copyOf(aBg, cap);
+                aAttr = java.util.Arrays.copyOf(aAttr, cap);
+                aExtra = java.util.Arrays.copyOf(aExtra, cap);
+            }
+            System.arraycopy(li.text, 0, aText, accLen, len);
+            System.arraycopy(li.fg, 0, aFg, accLen, len);
+            System.arraycopy(li.bg, 0, aBg, accLen, len);
+            System.arraycopy(li.attr, 0, aAttr, accLen, len);
+            if (li.extra != null) {
+                System.arraycopy(li.extra, 0, aExtra, accLen, len);
+            }
+            accLen += len;
+            if (li.wrapped && i < lastIdx) {
+                continue;
+            }
+            // 逻辑行结束：按 newCols 折行
+            int before = out.size();
+            if (runHasCursor) {
+                cursorOutAbs = before + cursorCellInRun / newCols;
+            }
+            int s = 0;
+            if (accLen == 0) {
+                // 纯空行（用户敲空回车）trim 后长度为 0，不能被吃掉
+                Line nl = new Line(newCols);
+                nl.blank(newCols, defaultFg, defaultBg);
+                out.add(nl);
+            }
+            while (s < accLen) {
+                int e = Math.min(s + newCols, accLen);
+                // 切点落在宽字符中间时把整个字符挪到下一块
+                if (e < accLen && e - 1 > s && aText[e] == 0) {
+                    e--;
+                }
+                Line nl = new Line(newCols);
+                int n = e - s;
+                System.arraycopy(aText, s, nl.text, 0, n);
+                System.arraycopy(aFg, s, nl.fg, 0, n);
+                System.arraycopy(aBg, s, nl.bg, 0, n);
+                System.arraycopy(aAttr, s, nl.attr, 0, n);
+                for (int k = s; k < e; k++) {
+                    if (aExtra[k] != null) {
+                        nl.extra()[k - s] = aExtra[k];
+                    }
+                }
+                for (int k = n; k < newCols; k++) {
+                    nl.text[k] = ' ';
+                    nl.fg[k] = defaultFg;
+                    nl.bg[k] = defaultBg;
+                }
+                repairWide(nl, 0, newCols - 1);
+                nl.wrapped = e < accLen;
+                out.add(nl);
+                s = e;
+            }
+            accLen = 0;
+        }
+
+        int n = out.size();
+        int maxStart = Math.max(0, n - rows);
+        // 窗口底部对齐：终端显示的是「最新输出」，转屏后不该把内容推进 scrollback 再看一片空。
+        // 光标行通常在流的末尾附近，天然可见；只有清屏后光标退回顶部这类情形才需要上移窗口兜底。
+        int screenStart = maxStart;
+        if (cursorOutAbs >= 0 && !altActive && cursorOutAbs < screenStart) {
+            screenStart = Math.max(0, cursorOutAbs - rows + 1);
+        }
+        scrollback.clear();
+        if (maxScrollback > 0) {
+            for (int i = 0; i < screenStart; i++) {
+                scrollback.add(out.get(i));
+            }
+            while (scrollback.size() > maxScrollback) {
+                scrollback.remove(0);
+            }
+        }
+        int screenCount = Math.min(n - screenStart, rows);
+        // 内容锚定顶部、空白补底部（xterm 变高同款行为），光标跟着自己的内容行走。
+        // 空白行不能共用同一个 Line 对象：原地写入会跨行串味
+        mainLines = new Line[rows];
+        for (int r = 0; r < rows; r++) {
+            if (r < screenCount) {
+                mainLines[r] = out.get(screenStart + r);
+            } else {
+                mainLines[r] = new Line(newCols);
+                mainLines[r].blank(newCols, defaultFg, defaultBg);
+            }
+        }
+        if (cursorOutAbs >= 0 && !altActive) {
+            cursorRow = clamp(cursorOutAbs - screenStart, 0, rows - 1);
+        } else {
+            cursorRow = clamp(cursorRow, 0, rows - 1);
+        }
+    }
+
+    /** 该格是否是「行尾填充空格」——纯空格、无组合字符、背景为默认色、无属性（反显/下划线会让空格可见）。 */
+    private boolean isTrailingPadding(Line li, int k) {
+        return li.text[k] == ' '
+                && (li.extra == null || li.extra[k] == null)
+                && li.bg[k] == defaultBg
+                && li.attr[k] == 0;
+    }
+
+    /** 整行都是不可见的填充空格（屏幕下方的空白行）。 */
+    private boolean isBlankLine(Line li) {
+        for (int k = 0; k < li.text.length; k++) {
+            if (!isTrailingPadding(li, k)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private Line[] resizeWidth(Line[] old, int newCols) {
@@ -714,6 +901,8 @@ public final class TerminalEmulator {
             case 0x0B:
             case 0x0C:
                 pendingWrap = false;
+                // 显式换行结束一个逻辑行；不 clear 的话 reflow 会把上下两行误拼
+                lines[cursorRow].wrapped = false;
                 lineFeed();
                 break;
             case 0x0D:
@@ -790,10 +979,12 @@ public final class TerminalEmulator {
                 }
                 break;
             case 'D':
+                lines[cursorRow].wrapped = false;
                 lineFeed();
                 break;
             case 'E':
                 cursorCol = 0;
+                lines[cursorRow].wrapped = false;
                 lineFeed();
                 break;
             case 'M':
@@ -1437,12 +1628,14 @@ public final class TerminalEmulator {
         if (pendingWrap) {
             pendingWrap = false;
             if (autowrap) {
+                lines[cursorRow].wrapped = true;
                 cursorCol = 0;
                 lineFeed();
             }
         }
         if (cursorCol >= cols) {
             if (autowrap) {
+                lines[cursorRow].wrapped = true;
                 cursorCol = 0;
                 lineFeed();
             } else {
@@ -1451,6 +1644,7 @@ public final class TerminalEmulator {
         }
         // 宽字符卡在最后一列（只剩一格）时，真终端会先换行再画
         if (width == 2 && cursorCol == cols - 1 && autowrap) {
+            lines[cursorRow].wrapped = true;
             cursorCol = 0;
             lineFeed();
         }
@@ -1786,15 +1980,18 @@ public final class TerminalEmulator {
             eraseLine(0);
             for (int r = cursorRow + 1; r < rows; r++) {
                 eraseRange(lines[r], 0, cols - 1, bg);
+                lines[r].wrapped = false;
             }
         } else if (mode == 1) {
             eraseLine(1);
             for (int r = 0; r < cursorRow; r++) {
                 eraseRange(lines[r], 0, cols - 1, bg);
+                lines[r].wrapped = false;
             }
         } else {
             for (int r = 0; r < rows; r++) {
                 eraseRange(lines[r], 0, cols - 1, bg);
+                lines[r].wrapped = false;
             }
             if (mode == 3) {
                 scrollback.clear();
@@ -1816,6 +2013,9 @@ public final class TerminalEmulator {
             to = cols - 1;
         }
         eraseRange(lines[cursorRow], from, to, eraseBg());
+        if (from == 0) {
+            lines[cursorRow].wrapped = false;
+        }
     }
 
     private void eraseChars(int count) {

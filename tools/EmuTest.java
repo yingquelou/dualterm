@@ -24,7 +24,10 @@ public class EmuTest {
     }
 
     static String lineText(TerminalEmulator e, int row) {
-        TerminalEmulator.Line line = e.getLine(row);
+        return textOf(e.getLine(row));
+    }
+
+    static String textOf(TerminalEmulator.Line line) {
         StringBuilder sb = new StringBuilder();
         for (int cp : line.text) {
             sb.appendCodePoint(cp == 0 ? ' ' : cp);
@@ -254,14 +257,18 @@ public class EmuTest {
                 e.getLine(0).bg[0] == 0xFF2472C8,
                 "bg=" + Integer.toHexString(e.getLine(0).bg[0]));
 
-        // 24) 变窄时宽字符正好卡在边界上（曾因拿旧列数做边界而越界崩溃）
+        // 24) 变窄时宽字符正好卡在边界上：整个字符挪到续行，不留半个字形
         TerminalEmulator w = new TerminalEmulator(20, 4, 100, 0xFFE6E6E6, 0xFF101014);
         feed(w, "012345678中文abc");            // 中 的头在第 9 列
         w.resize(10, 4);
-        TerminalEmulator.Line lw2 = w.getLine(0);
+        TerminalEmulator.Line lw0 = w.getLine(0);
+        TerminalEmulator.Line lw1 = w.getLine(1);
         check("shrink width repairs split wide char",
-                lw2.text[8] == '8' && lw2.text[9] == ' ',
-                "t8=" + lw2.text[8] + " t9=" + lw2.text[9]);
+                lw0.text[8] == '8'
+                        && lw1.text[0] == '中' && lw1.text[1] == 0
+                        && lw1.text[2] == '文' && lw1.text[3] == 0,
+                "r0_8=" + lw0.text[8] + " r1=" + lw1.text[0] + "," + lw1.text[1]
+                        + "," + lw1.text[2] + "," + lw1.text[3]);
 
         // 25) DL（删除行）在子滚动区里必须真正"上移+底部补空"，
         //     且不能因为 arraycopy 搬引用 + 原地 blank 让行对象别名共享
@@ -305,6 +312,120 @@ public class EmuTest {
         check("IL vacated rows do not alias shifted rows",
                 lineText(il, 2).trim().equals("R1") && lineText(il, 0).trim().equals("T0P"),
                 "r1=" + lineText(il, 0).trim() + " r3=" + lineText(il, 2).trim());
+
+        // 27) reflow：变窄时右端内容折成续行（不截断），变宽时拼回
+        TerminalEmulator rf = new TerminalEmulator(20, 6, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(rf, "0123456789ABCDEFGH1234567890abcd");          // 32 列 → 折成 20+12
+        check("27a wrap at 20 cols",
+                lineText(rf, 0).startsWith("0123456789ABCDEFGH12")
+                        && lineText(rf, 1).startsWith("34567890abcd"),
+                "r0=" + lineText(rf, 0) + " r1=" + lineText(rf, 1));
+        rf.resize(10, 6);
+        // 内容不足一屏：底部对齐推出顶部对齐，32 字符折成 10+10+10+2 四块
+        String r0 = lineText(rf, 0).trim();
+        String r1 = lineText(rf, 1).trim();
+        String r2 = lineText(rf, 2).trim();
+        String r3 = lineText(rf, 3).trim();
+        check("27b narrow folds into wrapped rows",
+                r0.equals("0123456789") && r1.equals("ABCDEFGH12")
+                        && r2.equals("34567890ab") && r3.equals("cd"),
+                "r0=" + r0 + " r1=" + r1 + " r2=" + r2 + " r3=" + r3);
+        rf.resize(20, 6);
+        check("27c widen rejoins wrapped lines",
+                lineText(rf, 0).startsWith("0123456789ABCDEFGH12")
+                        && lineText(rf, 1).startsWith("34567890abcd"),
+                "r0=" + lineText(rf, 0) + " r1=" + lineText(rf, 1));
+
+        // 28) 显式 \r\n 结束的行不能被 reflow 误拼
+        TerminalEmulator ex = new TerminalEmulator(20, 6, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(ex, "ab\r\ncd");
+        ex.resize(10, 6);
+        ex.resize(20, 6);
+        check("explicit newline rows stay separate",
+                lineText(ex, 0).startsWith("ab") && lineText(ex, 1).startsWith("cd")
+                        && lineText(ex, 1).charAt(2) == ' ',
+                "r0=" + lineText(ex, 0) + " r1=" + lineText(ex, 1));
+
+        // 29) 转屏往返（宽→窄→宽）内容零丢失：长行 + 显式换行混合
+        TerminalEmulator rot = new TerminalEmulator(40, 10, 100, 0xFFE6E6E6, 0xFF101014);
+        StringBuilder longLine = new StringBuilder();
+        for (int i = 0; i < 90; i++) {
+            longLine.append((char) ('A' + i % 26));
+        }
+        feed(rot, longLine + "\r\nprompt$ ");
+        String tail = longLine.substring(78);                 // 前 78 列进 scrollback（10 行屏）
+        rot.resize(20, 10);
+        rot.resize(40, 10);
+        // 全量文本：屏幕 + scrollback 拼起来必须包含整条长行
+        StringBuilder all = new StringBuilder();
+        for (int i = 0; i < rot.getScrollbackCount(); i++) {
+            all.append(textOf(rot.getScrollbackLine(i)));
+        }
+        for (int r = 0; r < 10; r++) {
+            all.append(textOf(rot.getLine(r)));
+        }
+        check("rotation roundtrip loses nothing",
+                all.toString().contains(longLine.toString())
+                        && all.toString().contains("prompt$ "),
+                "sb=" + rot.getScrollbackCount() + " all=" + all);
+        check("rotation roundtrip tail intact",
+                all.toString().contains(tail + "prompt$ ")
+                        || all.toString().replace(" ", "").contains((tail + "prompt$ ").replace(" ", "")),
+                "tail=" + tail);
+
+        // 30) 转屏往返不能在行之间插入空白行：屏幕行是满宽的（尾部大量填充空格），
+        //     reflow 若把填充空格当内容，窄屏下每个短行后面都会折出整行空白的续行
+        TerminalEmulator gap = new TerminalEmulator(131, 23, 200, 0xFFE6E6E6, 0xFF101014);
+        StringBuilder body = new StringBuilder();
+        for (int i = 0; i < 6; i++) {
+            body.append("help line ").append(i).append("\r\n");
+        }
+        body.append("$ ");
+        feed(gap, body.toString());
+        gap.resize(62, 60);
+        StringBuilder portrait = new StringBuilder();
+        int nonEmpty = 0;
+        for (int r = 0; r < gap.getRows(); r++) {
+            String s = lineText(gap, r).trim();
+            if (!s.isEmpty()) {
+                portrait.append(s).append('|');
+                nonEmpty++;
+            }
+        }
+        check("portrait reflow inserts no blank rows",
+                portrait.toString().equals("help line 0|help line 1|help line 2|help line 3|"
+                        + "help line 4|help line 5|$|") && nonEmpty == 7,
+                "rows=" + nonEmpty + " [" + portrait + "]");
+        gap.resize(131, 23);
+        StringBuilder back = new StringBuilder();
+        for (int r = 0; r < 7; r++) {
+            back.append(lineText(gap, r).trim()).append('|');
+        }
+        check("landscape reflow keeps rows adjacent",
+                back.toString().equals("help line 0|help line 1|help line 2|help line 3|"
+                        + "help line 4|help line 5|$|"),
+                "[" + back + "]");
+
+        // 31) 用户敲的空回车（真正的空行）在重排后必须还在
+        TerminalEmulator eb = new TerminalEmulator(40, 8, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(eb, "a\r\n\r\nb");
+        eb.resize(10, 8);
+        eb.resize(40, 8);
+        check("empty line survives reflow",
+                lineText(eb, 0).trim().equals("a")
+                        && lineText(eb, 1).trim().isEmpty()
+                        && lineText(eb, 2).trim().equals("b"),
+                "r0=[" + lineText(eb, 0).trim() + "] r1=[" + lineText(eb, 1).trim()
+                        + "] r2=[" + lineText(eb, 2).trim() + "]");
+
+        // 32) 光标停在行尾空格里时，那段空格不能被当成填充剥掉（否则光标位置会错）
+        TerminalEmulator ec = new TerminalEmulator(20, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(ec, "abc   ");
+        ec.resize(20, 4);                                   // 同宽不同高，走 resizeHeight
+        ec.resize(40, 4);                                   // 变宽：abc + 3 空格保留，光标在第 6 列
+        check("cursor in trailing spaces keeps position",
+                lineText(ec, 0).trim().equals("abc") && ec.getCursorCol() == 6,
+                "r0=[" + lineText(ec, 0).trim() + "] col=" + ec.getCursorCol());
 
         System.out.println(fails == 0 ? "ALL PASS" : fails + " FAILURES");
         System.exit(fails == 0 ? 0 : 1);
