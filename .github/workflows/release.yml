@@ -90,9 +90,10 @@ jobs:
           set -euo pipefail
           AJ="$ANDROID_SDK_ROOT/platforms/android-34/android.jar"
           mkdir -p /tmp/t/emu
-          javac -encoding UTF-8 -d /tmp/t/emu \
-            app/src/main/java/dev/dualterm/term/TerminalEmulator.java tools/EmuTest.java
-          java -Dfile.encoding=UTF-8 -cp /tmp/t/emu EmuTest
+          # 用 -sourcepath 而不是列文件：EmuTest 会引用被测类，新增一个类就得
+          # 记得改这里，漏一次就是 v3.5.3 那次「package does not exist」的翻车。
+          javac -encoding UTF-8 -cp "$AJ" -sourcepath app/src/main/java -d /tmp/t/emu tools/EmuTest.java
+          java -Dfile.encoding=UTF-8 -cp "/tmp/t/emu:$AJ" EmuTest
           for t in SecTest TarTest ImportTest PortsTest; do
             d="/tmp/t/$t"; mkdir -p "$d"
             javac -encoding UTF-8 -cp "$AJ" -sourcepath app/src/main/java -d "$d" "tools/$t.java"
