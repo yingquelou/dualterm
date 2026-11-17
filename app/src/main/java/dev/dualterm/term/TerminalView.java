@@ -1130,39 +1130,48 @@ public class TerminalView extends View {
 
     @Override
     public InputConnection onCreateInputConnection(EditorInfo out) {
-        // MULTI_LINE：回车是换行，不要「发送/完成」动作键；
-        // NO_SUGGESTIONS：不要联想/自动纠错/自动大写，命令输入要所见即所得
-        out.inputType = InputType.TYPE_CLASS_TEXT
-                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
-        out.imeOptions = EditorInfo.IME_ACTION_NONE
-                | EditorInfo.IME_FLAG_NO_EXTRACT_UI
+        // TYPE_NULL 是安卓终端模拟器的标准做法（Termux 同款）：
+        // 告诉输入法「这里不是普通文本框」，压掉联想/自动纠错；
+        // 中文输入不受影响：拼音组词仍在输入法内部，选词上屏走 commitText。
+        out.inputType = InputType.TYPE_NULL;
+        out.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
                 | EditorInfo.IME_FLAG_NO_FULLSCREEN;
-        return new BaseInputConnection(this, false) {
+        // fullEditor=true（Termux 同款）：composing 文本由 BaseInputConnection 默认实现
+        // 落进内部 Editable 并维护 composing span，IME 回读状态自洽——待选区才能正常收尾。
+        // 之前 fullEditor=false + 吞掉 setComposingText/finishComposingText 是反例：
+        // IME 的 composing 永远「落不了地」，表现为键入全程无响应、点选待选区也不消失。
+        return new BaseInputConnection(this, true) {
             @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
-                sendCommitted(text == null ? null : text.toString());
-                return true;
-            }
-
-            @Override
-            public boolean setComposingText(CharSequence text, int newCursorPosition) {
-                // 中文输入法的预编辑串不进 PTY，等 commitText 才发
+                super.commitText(text, newCursorPosition);
+                if (session == null) {
+                    return true;
+                }
+                // Editable 里此刻只有 IME 落下的内容（每次发送后清空），整体发给 PTY
+                sendCommitted(getEditable().toString());
+                getEditable().clear();
                 return true;
             }
 
             @Override
             public boolean finishComposingText() {
+                super.finishComposingText();
+                if (session == null) {
+                    return true;
+                }
+                // IME 强制收尾（切焦点/按实体键等）：composing 里的内容照常提交
+                sendCommitted(getEditable().toString());
+                getEditable().clear();
                 return true;
             }
 
             @Override
-            public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                StringBuilder sb = new StringBuilder();
-                for (int i = 0; i < beforeLength; i++) {
-                    sb.append('\u007f');
+            public boolean deleteSurroundingText(int leftLength, int rightLength) {
+                // 有的键盘（三星等开启自动纠错时）一次报多个字符的删除
+                KeyEvent deleteKey = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL);
+                for (int i = 0; i < leftLength; i++) {
+                    sendKeyEvent(deleteKey);
                 }
-                sendText(sb.toString());
                 return true;
             }
 
