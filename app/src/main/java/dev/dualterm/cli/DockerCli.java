@@ -211,7 +211,7 @@ public final class DockerCli {
             return "docker: 用法 docker run [--name NAME] [-v 宿主:容器] [-p 端口] IMAGE\n";
         }
         if (name == null || name.isEmpty()) {
-            name = "c" + (System.currentTimeMillis() / 1000 % 100000);
+            name = Containers.suggestName(ctx);
         }
 
         // 端口先校验再建容器：重映射在这里就拒掉，比建完再让人对着连不上的端口猜要好
@@ -306,17 +306,13 @@ public final class DockerCli {
                 sb.append("docker: 没有这个容器：").append(name).append('\n');
                 continue;
             }
-            // 删除当前终端所在的容器等于把脚下的地板拆了：会话当场 Hangup，
-            // 连报错都回不去（还会留下半个目录）。直接拒绝。
-            if (name.equals(Containers.activeName(ctx))) {
-                sb.append("docker: 不能删除当前终端所在的容器 ").append(name)
-                        .append("（先在 容器管理 → 启动并切换 到别的容器）\n");
-                continue;
-            }
+            // 守卫与多 tab 对齐：只有「该容器还有活会话」才拦（控制台掐不了别人的
+            // tab，硬删会留下被 proot 占着的目录）；「活动容器但已停」允许删，
+            // 删除后的活动容器落位由 Containers.remove 统一处理。
             if (item.isRunning()) {
-                // 会话在 UI 手里，控制台没法把它停掉，硬删会留下被 proot 占着的目录
                 sb.append("docker: 容器 ").append(name)
-                        .append(" 正在运行，先在 容器管理 里停止再删除\n");
+                        .append(" 还有运行中的会话，先在 容器管理 → ").append(name)
+                        .append(" → 停止，再删除\n");
                 continue;
             }
             if (!Containers.remove(ctx, name)) {

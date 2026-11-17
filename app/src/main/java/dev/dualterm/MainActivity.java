@@ -2301,20 +2301,9 @@ public class MainActivity extends Activity
                             return;
                         }
                         toast("已删除 " + item.name);
-                        java.util.List<Containers.Item> rest = Containers.items(MainActivity.this);
-                        if (item.name.equals(Containers.activeName(MainActivity.this))) {
-                            if (rest.isEmpty()) {
-                                // 最后一个容器删掉就回到空册：不自动重建，等用户自己拉镜像
-                                Containers.setActive(MainActivity.this, "");
-                                updateStatus("已删除最后一个容器");
-                            } else {
-                                // 旧的活动容器没了，落到剩下的第一个
-                                Containers.setActive(MainActivity.this, rest.get(0).name);
-                                updateStatus(null);
-                            }
-                        } else {
-                            updateStatus(null);
-                        }
+                        // 活动容器落位（落到剩余第一个 / 空册）由 Containers.remove 统一处理
+                        updateStatus(Containers.items(MainActivity.this).isEmpty()
+                                ? "已删除最后一个容器" : null);
                     }
                 })
                 .show();
@@ -2352,7 +2341,7 @@ public class MainActivity extends Activity
         final EditText input = new EditText(this);
         input.setSingleLine(true);
         input.setHint("容器名，如 web");
-        input.setText("c" + (Containers.items(this).size() + 1));
+        input.setText(Containers.suggestName(this));
         long sz = Containers.cachedImageSize(this, image.name);
         String message = sz < 0
                 ? "会复制一份可写 rootfs，与镜像互不影响。"

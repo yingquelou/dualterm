@@ -405,9 +405,31 @@ public final class Containers {
         // 同名重建不该继承旧容器声明的端口
         Ports.clear(ctx, name);
         if (name.equals(activeName(ctx))) {
-            prefs(ctx).edit().remove(KEY_ACTIVE).apply();
+            // 删除后的活动容器落位是删除语义的一部分，收口在存储层：
+            // 落到剩余第一个，空册落 ""（不自动重建）。菜单与控制台两个入口
+            // 不用各写一份善后，也不会漂移。
+            String next = list.isEmpty() ? "" : list.get(0).name;
+            prefs(ctx).edit().putString(KEY_ACTIVE, next).apply();
         }
         return true;
+    }
+
+    /** 默认容器名：c1、c2…跳过已占用的（菜单新建与控制台 run 共用一条规则）。 */
+    public static String suggestName(Context ctx) {
+        List<Item> list = items(ctx);
+        for (int i = 1; ; i++) {
+            String candidate = "c" + i;
+            boolean taken = false;
+            for (Item it : list) {
+                if (it.name.equals(candidate)) {
+                    taken = true;
+                    break;
+                }
+            }
+            if (!taken) {
+                return candidate;
+            }
+        }
     }
 
     public static void removeImage(Context ctx, String ref) throws IOException {
