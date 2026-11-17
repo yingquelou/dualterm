@@ -15,6 +15,7 @@ import android.view.View;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import android.view.ScaleGestureDetector;
 
 /**
@@ -312,48 +313,55 @@ public class TerminalView extends View {
     }
 
     /**
-     * 自绘键盘的开关回调。
+     * 点终端的回调：主界面借它处理「面板开着先关面板」的层级语义。
      *
-     * 不再调系统输入法：MIUI 的 IME 横屏要占 67% 屏幕，还带候选栏留白，
-     * 而终端要的是「字母 + CTRL/ALT/ESC/方向键」，自己画一套只有一半高。
-     * 活动层负责真正的显隐（键盘挂在键条里，属于布局的一部分）。
+     * 输入采用「系统输入法（主键盘）+ 自绘辅助键盘（特殊键）」组合，所以
+     * 这里不再直接开关自绘键盘：点终端 = 要打字，由活动层决定弹系统输入法。
      */
-    public interface KeypadListener {
-        /** 点终端：切换自绘键盘。 */
-        void onToggleKeypad();
-
-        /** 会话启动、恢复输入时需要键盘（幂等，已经开着就什么都不做）。 */
-        void onShowKeypad();
-
-        /** 需要收起时（返回键、点击外部等）。 */
-        void onHideKeypad();
+    public interface TapListener {
+        void onTap();
     }
 
-    private KeypadListener keypadListener;
+    private TapListener tapListener;
 
-    public void setKeypadListener(KeypadListener listener) {
-        this.keypadListener = listener;
+    public void setTapListener(TapListener listener) {
+        this.tapListener = listener;
     }
 
-    /** 确保键盘可见（会话启动时用；已经开着不会把它关掉）。 */
+    /** 确保系统键盘可见（会话启动时用）。 */
     public void showKeyboard() {
         requestFocus();
-        if (keypadListener != null) {
-            keypadListener.onShowKeypad();
-        }
-    }
-
-    /** 点击终端来的：切换，开着的再点一下收起。 */
-    public void toggleKeyboard() {
-        requestFocus();
-        if (keypadListener != null) {
-            keypadListener.onToggleKeypad();
-        }
+        showIme();
     }
 
     public void hideKeyboard() {
-        if (keypadListener != null) {
-            keypadListener.onHideKeypad();
+        hideIme();
+    }
+
+    private InputMethodManager imm() {
+        return (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+    }
+
+    /** 窗口没焦点时 showSoftInput 会被丢弃：挂起，等 onWindowFocusChanged 补发。 */
+    private boolean pendingImeShow;
+
+    private void showIme() {
+        InputMethodManager imm = imm();
+        if (imm == null) {
+            return;
+        }
+        if (!hasWindowFocus()) {
+            pendingImeShow = true;
+            return;
+        }
+        pendingImeShow = false;
+        imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    private void hideIme() {
+        InputMethodManager imm = imm();
+        if (imm != null) {
+            imm.hideSoftInputFromWindow(getWindowToken(), 0);
         }
     }
 
@@ -364,6 +372,17 @@ public class TerminalView extends View {
     @Override
     public void onWindowFocusChanged(boolean hasWindowFocus) {
         super.onWindowFocusChanged(hasWindowFocus);
+        // 会话启动时窗口往往还没拿到焦点，showSoftInput 会被系统静默丢弃；
+        // 等焦点回来补发一次
+        if (hasWindowFocus && pendingImeShow) {
+            pendingImeShow = false;
+            post(new Runnable() {
+                @Override
+                public void run() {
+                    showIme();
+                }
+            });
+        }
         if (session == null) {
             return;
         }
@@ -930,8 +949,10 @@ public class TerminalView extends View {
                     if (isDead()) {
                         // 键盘弹出来也没处输入，直接引导去重启
                         notifyDead();
+                    } else if (tapListener != null) {
+                        tapListener.onTap();
                     } else {
-                        toggleKeyboard();
+                        showKeyboard();
                     }
                 }
                 return true;
@@ -1074,22 +1095,28 @@ public class TerminalView extends View {
     /* -------------------- 键盘与 IME -------------------- */
 
     /**
-     * 终端不再用系统输入法（键盘是自绘的），所以对系统声明「我不是文本编辑器」。
+     * 终端是文本编辑器：系统输入法负责字母/数字/常用标点（主键盘），
+     * 自绘键盘只补系统键盘没有的特殊键（见 ui/SoftKeyboard）。
      *
-     * 返回 true 时系统会在视图获得焦点时自动把 IME 推上来——实测 MIUI 启动就把
-     * 窗口从 2340 压到 1314，横屏更狠（1080 里只剩 276）。返回 false 之后
-     * 聚焦不再触发 IME，硬件键盘的按键仍然照常走 onKeyDown。
+     * 历史教训（别再改回去）：早前为了避免联想词、也为了不让焦点自动弹键盘，
+     * 这里返回 false 并把 inputType 写成 TYPE_TEXT_VARIATION_VISIBLE_PASSWORD。
+     * 后果是——false 让系统键盘彻底叫不出来；password 变体让中文输入法判定
+     * 为密码框、切成安全键盘（无联想、键位残缺），输入能力反而被砍掉大半。
+     * 正确做法是标准文本输入 + 不联想，弹键盘的时机由活动层显式控制
+     * （manifest 的 stateAlwaysHidden）。
      */
     @Override
     public boolean onCheckIsTextEditor() {
-        return false;
+        return true;
     }
 
     @Override
     public InputConnection onCreateInputConnection(EditorInfo out) {
+        // MULTI_LINE：回车是换行，不要「发送/完成」动作键；
+        // NO_SUGGESTIONS：不要联想/自动纠错/自动大写，命令输入要所见即所得
         out.inputType = InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
         out.imeOptions = EditorInfo.IME_ACTION_NONE
                 | EditorInfo.IME_FLAG_NO_EXTRACT_UI
                 | EditorInfo.IME_FLAG_NO_FULLSCREEN;

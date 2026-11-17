@@ -11,7 +11,7 @@
 7. **本地模式的 `PS1` 会被 `/system/etc/mkshrc` 覆盖**：因此提示符是 Android 默认的 `:当前目录$`，而非工程设置的值。纯外观问题。
 8. **软键盘弹出时终端会被压扁**：横屏全键盘可占 600dp 以上，`adjustResize` 之后终端只剩两三行（此时更多键面板自动收起）。接入物理键盘时不触发。
 9. **部分终端协议有意不实现**：`IRM` / `LNM`、`modifyOtherKeys` 与 kitty 键盘协议、OSC 0/2 标题、OSC 8 超链接、Sixel 图片、同步输出 `?2026`、ZWJ emoji 合成序列。取舍理由见 [internals.md](internals.md#与-xterm-对表的取舍)，这些程序都会静默降级。OSC 52 不在此列，已在计划中（见 [roadmap.md](roadmap.md)）。
-10. **开启软键盘时无法截图**：输入法窗口带 `FLAG_SECURE`，系统会拒绝整屏截图并提示「该应用不允许屏幕截图」。应用自身未设置 `FLAG_SECURE`，可用 `adb logcat -s DualTerm | grep "window flags"` 确认。截图前先收起键盘。
+10. **软键盘与截图**：终端 inputType 曾误用 `TYPE_TEXT_VARIATION_VISIBLE_PASSWORD`，中文输入法因此切安全键盘（`FLAG_SECURE`，截图被系统拒绝、键位残缺）。已改回标准文本输入（不联想 + 多行），普通输入法窗口可正常截图；若截图仍被拒，先确认用的是标准键盘而非密码形态。
 
 ## 后续计划
 

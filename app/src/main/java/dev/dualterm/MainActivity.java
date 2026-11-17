@@ -113,6 +113,12 @@ public class MainActivity extends Activity
 
     /** 软键盘在屏幕上（返回键分层用：先收键盘，再退后台）。 */
     private boolean imeVisible;
+    /**
+     * 这轮 IME 是终端自己叫出来的（点终端 / ⌨ 键 / 会话启动）。
+     * 系统键盘弹起时默认要让自绘键盘让位（对话框的输入框也会弹 IME），
+     * 但这个标记为真时保留——「系统键盘 + 辅助键盘」是本应用的组合输入方案。
+     */
+    private boolean imeFromTerminal;
     /** 有没有物理键盘：决定键条是否出现——键盘上本来就有 ESC/Tab/方向键。 */
     private boolean hardKeyboard;
     private android.hardware.input.InputManager inputManager;
@@ -245,27 +251,23 @@ public class MainActivity extends Activity
                 copyAll();
             }
         });
-        // 点终端 = 切换自绘键盘（和键行里的 ⌨ 同一个动作）
-        terminal.setKeypadListener(new TerminalView.KeypadListener() {
+        // 点终端 = 打字：面板开着先关面板（「点空白关闭」的层级语义），否则切系统键盘
+        terminal.setTapListener(new TerminalView.TapListener() {
             @Override
-            public void onToggleKeypad() {
-                // 面板是浮层：点终端正文 = 不用它了，先关面板（这是「点空白关闭」
-                // 的一致语义），免得点一下终端又弹键盘、面板还赖着
+            public void onTap() {
                 if (keyPanelOpen) {
                     closeKeyPanel();
                     return;
                 }
-                softKbd.toggle();
-            }
-
-            @Override
-            public void onShowKeypad() {
-                softKbd.setVisible(true);
-            }
-
-            @Override
-            public void onHideKeypad() {
-                softKbd.setVisible(false);
+                // 用 imeVisible（全局布局监听的真源）判断，而不是 IMM.isActive——
+                // 后者只表示有输入法连上，键盘收起后仍可能为 true
+                if (imeVisible) {
+                    terminal.hideKeyboard();
+                    return;
+                }
+                // 这轮 IME 是用户自己要打字的，弹起时别把辅助键盘顺手关掉
+                imeFromTerminal = true;
+                terminal.showKeyboard();
             }
         });
         btnMenu.setOnClickListener(new View.OnClickListener() {
@@ -1064,7 +1066,14 @@ public class MainActivity extends Activity
         btnKeyboard.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                boolean willShow = !softKbd.isVisible();
                 softKbd.toggle();
+                // 辅助键盘和系统键盘是一套组合：开辅助键时顺带把系统键盘叫出来，
+                // 一步就绪（关辅助键不动系统键盘，IME 有自己的收起手势/返回键）
+                if (willShow && !imeVisible) {
+                    imeFromTerminal = true;
+                    terminal.showKeyboard();
+                }
             }
         });
         keyRow.addView(btnKeyboard);
@@ -1535,8 +1544,13 @@ public class MainActivity extends Activity
                             if (shown) {
                                 // 键盘和面板同时开着，终端只剩两行
                                 closeKeyPanel();
-                                // 对话框里的输入框把系统键盘叫出来了，自绘键盘让位
-                                softKbd.setVisible(false);
+                                // 终端自己唤起 IME（点终端 / ⌨ / 会话启动）→ 保留辅助键盘，
+                                // 两者就是一套组合；对话框输入框把 IME 叫出来 → 辅助键盘让位
+                                if (imeFromTerminal) {
+                                    imeFromTerminal = false;
+                                } else {
+                                    softKbd.setVisible(false);
+                                }
                             }
                         }
                     }
