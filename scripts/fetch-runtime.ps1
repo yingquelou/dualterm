@@ -16,7 +16,8 @@
          libandroid-shmem.so    依赖库
 
     B. assets/runtime/
-         rootfs-<abi>.pack      Alpine minirootfs（扩展名不能是 .tar.gz，AAPT 会改写）
+         rootfs-<abi>.pack      Alpine minirootfs（仅 WITH_ROOTFS=1 时下载；
+                                APK 默认不内置 rootfs，镜像由应用内拉取/导入）
 
   为什么不能像普通终端那样把 proot 放 filesDir：
     targetSdk >= 29 时，应用私有数据目录被强制 noexec（SELinux untrusted_app
@@ -55,12 +56,17 @@ Write-Host "jniLibs    : $jniLibs"
 Write-Host "assets     : $assets"
 Write-Host ""
 
-# ---------------------------------------------------------------- 1. rootfs
+# ---------------------------------------------------------------- 1. rootfs（可选）
+# APK 不再内置 rootfs（体积优化，2026-11）：镜像由应用内 docker pull / 导入 tar 获得。
+# 本地离线调试需要 pack 时显式 WITH_ROOTFS=1 再跑本脚本。
 $rootfsName = "alpine-minirootfs-$AlpineVersion-$alpineArch.tar.gz"
 $rootfsUrl = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/$alpineArch/$rootfsName"
 $rootfsOut = Join-Path $assets "rootfs-$Abi.pack"
 
-if (Test-Path $rootfsOut) {
+if ($env:WITH_ROOTFS -ne '1') {
+    Write-Host "[跳过] rootfs pack 不再默认进包（需要离线调试包时用 WITH_ROOTFS=1 重跑）" -ForegroundColor DarkGray
+}
+elseif (Test-Path $rootfsOut) {
     Write-Host "[跳过] 已存在 rootfs-$Abi.pack" -ForegroundColor DarkGray
 }
 else {

@@ -51,21 +51,26 @@
 Context。写入必须经 listener 回调（Emulator → TermSession → Activity），
 与现有 `reply` 的出站路径同构。
 
-## 三、多标签会话 —— 不做（触发条件：单容器会话不够用的真实场景）
+## 三、多标签会话 —— 已完成（2026-11）
 
-**为什么不做**：会话 key 是 mode 字符串（`sessions.get("local"/"container")`），
-每模式一个会话贯穿 `switchMode` / `startContainer`（内部 `dropSession(MODE_CONTAINER)`
-强杀旧会话）/ `SessionService` 计数 / 崩溃恢复 / 误杀防护。改成唯一 id 是会话层
-重写，回归面覆盖最近三轮刚修完的进程清理与防误杀。而「每模式一会话」符合
-移动端习惯：绝大多数场景就是一个 shell。
+会话 id 采用**根进程 pid**（用户建议，评估后采纳）：
 
-**若将来要做**，先做这三件事打底：会话 key 抽象成 id（mode 只是属性之一）、
-切换 UI 从两选一改成列表、`startContainer` 的 drop 改成显式用户决定。
+- pid 由内核保证存活期内唯一，logcat/adb 调试时 id 与 ps 直接对上；
+- 代价是「start() 成功前 id 不存在」——会话表改为先 spawn 再入册，
+  start 失败则无 tab（本来也没有可展示的会话）；
+- pid 会复用，但 tab 退出立即摘表（onExit 同步移除），复用无从撞上。
 
-## 四、终端间直达通道 —— 不做（多标签的衍生需求）
+身份与状态分离：`Tab { session, mode, container }`，`mode` 从全局状态
+降级为 tab 属性；「同类 tab 已存活就切换贴屏，绝不暗杀别的 tab」是
+切换的唯一语义，restart 只精确作用于目标 tab（重启单个会话不波及同类）。
+UI：模式 chip 下拉即会话列表（`●` 标当前）+ 新建本地/容器入口；
+`startContainer` 的 drop 已改成显式的用户动作（容器管理里的启动/停止）。
 
-「粘贴到其它会话」在只有两个会话时价值趋近于零，且系统剪贴板中转已经够用
-（实测全通）。与多标签同进退，不单独排期。
+## 四、终端间直达通道 —— 不做（多标签已落地，价值重估后仍缓）
+
+「粘贴到其它会话」有系统剪贴板中转已经够用（实测全通），直达通道的增量
+价值主要在多 tab 频繁协作的场景。等真实使用中出现「来回切 tab 粘贴太烦」
+再排期。与选区复制（P1）相比优先级低。
 
 ## 五、Intent 外部调用（`am start -a RUN_COMMAND`）—— 不做
 
@@ -73,15 +78,17 @@ Context。写入必须经 listener 回调（Emulator → TermSession → Activit
 调用方白名单。没有明确的自动化诉求之前不引这个口子。
 若将来做：仅 local 模式、仅显式声明的调用方、每次弹确认。
 
-## 六、rootfs 换 Debian/Ubuntu —— 不做（已有替代通路）
+## 六、rootfs 换 Debian/Ubuntu —— 已解决前置障碍（2026-11：rootfs 移出 APK）
 
-代码层零障碍：`ContainerBootstrap` 只做解包 + 写 `resolv.conf`，与发行版无关；
-`TarGzExtractor` 已支持 symlink。不做的原因是体积——Alpine pack 8.8MB × 3 ABI，
-Debian minirootfs 约 30MB，装进 APK 会到 40MB+。
+体积顾虑已消除：APK 不再内置任何 rootfs（原 Alpine pack ×3 ABI ≈ 10MB，
+移出后 APK 10.93MB → 512KB）。镜像统一由用户获取：应用内 `docker pull`
+（Alpine 官方源）或导入 docker save / export 的 tar，容器再从镜像物化；
+**在册容器初始为空**，首次进容器模式弹引导。
 
-**替代通路已存在**：菜单「导入镜像（docker save/export 的 tar）」可直接导入
-Debian/Ubuntu rootfs，按需自取，不占安装包。脚本（`scripts/fetch-runtime.*`）
-如需换源，改 URL 与架构映射即可，无需动 Java。
+因此换发行版的代码层障碍本来就为零（`ContainerBootstrap` 与发行版无关），
+现在连体积障碍也没了——想用 Debian 就导入 Debian rootfs，不需要改 Java。
+`scripts/fetch-runtime.*` 只准备 proot（rootfs pack 仅 `WITH_ROOTFS=1` 的
+离线调试场景）。
 
 ## 七、MainActivity 拆分 —— 不做独立项（触发条件：有 UI 自动化兜底）
 
@@ -101,13 +108,19 @@ UI 测试后按分区逐块做，每块一个提交。
    Framework API。菜单/对话框/浮条只能用 `PopupMenu` / `AlertDialog` / 自绘。
 2. **`TerminalEmulator` 保持纯 Java**：桌面 EmuTest 是唯一的模拟器回归手段，
    引入 Android 类型等于放弃回归。
-3. **APK 体积**：三 ABI 各一份 proot + rootfs 已 10.9MB。往 assets/nativeLibrary
-   塞任何东西都先算 ×3。
-4. **会话层单例是刻意的**：动 `sessions` / `dropSession` / `SessionService` 前
-   先读 internals.md 的进程清理章节，确认不破坏 HUP → 补杀 → KILL 链。
+3. **APK 体积**：rootfs 已移出包（2026-11，APK 约 512KB）；剩余大头是三 ABI
+   各一份 proot（jniLibs）。往 assets/nativeLibrary 塞任何东西都先算 ×3。
+4. **会话层是多 tab**：会话 id = 根进程 pid，`tabs`（LinkedHashMap）是唯一
+   会话表。动 `tabs` / `dropTabs` / `dropTab` / `SessionService` 前先读
+   internals.md 的进程清理章节，确认不破坏 HUP → 补杀 → KILL 链；
+   「切 tab 不杀会话」是不可回退的语义。
 
 ## 已完成记录
 
+- 2026-11 多标签会话：id 用根进程 pid（见第三节）；chip 下拉即会话列表；
+  重启/停止精确到单个 tab；五套桌面回归 + 实机全链路验证
+- 2026-11 rootfs 移出 APK：在册容器初始为空，首次进容器模式引导拉取/导入；
+  APK 10.93MB → 512KB；CI 校验与 fetch 脚本同步收口
 - 2026-11 主菜单分 6 组子菜单（横屏 360dp 下平铺 19 项被裁，后半段不可点）
 - 2026-11 键面板补 F7–F12（xterm 标准序列 `ESC[18~`–`ESC[24~`，17 键 3 行）
 - 2026-11 剪贴板三向评估的 6 项修复：粘贴净化 / 异步分段写 / 复制裁尾空行 /

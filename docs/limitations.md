@@ -12,7 +12,6 @@
 8. **软键盘弹出时终端会被压扁**：横屏全键盘可占 600dp 以上，`adjustResize` 之后终端只剩两三行（此时更多键面板自动收起）。接入物理键盘时不触发。
 9. **部分终端协议有意不实现**：`IRM` / `LNM`、`modifyOtherKeys` 与 kitty 键盘协议、OSC 0/2 标题、OSC 8 超链接、Sixel 图片、同步输出 `?2026`、ZWJ emoji 合成序列。取舍理由见 [internals.md](internals.md#与-xterm-对表的取舍)，这些程序都会静默降级。OSC 52 不在此列，已在计划中（见 [roadmap.md](roadmap.md)）。
 10. **开启软键盘时无法截图**：输入法窗口带 `FLAG_SECURE`，系统会拒绝整屏截图并提示「该应用不允许屏幕截图」。应用自身未设置 `FLAG_SECURE`，可用 `adb logcat -s DualTerm | grep "window flags"` 确认。截图前先收起键盘。
-11. **每模式只有一个会话**：暂不支持多标签。
 
 ## 后续计划
 
@@ -21,4 +20,4 @@
 
 - **做**：文本选中与复制（长按锚点 + 拖动 + 跨 scrollback，P1 缺口）
 - **缓做**：OSC 52（默认关，等选区落地后一起做）
-- **不做**（触发条件后重评）：多标签会话、终端间直达、Intent 外部调用、rootfs 换 Debian（用「导入镜像」通路替代）、MainActivity 全量拆分
+- **不做**（触发条件后重评）：终端间直达、Intent 外部调用、rootfs 换 Debian（用「导入镜像」通路替代）、MainActivity 全量拆分

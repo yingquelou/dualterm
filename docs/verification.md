@@ -19,5 +19,11 @@
 | Release 包安装 | CI 产物签名校验通过，安装后本地 shell 与容器模式均正常，首次进容器自动解包 Alpine 3.20.3 |
 | 主菜单分组 | 横屏顶层 6 组完整显示无裁剪；「屏幕内容」二级展开正常，点「复制当前屏」回调生效（toast 计数正确） |
 | 键面板 F7–F12 | 17 键 3 行完整；`cat -v` 下按 F7 回显 `ESC[18~` 的可见部分 `8~`，序列正确 |
+| 多标签·会话列表 | 模式 chip 下拉列出全部 tab（`●` 标当前），按创建序排列；「＋ 新建本地 Shell」「＋ 新建容器会话」「容器与镜像」三入口正常 |
+| 多标签·并行与切换 | 两个本地 + 一个容器 tab 并存；tab 间切换内容各自保留，切走不杀会话（容器 tab 跨切换存活） |
+| 多标签·退出与重启 | `exit` 后 tab 从列表摘除、结束条出现；「重启」只重建该 tab（新 pid），同类其余 tab 不受影响 |
+| 多标签·容器停止 | 容器管理「停止」只杀该容器的 tab：tab 摘除、输出保留在屏（code 255）、两个本地 tab 存活 |
+| 空册引导 | （代码路径）无容器时进容器模式弹引导：拉取 Alpine / 导入 tar；本地 shell 兜底启动 |
+| rootfs 移出 APK | assets 三份 rootfs pack 删除；release APK 10.93MB → 512KB；CI 校验与 fetch 脚本同步（rootfs 仅 WITH_ROOTFS=1 时下载） |
 
 未经真机验证的部分：Docker 后端（缺少带 namespace 内核的设备）、整包 `ImageImporter.importArchive`（依赖 Context 与真 `org.json`，仅有单元级测试）。

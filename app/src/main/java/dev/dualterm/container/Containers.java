@@ -469,7 +469,9 @@ public final class Containers {
     /* -------------------- 首次初始化 -------------------- */
 
     /**
-     * 幂等：保证至少有一个镜像和一个容器，并把旧的单容器 rootfs 迁移过来。
+     * 幂等：迁移旧布局、自愈损坏的容器。**不再负责创建镜像和容器**——
+     * APK 不随包内置 rootfs（体积），全新安装从这里出来就是空册，
+     * 镜像由用户 pull / 导入 tar 获得，容器再从镜像物化。
      * 老的布局是 container/rootfs（v1.x），直接 rename 成镜像目录，省一次解包。
      */
     public static void ensureBootstrap(Context ctx, ContainerRuntime.Progress progress) throws IOException {
@@ -477,6 +479,7 @@ public final class Containers {
         Fs.ensureDir(containersDir(ctx));
 
         if (images(ctx).isEmpty()) {
+            // 只做旧版升级迁移；assets 里已经没有 rootfs pack，全新安装保持空册
             File target = imageRootfs(ctx, DEFAULT_IMAGE);
             File old = ContainerBootstrap.rootfsDir(ctx);
             File marker = new File(ContainerBootstrap.containerDir(ctx), ".rootfs-" + ContainerBootstrap.abi() + ".ok");
@@ -493,10 +496,8 @@ public final class Containers {
                     copyTree(old, target);
                     deleteRecursive(old, ContainerBootstrap.containerDir(ctx));
                 }
-            } else {
-                ContainerBootstrap.extractAssetsRootfs(ctx, target, progress);
+                registerImage(ctx, DEFAULT_IMAGE, target);
             }
-            registerImage(ctx, DEFAULT_IMAGE, target);
         }
 
         // 自愈：早期版本复制 rootfs 时会把绝对符号链接（/bin/sh -> /bin/busybox）当断链丢掉，
@@ -554,28 +555,33 @@ public final class Containers {
             }
         }
 
-        if (items(ctx).isEmpty()) {
-            report(progress, "创建默认容器…");
-            create(ctx, DEFAULT_CONTAINER, DEFAULT_IMAGE);
-
-            // 老版本把 home 放在 container/home，这里搬进默认容器，别让用户的工作目录凭空消失
+        // 空册是合法状态：不自动建默认容器，镜像由用户 pull / 导入后再物化容器。
+        // 老版本把 home 放在 container/home，升级用户已有容器，这里兜底搬一次。
+        if (!items(ctx).isEmpty()) {
             File oldHome = ContainerBootstrap.homeDir(ctx);
-            File newHome = new File(containersDir(ctx), DEFAULT_CONTAINER + "/home");
-            if (oldHome.isDirectory() && newHome.isDirectory()) {
-                File[] children = oldHome.listFiles();
-                if (children != null && children.length > 0 && newHome.listFiles() != null
-                        && newHome.listFiles().length == 0) {
-                    report(progress, "迁移旧的工作目录…");
-                    try {
-                        copyTree(oldHome, newHome);
-                    } catch (IOException ignored) {
-                        // 迁移失败不影响使用
+            if (oldHome.isDirectory()) {
+                File newHome = find(ctx, activeName(ctx)) != null
+                        ? new File(containersDir(ctx), activeName(ctx) + "/home")
+                        : null;
+                if (newHome != null && newHome.isDirectory()) {
+                    File[] children = oldHome.listFiles();
+                    if (children != null && children.length > 0 && newHome.listFiles() != null
+                            && newHome.listFiles().length == 0) {
+                        report(progress, "迁移旧的工作目录…");
+                        try {
+                            copyTree(oldHome, newHome);
+                        } catch (IOException ignored) {
+                            // 迁移失败不影响使用
+                        }
                     }
                 }
             }
         }
 
-        if (find(ctx, activeName(ctx)) == null) {
+        if (items(ctx).isEmpty()) {
+            // 没有容器就没有活动容器可言，清掉残留的活动标记
+            prefs(ctx).edit().remove(KEY_ACTIVE).apply();
+        } else if (find(ctx, activeName(ctx)) == null) {
             setActive(ctx, items(ctx).get(0).name);
         }
 

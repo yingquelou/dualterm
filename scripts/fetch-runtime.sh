@@ -13,7 +13,8 @@
 #
 #    app/src/main/jniLibs/<abi>/    libproot.so / libproot_loader.so
 #                                   libtalloc2.so / libandroid-shmem.so
-#    app/src/main/assets/runtime/   rootfs-<abi>.pack
+#    app/src/main/assets/runtime/   rootfs-<abi>.pack（仅 WITH_ROOTFS=1 时；
+#                                   APK 默认不内置 rootfs，镜像由应用内拉取）
 #
 #  三个 Termux 包各出一部分：
 #    proot              → bin/proot + libexec/proot/loader
@@ -57,10 +58,14 @@ echo "jniLibs    : $JNI"
 echo "assets     : $ASSETS"
 echo
 
-# ---------------------------------------------------------------- 1. rootfs
+# ---------------------------------------------------------------- 1. rootfs（可选）
+# APK 不再内置 rootfs（体积优化，2026-11）：镜像由应用内 docker pull / 导入 tar 获得。
+# 本地离线调试需要 pack 时显式 WITH_ROOTFS=1 再跑本脚本。
 ROOTFS_PACK="$ASSETS/rootfs-$ABI.pack"
 ROOTFS_NAME="alpine-minirootfs-$ALPINE_VERSION-$ALPINE_ARCH.tar.gz"
-if [ -f "$ROOTFS_PACK" ]; then
+if [ "${WITH_ROOTFS:-0}" != "1" ]; then
+    echo "[跳过] rootfs pack 不再默认进包（需要离线调试包时用 WITH_ROOTFS=1 重跑）"
+elif [ -f "$ROOTFS_PACK" ]; then
     echo "[跳过] 已存在 rootfs-$ABI.pack"
 else
     URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/$ALPINE_ARCH/$ROOTFS_NAME"
