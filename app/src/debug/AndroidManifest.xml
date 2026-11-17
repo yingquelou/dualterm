@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 仅 debug 变体生效（src/debug 源集，不进 release 包）：
+     控制台导出给 adb 自动化测试用：am start 的 cmd extra 可直接驱动
+     命令执行，摆脱 UI 点按驱动。release 的 exported=false 不变。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <activity
+            android:name="dev.dualterm.ui.ConsoleActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+</manifest>
