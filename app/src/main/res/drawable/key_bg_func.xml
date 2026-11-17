@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  功能键样式（＋/⌨/⛶）：这些键不产生输入语义（开键盘、加键、切全屏），
+  绿色描边+淡绿底与普通输入键区分。激活态仍由文字变色表达
+  （⌨ 开启 / ⛶ 全屏中时文字转 accent 绿，不与样式冲突）。
+-->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#40FFFFFF">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#267CE38B" />
+            <stroke
+                android:width="1dp"
+                android:color="@color/accent" />
+            <corners android:radius="7dp" />
+        </shape>
+    </item>
+</ripple>

@@ -80,7 +80,8 @@
 
         <!--
           功能键条。触屏才需要它：物理键盘上这些键本来就有。
-          上半部分是「更多键」面板（默认收起，按一次键后自动收起），
+          上半部分是自制辅助键盘（⌨ 开合，编辑键/F 键/控制符/符号都在其中，
+          可自定义，dev.dualterm.ui.SoftKeyboard 构建），
           下半部分是一屏放得下的常用键，不需要横向滚动去找。
         -->
         <LinearLayout
@@ -93,14 +94,6 @@
             android:paddingTop="3dp"
             android:paddingRight="2dp"
             android:paddingBottom="2dp">
-
-            <LinearLayout
-                android:id="@+id/key_panel"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:paddingBottom="2dp"
-                android:visibility="gone" />
 
             <LinearLayout
                 android:id="@+id/key_row"

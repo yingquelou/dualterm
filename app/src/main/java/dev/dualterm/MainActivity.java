@@ -92,15 +92,11 @@ public class MainActivity extends Activity
     private Button btnMenu;
     private View keyBar;
     private LinearLayout keyRow;
-    private LinearLayout keyPanel;
     private View overlay;
     private TextView overlayText;
 
     private Button ctrlKey;
     private Button altKey;
-    private boolean keyPanelOpen;
-    /** 键行里的「⋯」按钮：面板驻留后要靠它高亮显示开关状态。 */
-    private Button keyPanelKey;
 
     /** 自绘软键盘（dev.dualterm.ui.SoftKeyboard）：从本类拆出的构建与键语义。 */
     private SoftKeyboard softKbd;
@@ -181,7 +177,6 @@ public class MainActivity extends Activity
         btnMenu = findViewById(R.id.btn_menu);
         keyBar = findViewById(R.id.key_bar);
         keyRow = findViewById(R.id.key_row);
-        keyPanel = findViewById(R.id.key_panel);
         exitBar = findViewById(R.id.exit_bar);
         exitText = findViewById(R.id.exit_text);
         overlay = findViewById(R.id.overlay);
@@ -194,7 +189,7 @@ public class MainActivity extends Activity
         // 先把它空出来；而且实测它和现有手势打架：vim 鼠标模式下「按住再拖」选段
         // 会被 450ms 的长按抢走（我们还得补发 mouse-up），点终端切键盘时手指
         // 停顿一下也会误弹整个菜单。
-        // 现在的入口都是可见控件：顶栏 ⋮（非全屏）/ 长按键行的 ⋯（全屏下也在）。
+        // 现在的入口都是可见控件：顶栏 ⋮（非全屏）/ 长按键行的 ⌨（全屏下也在）。
         // TerminalView 里保留 longPress 钩子，留给将来的选区实现。
         // 会话已退出还继续敲键盘：给一次提示，别让用户对着死 PTY 敲半天
         terminal.setDeadInputListener(new TerminalView.DeadInputListener() {
@@ -251,14 +246,10 @@ public class MainActivity extends Activity
                 copyAll();
             }
         });
-        // 点终端 = 打字：面板开着先关面板（「点空白关闭」的层级语义），否则切系统键盘
+        // 点终端 = 打字：系统键盘开着就收起，收着就唤起
         terminal.setTapListener(new TerminalView.TapListener() {
             @Override
             public void onTap() {
-                if (keyPanelOpen) {
-                    closeKeyPanel();
-                    return;
-                }
                 // 用 imeVisible（全局布局监听的真源）判断，而不是 IMM.isActive——
                 // 后者只表示有输入法连上，键盘收起后仍可能为 true
                 if (imeVisible) {
@@ -789,7 +780,6 @@ public class MainActivity extends Activity
         exitText.setTextColor(code == 0 ? 0xFF8A90A0 : 0xFFFF8A65);
         exitBar.setVisibility(View.VISIBLE);
         updateChrome();
-        closeKeyPanel();
     }
 
     private void hideExitBar() {
@@ -1024,14 +1014,10 @@ public class MainActivity extends Activity
     private static final int KEY_MOD_ALT = 1;
     private static final int KEY_RAW = 2;
     private static final int KEY_CURSOR = 3;
-    private static final int KEY_PANEL = 4;
 
     /**
-     * 键条 = 一屏放得下的常用键 + 可展开的更多键面板。
-     *
-     * 以前是 20 个键塞在横向 ScrollView 里：^C 排在第 13 位，得先横滑才找得到，
-     * 而横向滚动条被隐藏后根本没人知道右边还有键。现在常用键等宽铺满一行（不用滑），
-     * 剩下的进面板，按一次就收起——面板只在「临时要个 F 键」时占用高度。
+     * 键条 = 一屏放得下的常用键。更多键（编辑键/F 键）并入自制键盘的固定区，
+     * 由 ⌨ 统一开合——以前「⋯」面板独立展开是两套入口两套状态，现在只剩一套。
      */
     private void buildKeyBar() {
         Object[][] primary = {
@@ -1044,7 +1030,6 @@ public class MainActivity extends Activity
                 {"↑", KEY_CURSOR, "A"},
                 {"↓", KEY_CURSOR, "B"},
                 {"→", KEY_CURSOR, "C"},
-                {"⋯", KEY_PANEL, null},
         };
         // 关闭 baseline 对齐：行内混着 11sp 文字键（CTRL/ALT…）和 15sp 图标键
         // （⌨/⛶），LinearLayout 默认按文字基线对齐会把小字键块整体下推约 2dp，
@@ -1063,6 +1048,8 @@ public class MainActivity extends Activity
         // 而它们本质上和 CTRL/ALT 一样是「操作终端」，归到这一行：既省顶栏宽度，
         // 又让全屏有可见的退出入口（不再依赖长按终端）。
         btnKeyboard = makeNarrowKey(getString(R.string.keyboard), 15);
+        // 功能键样式：⌨ 不发字符（开关自制键盘），绿描边与普通键区分
+        btnKeyboard.setBackgroundResource(R.drawable.key_bg_func);
         btnKeyboard.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1076,10 +1063,23 @@ public class MainActivity extends Activity
                 }
             }
         });
+        // 长按「⌨」= 应用菜单（原「⋯」的职责随面板并入自制键盘移交过来）。
+        // 全屏下顶栏收起后 ⋮ 看不见，而键行一直在（触屏才有键行，菜单也只在
+        // 触屏上才需要）。单击是高频的键盘开关，长按给低频的管理动作，
+        // 两档手势都落在同一个可见控件上，不用教也不占宽度。
+        btnKeyboard.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View v) {
+                showMenu(v);
+                return true;   // 长按吃掉这次触摸，松开不再触发 click
+            }
+        });
         keyRow.addView(btnKeyboard);
 
         btnFullscreen = makeNarrowKey(K_FULLSCREEN, 15);
         btnFullscreen.setContentDescription("全屏");
+        // 功能键样式：⛶ 不发字符（切全屏），与 ⌨ 同款绿描边
+        btnFullscreen.setBackgroundResource(R.drawable.key_bg_func);
         btnFullscreen.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1088,7 +1088,7 @@ public class MainActivity extends Activity
         });
         keyRow.addView(btnFullscreen);
 
-        buildKeyPanel();
+        // 编辑键/F 键面板已并入自制键盘固定区（dev.dualterm.ui.SoftKeyboard）。
     }
 
     private static final String K_FULLSCREEN = "\u26f6";   // ⛶
@@ -1105,79 +1105,6 @@ public class MainActivity extends Activity
         lp.setMargins(dp(2), 0, dp(2), 0);   // 与左侧文字键保持同样的键间距
         b.setLayoutParams(lp);
         return b;
-    }
-
-    /**
-     * 更多键：HOME/END/PGUP/PGDN/DEL/INS + F1-F12。
-     * 最初这里还有 12 个符号（/ - | ~ \ * & $ > < " '），和符号页完全重复
-     * （面板展开时 4 行 + 键行 + 键盘占掉半屏）。符号统一收敛到键盘符号页，
-     * 面板只留键盘上没有的编辑键/功能键。
-     *
-     * 按行分组而不是平坦 6 键换行：编辑键一行、F1–F12 一行——F 键是按序号
-     * 找的，一行排开视线不用跨行跳，且面板从 3 行降到 2 行（每行 34dp）。
-     */
-    private static final String[][][] PANEL_ROWS = {
-            {
-                    {"HOME", "\u001b[H"}, {"END", "\u001b[F"}, {"PGUP", "\u001b[5~"},
-                    {"PGDN", "\u001b[6~"}, {"DEL", "\u001b[3~"}, {"INS", "\u001b[2~"},
-            },
-            {
-                    {"F1", "\u001bOP"}, {"F2", "\u001bOQ"}, {"F3", "\u001bOR"},
-                    {"F4", "\u001bOS"}, {"F5", "\u001b[15~"}, {"F6", "\u001b[17~"},
-                    {"F7", "\u001b[18~"}, {"F8", "\u001b[19~"}, {"F9", "\u001b[20~"},
-                    {"F10", "\u001b[21~"}, {"F11", "\u001b[23~"}, {"F12", "\u001b[24~"},
-            },
-    };
-
-    private void buildKeyPanel() {
-        for (String[][] rowKeys : PANEL_ROWS) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setBaselineAligned(false);
-            row.setLayoutParams(new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            keyPanel.addView(row);
-            for (String[] key : rowKeys) {
-                Button b = makeKeyButton(key[0]);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1f);
-                lp.setMargins(dp(2), dp(2), dp(2), 0);
-                b.setLayoutParams(lp);
-                final String sequence = key[1];
-                b.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        // 不收起：面板里全是「发送即生效」的编辑键/F 键，连按 PGUP、
-                        // HOME 之后接 END 是常见操作。收起一次就会重排一次终端
-                        // （TIOCSWINSZ → SIGWINCH），vim/htop 跟着整屏重绘，画面抖动
-                        // 比多点一次难受得多。收起交给「⋯」再点一次 / 返回键 / 点终端。
-                        terminal.sendRaw(sequence);
-                    }
-                });
-                row.addView(b);
-            }
-        }
-        applyPanelMetrics(getResources().getConfiguration().orientation
-                == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
-    }
-
-    /**
-     * 面板行高与主键盘同档（横屏 27dp / 竖屏 34dp，随 updateChrome 刷新）。
-     * 之前写死 34dp：竖屏恰好一致，横屏键盘弹出时主键盘压到 27dp 而面板
-     * 还是 34dp，两块区域并排一高一低。键间距统一成与键盘键相同的 2dp。
-     */
-    private void applyPanelMetrics(boolean landscape) {
-        int h = dp(landscape ? 27 : 34);
-        for (int i = 0; i < keyPanel.getChildCount(); i++) {
-            LinearLayout row = (LinearLayout) keyPanel.getChildAt(i);
-            for (int j = 0; j < row.getChildCount(); j++) {
-                View c = row.getChildAt(j);
-                ViewGroup.LayoutParams lp = c.getLayoutParams();
-                if (lp.height != h) {
-                    lp.height = h;
-                    c.setLayoutParams(lp);
-                }
-            }
-        }
     }
 
     private Button makeKeyButton(String label) {
@@ -1225,29 +1152,6 @@ public class MainActivity extends Activity
                     }
                 });
                 break;
-            case KEY_PANEL:
-                keyPanelKey = b;
-                b.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        toggleKeyPanel();
-                    }
-                });
-                // 长按「⋯」= 应用菜单。这是全屏下唯一常驻的菜单入口：
-                // 顶栏收起后 ⋮ 看不见，而键行一直在（触屏才有键行，菜单也只在
-                // 触屏上才需要）。单击仍是高频的键面板，长按给低频的管理动作，
-                // 两档手势都落在同一个可见控件上，不用教也不占宽度。
-                b.setOnLongClickListener(new View.OnLongClickListener() {
-                    @Override
-                    public boolean onLongClick(View v) {
-                        if (keyPanelOpen) {
-                            closeKeyPanel();
-                        }
-                        showMenu(v);
-                        return true;   // 长按吃掉这次触摸，松开不再触发 click
-                    }
-                });
-                break;
             default:
                 b.setOnClickListener(new View.OnClickListener() {
                     @Override
@@ -1257,38 +1161,6 @@ public class MainActivity extends Activity
                 });
                 break;
         }
-    }
-
-    /**
-     * 「更多键」面板是**驻留**浮层，不是一次性弹出框：点开之后连按多少下都留着，
-     * 直到再点一次「⋯」、按返回键，或在终端上点一下。键条上的「⋯」同步高亮，
-     * 免得面板开着却看不出是谁开着的。
-     */
-    private void toggleKeyPanel() {
-        if (keyPanelOpen) {
-            closeKeyPanel();
-        } else {
-            keyPanelOpen = true;
-            keyPanel.setVisibility(View.VISIBLE);
-            applyKeyPanelStyle();
-        }
-    }
-
-    private void closeKeyPanel() {
-        if (!keyPanelOpen) {
-            return;
-        }
-        keyPanelOpen = false;
-        keyPanel.setVisibility(View.GONE);
-        applyKeyPanelStyle();
-    }
-
-    private void applyKeyPanelStyle() {
-        if (keyPanelKey == null) {
-            return;
-        }
-        keyPanelKey.setTextColor(keyPanelOpen ? 0xFF101014 : COLOR_TEXT);
-        keyPanelKey.setBackgroundResource(keyPanelOpen ? R.drawable.key_bg_on : R.drawable.key_bg);
     }
 
     /* -------------------- 自绘软键盘（构建在 dev.dualterm.ui.SoftKeyboard） -------------------- */
@@ -1321,8 +1193,17 @@ public class MainActivity extends Activity
             }
 
             @Override
-            public void paste() {
-                MainActivity.this.paste();
+            public String storedKeysJson() {
+                return prefs.getString("soft_kbd_keys", null);
+            }
+
+            @Override
+            public void storeKeysJson(String json) {
+                if (json == null) {
+                    prefs.edit().remove("soft_kbd_keys").apply();
+                } else {
+                    prefs.edit().putString("soft_kbd_keys", json).apply();
+                }
             }
 
             @Override
@@ -1466,8 +1347,6 @@ public class MainActivity extends Activity
             softKbd.setVisible(false);
         }
         softKbd.applyMetrics(landscape);
-        // 面板行高跟主键盘同档，转屏/键盘弹收都要刷新
-        applyPanelMetrics(landscape);
     }
 
     /** 键盘还没构建时（onCreate 前段）updateChrome 也会跑，统一从这里取。 */
@@ -1494,7 +1373,6 @@ public class MainActivity extends Activity
         if (hw != hardKeyboard) {
             hardKeyboard = hw;
             if (hw && uiReady) {
-                closeKeyPanel();
                 toast("已连接物理键盘：隐藏屏幕键条，Esc/Tab/方向键直接用键盘");
             }
         }
@@ -1542,8 +1420,6 @@ public class MainActivity extends Activity
                             // 横屏下键盘吃掉大半屏幕，chrome 显隐和键条高度要跟着变
                             updateChrome();
                             if (shown) {
-                                // 键盘和面板同时开着，终端只剩两行
-                                closeKeyPanel();
                                 // 终端自己唤起 IME（点终端 / ⌨ / 会话启动）→ 保留辅助键盘，
                                 // 两者就是一套组合；对话框输入框把 IME 叫出来 → 辅助键盘让位
                                 if (imeFromTerminal) {
@@ -1609,8 +1485,9 @@ public class MainActivity extends Activity
                 new String[]{
                         prefs.getBoolean("root", false) ? "Root Shell：开" : "Root Shell：关",
                         "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"),
+                        "辅助键盘：恢复默认键集",
                 },
-                new int[]{7, 13}));
+                new int[]{7, 13, 20}));
         groups.add(new MenuGroup("帮助",
                 new String[]{"使用说明…", "关于"},
                 new int[]{19, 10}));
@@ -1681,19 +1558,23 @@ public class MainActivity extends Activity
         scroll.setVerticalScrollBarEnabled(false);
         scroll.addView(rowsBox);
         panel.addView(scroll);
-        // 内容超过可用高度就把滚动区压到 avail，其余交给滚轮/拖动
-        android.graphics.Point sz = new android.graphics.Point();
-        getWindowManager().getDefaultDisplay().getSize(sz);
+        // 先量锚点上下各有多少可见空间（可见显示框不含导航条和 IME）。
+        // 锚点可能在屏幕最底部（键条 ⌨ 长按菜单）：系统键盘未弹出时锚点
+        // 下方只剩导航条，向下弹出整窗会落到屏幕外——所以菜单超过下方
+        // 空间就向上弹，超长内容压进较大的一侧滚动。
         android.graphics.Rect frame = new android.graphics.Rect();
         getWindow().getDecorView().getWindowVisibleDisplayFrame(frame);
         int[] loc = new int[2];
         anchor.getLocationOnScreen(loc);
-        int avail = sz.y - frame.top - (loc[1] + anchor.getHeight()) - dp(12);
+        int spaceBelow = frame.bottom - (loc[1] + anchor.getHeight());
+        int spaceAbove = loc[1] - frame.top;
+        int avail = Math.max(spaceBelow, spaceAbove) - dp(12);
         rowsBox.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
         if (rowsBox.getMeasuredHeight() > avail) {
             scroll.setLayoutParams(new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, avail));
         }
+        panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
 
         android.widget.PopupWindow popup = new android.widget.PopupWindow(panel,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -1707,7 +1588,17 @@ public class MainActivity extends Activity
         menuAnchor = anchor;
         menuGroups = groups;
         menuGroupIndex = groupIndex;
-        popup.showAsDropDown(anchor, 0, dp(4), Gravity.END);
+        if (panel.getMeasuredHeight() <= spaceBelow) {
+            // 下方放得下：常规下拉（顶栏 ⋮ 菜单走这条）
+            popup.showAsDropDown(anchor, 0, dp(4), Gravity.END);
+        } else {
+            // 下方放不下：负偏移向上弹，菜单底边贴在锚点上方。
+            // showAsDropDown 的 y 是相对「锚点底边」的偏移，要挪到锚点
+            // 顶边之上需要抵掉锚点自身高度再加菜单高度。
+            popup.showAsDropDown(anchor, 0,
+                    -(anchor.getHeight() + panel.getMeasuredHeight() + dp(4)),
+                    Gravity.END);
+        }
     }
 
     private TextView addMenuRow(LinearLayout rowsBox, String text, boolean accent) {
@@ -1773,6 +1664,10 @@ public class MainActivity extends Activity
                 return true;
             case 7:
                 toggleRoot();
+                return true;
+            case 20:
+                softKbd.restoreDefaults();
+                toast("辅助键盘已恢复默认键集");
                 return true;
             case 8:
                 toggleRuntime();
@@ -2894,10 +2789,6 @@ public class MainActivity extends Activity
             return;
         }
         if (overlay.getVisibility() == View.VISIBLE) {
-            return;
-        }
-        if (keyPanelOpen) {
-            closeKeyPanel();
             return;
         }
         if (kbdShowing()) {

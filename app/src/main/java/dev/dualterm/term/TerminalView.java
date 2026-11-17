@@ -619,6 +619,24 @@ public class TerminalView extends View {
     }
 
     /**
+     * 原样写字节。sendRaw 走 UTF-8 编码，发不了 NUL/DEL/裸 ESC 这类
+     * 不是合法 UTF-8 序列的单字节——字节模式自定义键（hex）走这里。
+     */
+    public void sendRawBytes(byte[] data) {
+        if (session == null || data == null || data.length == 0) {
+            return;
+        }
+        if (!session.isRunning()) {
+            notifyDead();
+            return;
+        }
+        session.writeBytes(data);
+        scrollOffset = 0;
+        clearModifiers();
+        invalidate();
+    }
+
+    /**
      * 键条上的方向键。程序切到应用光标模式（vim）时要发 SS3；粘滞 Ctrl/Alt 锁着时
      * 要发 CSI 1 ; m D —— 否则 Ctrl+← 在 vim 里不会按词跳。
      */
