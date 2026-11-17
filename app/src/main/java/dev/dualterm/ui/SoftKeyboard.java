@@ -527,13 +527,16 @@ public final class SoftKeyboard {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
 
+        // 自定义 item 布局：simple_spinner_item 的主题色解析在小米 HyperOS 上
+        // 会解析出与深色对话框同色的文字（收起态五选项隐形、只有 ^X 可见），
+        // spinner_item.xml 写死颜色绕开；数据层文本一直是对的（uiautomator 实证）
         ArrayAdapter<String> adapter = new ArrayAdapter<String>(ctx,
-                android.R.layout.simple_spinner_item, modeLabels());
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                R.layout.spinner_item, modeLabels());
+        adapter.setDropDownViewResource(R.layout.spinner_item);
         final Spinner sp = new Spinner(ctx);
         sp.setAdapter(adapter);
         LinearLayout.LayoutParams spLp = new LinearLayout.LayoutParams(
-                host.dp(88), ViewGroup.LayoutParams.WRAP_CONTENT);
+                host.dp(104), ViewGroup.LayoutParams.WRAP_CONTENT);
         sp.setLayoutParams(spLp);
 
         final EditText et = new EditText(ctx);

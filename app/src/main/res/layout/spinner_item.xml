@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    步骤模式 Spinner 的选项行（收起态 + 下拉态共用）。
+
+    两个坑都在小米设备上实证（font_scale=1.4）：
+    1. 不用 android.R.layout.simple_spinner_item——文字颜色走主题解析不可控；
+    2. textSize 必须用 dp 而非 sp——Spinner 文字区只有约 40dp 宽，系统大字体
+       把 sp 放大 1.4 倍后「文本/ESC」等超宽，单行 TextView 转入跑马灯态且
+       无焦点不滚动，文字永久画在可视区外（uiautomator dump text 正确、
+       渲染 0 像素；只有恰好放得下的 2 字符 ASCII 可见）。dp 不随字体缩放。
+-->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/text1"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingLeft="6dp"
+    android:paddingRight="6dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
+    android:singleLine="true"
+    android:ellipsize="end"
+    android:gravity="center"
+    android:textColor="@color/text_primary"
+    android:textSize="13dp" />
