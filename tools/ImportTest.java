@@ -24,6 +24,7 @@ public class ImportTest {
         detectArchCases();
         pickRefCases();
         validImageRefCases();
+        loginShellCases();
 
         System.out.println();
         System.out.println("PASS " + pass + "  FAIL " + fail);
@@ -131,6 +132,39 @@ public class ImportTest {
         check("validImageRef: 竖线拒绝", !Containers.validImageRef("a|b"));
         check("validImageRef: 超长拒绝", !Containers.validImageRef(
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    }
+
+    static void loginShellCases() {
+        String debian = "root:x:0:0:root:/root:/bin/bash\n"
+                + "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n";
+        String alpine = "root:x:0:0:root:/root:/bin/sh\n"
+                + "bin:x:1:1:bin:/bin:/sbin/nologin\n";
+        check("loginShell: Debian root → /bin/bash",
+                Containers.loginShellFromPasswd(debian, "root").equals("/bin/bash"));
+        check("loginShell: Alpine root → /bin/sh",
+                Containers.loginShellFromPasswd(alpine, "root").equals("/bin/sh"));
+        check("loginShell: root 不在首行也能命中",
+                Containers.loginShellFromPasswd(
+                        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\nroot:x:0:0:root:/root:/bin/bash\n",
+                        "root").equals("/bin/bash"));
+        check("loginShell: 匹配的是用户名不是 uid 字段",
+                Containers.loginShellFromPasswd(
+                        "xx:x:0:0:root:/root:/bin/bash\nroot:x:0:0:root:/root:/bin/dash\n",
+                        "root").equals("/bin/dash"));
+        check("loginShell: passwd 缺失回退 /bin/sh",
+                Containers.loginShellFromPasswd(null, "root").equals("/bin/sh"));
+        check("loginShell: 内容为空回退 /bin/sh",
+                Containers.loginShellFromPasswd("", "root").equals("/bin/sh"));
+        check("loginShell: 无 root 条目回退 /bin/sh",
+                Containers.loginShellFromPasswd(
+                        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n", "root").equals("/bin/sh"));
+        check("loginShell: shell 字段为空回退 /bin/sh",
+                Containers.loginShellFromPasswd("root:x:0:0:root:/root:\n", "root").equals("/bin/sh"));
+        check("loginShell: CRLF 行尾容忍",
+                Containers.loginShellFromPasswd(
+                        "root:x:0:0:root:/root:/bin/bash\r\n", "root").equals("/bin/bash"));
+        check("loginShell: 条目字段不足不误取",
+                Containers.loginShellFromPasswd("root:x:0:0:root\n", "root").equals("/bin/sh"));
     }
 
     static void check(String name, boolean ok) {

@@ -96,17 +96,49 @@ public final class ProotRuntime extends ContainerRuntime {
             }
         }
 
+        // 登录 shell 由发行版决定（/etc/passwd 对应用户条目的第 7 字段）——
+        // Debian 的 root 是 /bin/bash（readline，方向键/HOME/行编辑可用），
+        // Alpine 是 /bin/sh（busybox ash 自带行编辑）。passwd 缺失、解析不出
+        // 或该 shell 不在 rootfs 里时回退 /bin/sh。
+        String loginShell = "/bin/sh";
+        File passwd = new File(rootfs, "etc/passwd");
+        if (passwd.isFile()) {
+            try {
+                StringBuilder sb = new StringBuilder();
+                java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(
+                                new java.io.FileInputStream(passwd),
+                                java.nio.charset.StandardCharsets.UTF_8));
+                try {
+                    String ln;
+                    while ((ln = br.readLine()) != null) {
+                        sb.append(ln).append('\n');
+                    }
+                } finally {
+                    br.close();
+                }
+                String shell = Containers.loginShellFromPasswd(sb.toString(), "root");
+                if (Containers.existsInRootfs(rootfs,
+                        shell.startsWith("/") ? shell.substring(1) : shell)) {
+                    loginShell = shell;
+                }
+            } catch (Exception ignored) {
+                // 读不了 passwd 就按 /bin/sh 启动，别让会话起不来
+            }
+        }
+
         args.add("-w");
         args.add("/root");
         args.add("/usr/bin/env");
         args.add("-i");
         args.add("HOME=/root");
+        args.add("SHELL=" + loginShell);
         args.add("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
         args.add("TERM=xterm-256color");
         args.add("COLORTERM=truecolor");
         args.add("LANG=C.UTF-8");
         args.add("DUALTERM_CONTAINER=" + containerName);
-        args.add("/bin/sh");
+        args.add(loginShell);
         args.add("-l");
 
         return new LaunchSpec("容器 · " + containerName, args.toArray(new String[0]),

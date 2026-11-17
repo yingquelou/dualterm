@@ -285,6 +285,30 @@ public final class Containers {
         return ref != null && ref.matches("[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}");
     }
 
+    /**
+     * 从 /etc/passwd 内容解析登录 shell——标准登录语义：启动哪个 shell 由发行版的
+     * passwd 决定（Debian 的 root 是 /bin/bash，Alpine 是 /bin/sh），宿主 app 不做选择。
+     * 取 user 条目的第 7 个字段；内容为空、条目缺失或 shell 字段为空都回退 /bin/sh。
+     * 纯函数，桌面回归覆盖（ImportTest）。
+     */
+    public static String loginShellFromPasswd(String passwdContent, String user) {
+        String fallback = "/bin/sh";
+        if (passwdContent == null || user == null) {
+            return fallback;
+        }
+        for (String line : passwdContent.split("\n")) {
+            String s = line.trim();
+            if (s.isEmpty()) {
+                continue;
+            }
+            String[] f = s.split(":", -1);
+            if (f.length >= 7 && f[0].equals(user) && !f[6].trim().isEmpty()) {
+                return f[6].trim();
+            }
+        }
+        return fallback;
+    }
+
     public static List<Item> items(Context ctx) {
         List<Item> out = new ArrayList<>();
         String raw = prefs(ctx).getString(KEY_ITEMS, "");

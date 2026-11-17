@@ -149,10 +149,14 @@ vim 一类全屏程序需要下列终端能力，均已实现：
 proot --kill-on-exit --link2symlink -0 -r <rootfs> \
       -b /dev -b /proc -b /sys -b /dev/urandom:/dev/random \
       -b /proc/self/fd:/dev/fd -b <files>/container/home:/root -b /sdcard \
-      -w /root /usr/bin/env -i HOME=/root PATH=… TERM=xterm-256color /bin/sh -l
+      -w /root /usr/bin/env -i HOME=/root SHELL=<登录shell> PATH=… TERM=xterm-256color <登录shell> -l
 ```
 
 `-0` 是假 root（容器内 `uid=0`）；`--link2symlink` 让 `apk` 的硬链接在 SELinux 下也能通过。
+
+登录 shell 按标准语义取自 rootfs 的 `/etc/passwd`（root 条目第 7 字段）：
+Debian 是 `/bin/bash`、Alpine 是 `/bin/sh`——发行版自己决定，app 不选。
+passwd 缺失、解析不出或该 shell 不在 rootfs 里时回退 `/bin/sh`。
 
 ### Android 专属前提
 

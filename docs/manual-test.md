@@ -12,6 +12,10 @@ AI 负责桌面回归（`tools/` 七套）与 adb 冒烟；本清单是你手测
    **辅助键盘** = 点 ⌨ 后展开的多行键区（含绿色描边的 ⌨ ⛶ ＋）。
 4. ⚠️ 注意：`^D` 会结束 shell（会话退出）、`^\` 发 SIGQUIT——测这两键前
    先想清楚，或放到最后测（会话可从菜单重建）。
+5. 会话 shell 由发行版 `/etc/passwd` 决定：Debian 容器 root → `/bin/bash`
+   （readline，方向键/HOME/^A 等行编辑可用），Alpine → busybox ash（自带行编辑）。
+   若 passwd 指向的 shell 缺失则回退 `/bin/sh`（可能无行编辑，此时方向键会字面
+   回显 `^[[D` 等——先输 `bash` 再测）。
 
 ---
 
