@@ -493,7 +493,7 @@ public class MainActivity extends Activity
         new AlertDialog.Builder(this)
                 .setTitle("还没有容器")
                 .setMessage("安装包不再内置系统镜像。先获取一个镜像，再从镜像创建容器：\n\n"
-                        + "· 拉取 Alpine 镜像（联网，约 3MB）\n"
+                        + "· 拉取镜像（联网，Alpine 约 3MB；直连 Hub 不通可在镜像源设置里换源）\n"
                         + "· 导入 docker save / export 出的 tar\n\n"
                         + "创建好之后就能进容器模式了。")
                 .setNegativeButton("取消", null)
@@ -503,7 +503,7 @@ public class MainActivity extends Activity
                         pickArchiveForImport();
                     }
                 })
-                .setPositiveButton("拉取 Alpine 镜像", new android.content.DialogInterface.OnClickListener() {
+                .setPositiveButton("拉取镜像", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
                         showPullDialog();
@@ -2208,10 +2208,12 @@ public class MainActivity extends Activity
                     + (sz < 0 ? "…" : Containers.humanSize(sz)));
             meta.add(new int[]{1, i});
         }
-        labels.add("⇣ 拉取 Alpine 镜像…");
+        labels.add("⇣ 拉取镜像（Docker Hub / Alpine）…");
         meta.add(new int[]{3, -1});
         labels.add("⇣ 导入 tar 镜像（docker save / export）…");
         meta.add(new int[]{4, -1});
+        labels.add("⇄ 镜像源设置（换源）…");
+        meta.add(new int[]{6, -1});
 
         new AlertDialog.Builder(this)
                 .setTitle("容器与镜像")
@@ -2238,6 +2240,9 @@ public class MainActivity extends Activity
                             case 5:
                                 startActivity(new android.content.Intent(MainActivity.this,
                                         ConsoleActivity.class));
+                                break;
+                            case 6:
+                                showMirrorDialog();
                                 break;
                             default:
                                 break;
@@ -2431,11 +2436,15 @@ public class MainActivity extends Activity
     private void showPullDialog() {
         final EditText input = new EditText(this);
         input.setSingleLine(true);
-        input.setHint("Alpine 版本，如 3.20");
-        input.setText("3.21");
+        input.setHint("镜像名，如 debian:12 / alpine:3.21");
+        input.setText("alpine:3.21");
+        String hub = Containers.hubMirror(this);
         new AlertDialog.Builder(this)
-                .setTitle("拉取 Alpine 镜像")
-                .setMessage("从 dl-cdn.alpinelinux.org 下载 minirootfs（约 3MB），作为新镜像。")
+                .setTitle("拉取镜像")
+                .setMessage("alpine 版本：从官方 CDN 或镜像源下载 minirootfs（约 3MB）。\n"
+                        + "其余：从 Docker Hub 匿名拉取（几十 MB 起，层压缩仅支持 gzip）。\n"
+                        + "当前 Hub 源：" + (hub.isEmpty() ? "官方直连" : hub)
+                        + "（可在「镜像源设置」里换源）")
                 .setView(input)
                 .setNegativeButton("取消", null)
                 .setPositiveButton("拉取", new android.content.DialogInterface.OnClickListener() {
@@ -2447,8 +2456,55 @@ public class MainActivity extends Activity
                 .show();
     }
 
+    /** 换源设置：Hub 与 Alpine 两个源各一个输入框，留空=恢复官方直连。 */
+    private void showMirrorDialog() {
+        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+        box.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        box.setPadding(pad, pad / 2, pad, 0);
+
+        android.widget.TextView l1 = new android.widget.TextView(this);
+        l1.setText("Docker Hub 镜像源（留空=官方直连）\n示例：docker.1ms.run");
+        final EditText hub = new EditText(this);
+        hub.setSingleLine(true);
+        hub.setHint("https://docker.m.daocloud.io");
+        hub.setText(Containers.hubMirror(this));
+        android.widget.TextView l2 = new android.widget.TextView(this);
+        l2.setText("Alpine CDN 镜像源（留空=官方 dl-cdn）\n示例：mirrors.tuna.tsinghua.edu.cn/alpine");
+        final EditText alpine = new EditText(this);
+        alpine.setSingleLine(true);
+        alpine.setHint("https://mirrors.tuna.tsinghua.edu.cn/alpine");
+        alpine.setText(Containers.alpineMirror(this));
+
+        box.addView(l1);
+        box.addView(hub);
+        box.addView(l2);
+        box.addView(alpine);
+
+        new AlertDialog.Builder(this)
+                .setTitle("镜像源设置")
+                .setView(box)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        try {
+                            String h = Containers.setHubMirror(MainActivity.this,
+                                    hub.getText().toString().trim());
+                            String a = Containers.setAlpineMirror(MainActivity.this,
+                                    alpine.getText().toString().trim());
+                            toast("镜像源已保存：Hub " + (h.isEmpty() ? "官方直连" : h)
+                                    + " / Alpine " + (a.isEmpty() ? "官方直连" : a));
+                        } catch (Exception e) {
+                            toast("保存失败：" + e.getMessage());
+                        }
+                    }
+                })
+                .show();
+    }
+
     private void pullImageAsync(final String tag) {
-        showOverlay("拉取 alpine:" + tag + " …");
+        showOverlay("拉取 " + tag + " …");
         final Context appContext = getApplicationContext();
         background.execute(new Runnable() {
             @Override

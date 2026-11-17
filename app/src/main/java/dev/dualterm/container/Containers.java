@@ -46,6 +46,8 @@ public final class Containers {
     private static final String KEY_ITEMS = "containers";
     private static final String KEY_SIZES = "image_sizes";
     private static final String KEY_ACTIVE = "active_container";
+    private static final String KEY_MIRROR_HUB = "mirror_hub";       // Docker Hub 镜像源，空=官方
+    private static final String KEY_MIRROR_ALPINE = "mirror_alpine"; // Alpine CDN 镜像源，空=dl-cdn
 
     /** 当前有活会话的容器名（运行态不落盘，进程死了就是没在跑）。 */
     private static final Set<String> RUNNING = Collections.synchronizedSet(new HashSet<String>());
@@ -126,6 +128,37 @@ public final class Containers {
 
     private static SharedPreferences prefs(Context ctx) {
         return ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+    }
+
+    /* -------------------- 镜像源（换源） --------------------
+     * 存归一化后的 base（https://host[:port]/path，无尾斜杠）；空串=官方直连。
+     * Hub 源拼 /v2/ 端点；Alpine 源是含 /alpine 的完整目录前缀，
+     * 例：https://mirrors.tuna.tsinghua.edu.cn/alpine */
+
+    /** Docker Hub 镜像源；未配置返回空串（官方直连）。 */
+    public static String hubMirror(Context ctx) {
+        String v = prefs(ctx).getString(KEY_MIRROR_HUB, "");
+        return v == null ? "" : v;
+    }
+
+    /** Alpine 官方 CDN 的镜像源；未配置返回空串（dl-cdn.alpinelinux.org）。 */
+    public static String alpineMirror(Context ctx) {
+        String v = prefs(ctx).getString(KEY_MIRROR_ALPINE, "");
+        return v == null ? "" : v;
+    }
+
+    /** 设置 Hub 镜像源；传空/clear 恢复官方。返回归一化后的值。 */
+    public static String setHubMirror(Context ctx, String url) throws IOException {
+        String v = RegistryPuller.normalizeMirror(url);
+        prefs(ctx).edit().putString(KEY_MIRROR_HUB, v).apply();
+        return v;
+    }
+
+    /** 设置 Alpine 镜像源；传空/clear 恢复官方。返回归一化后的值。 */
+    public static String setAlpineMirror(Context ctx, String url) throws IOException {
+        String v = RegistryPuller.normalizeMirror(url);
+        prefs(ctx).edit().putString(KEY_MIRROR_ALPINE, v).apply();
+        return v;
     }
 
     public static List<Image> images(Context ctx) {
@@ -622,8 +655,10 @@ public final class Containers {
             Pattern.compile("alpine-minirootfs-(\\d+\\.\\d+\\.\\d+)-([a-z0-9_]+)\\.tar\\.gz");
 
     /**
-     * 从 Alpine 官方源拉一个 minirootfs 当镜像。
-     * tag 只支持 <major>.<minor>（如 3.21）或 latest（取 stable 分支当前版本）。
+     * 镜像拉取唯一入口（UI 拉取对话框与控制台 docker pull 共用）。
+     * Alpine 版本标签（3.21 这类）/ latest / 空 走官方 CDN 快路径——免鉴权、
+     * 单文件、已在用；其余引用交给 Docker Hub 拉取器（RegistryPuller）。
+     * 分发收在这里，两个入口不用各写一份。
      */
     public static String pull(Context ctx, String tag, ContainerRuntime.Progress progress) throws IOException {
         // 容忍 UI/CLI 传进来的各种写法：3.22 / alpine:3.22 / alpine
@@ -634,6 +669,10 @@ public final class Containers {
             t = "latest";
         }
         boolean latest = t.isEmpty() || "latest".equals(t);
+        boolean fastPath = latest || t.matches("\\d+\\.\\d+");
+        if (!fastPath) {
+            return RegistryPuller.pull(ctx, tag.trim(), progress);
+        }
         // latest 走官方的 latest-stable 软链，别写死某个版本号，否则越用越旧
         String branch = latest ? "latest-stable" : "v" + t;
         if (!latest && !branch.matches("v\\d+\\.\\d+")) {
@@ -651,8 +690,11 @@ public final class Containers {
             arch = "aarch64";
         }
 
-        String base = "https://dl-cdn.alpinelinux.org/alpine/" + branch + "/releases/" + arch + "/";
-        report(progress, "查询 " + branch + "/" + arch + " 可用版本…");
+        String cdn = alpineMirror(ctx);
+        String base = (cdn.isEmpty() ? "https://dl-cdn.alpinelinux.org/alpine" : cdn)
+                + "/" + branch + "/releases/" + arch + "/";
+        report(progress, (cdn.isEmpty() ? "查询 " : "经镜像源 " + cdn + " 查询 ")
+                + branch + "/" + arch + " 可用版本…");
         String listing;
         try {
             listing = httpText(base);

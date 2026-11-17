@@ -57,6 +57,8 @@ java -cp "/tmp/tt:$ANDROID_HOME/platforms/android-34/android.jar" TarTest
 
 **镜像导入**（`tools/ImportTest.java`，同款跑法）：`detectArch` 的 ELF 架构识别，`pickRef` 的镜像名闸门（恶意 RepoTags 白名单拒绝）。整包 `importArchive` 依赖 Context 与真 `org.json` 实现，仍需真机验证。
 
+**Hub 拉取**（`tools/RegistryTest.java`，同款跑法）：`RegistryPuller` 的纯逻辑部分——`parseRef`（library 前缀补全/剥离、tag 归一化、digest 拒绝、`validImageRef` 闸门）、`platformMatches`（ABI × architecture/variant 匹配表）、`layerKind`/`rejectReason`（gzip 收、zstd / nondistributable 拒）、`normalizeMirror`（换源归一化：补协议/剥尾斜杠与 /v2、非法拒绝）、`realmParam`（WWW-Authenticate 参数摘取，Hub/1ms/daocloud 实样）。JSON 解析与流下载依赖 Context，留真机验证（已过，见 pull-registry.md）。
+
 **注入链**（`tools/SecTest.java`，同款跑法）：`shQuote` 转义还原、`checkSafeName`、恶意 RepoTags 拒绝、`dockerVolumeArg`、`su -c` 拼装层拦截。
 
 **端口声明**（`tools/PortsTest.java`，同款跑法）：`-p` 写法解析（同端口直通、重映射识别、udp / 范围 / IPv6 / 越界拒绝）与提示文案。

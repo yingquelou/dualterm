@@ -71,6 +71,8 @@ public final class DockerCli {
                     return load(ctx, rest);
                 case "import":
                     return importCmd(ctx, rest);
+                case "mirror":
+                    return mirror(ctx, rest);
                 case "help":
                 case "--help":
                     return help();
@@ -480,26 +482,49 @@ public final class DockerCli {
 
     private static String pull(Context ctx, String[] args) {
         if (args.length == 0) {
-            return "docker: 用法 docker pull [alpine:]TAG\n";
-        }
-        String ref = args[0];
-        // 支持三种写法：pull 3.24 / pull alpine:3.24 / pull alpine（等价 latest）
-        String tag;
-        if (ref.contains(":")) {
-            tag = ref.substring(ref.indexOf(':') + 1);
-        } else if (ref.startsWith("alpine")) {
-            tag = "latest";
-        } else {
-            tag = ref;
-        }
-        if (tag.isEmpty()) {
-            tag = "latest";
+            return "docker: 用法 docker pull 名[:标签]（如 alpine:3.21 / debian:12）\n";
         }
         try {
-            String pulled = Containers.pull(ctx, tag, null);
+            // 写法归一化与 alpine/Hub 的分发都收在 Containers.pull，
+            // 控制台与 UI 拉取对话框共用同一条路
+            String pulled = Containers.pull(ctx, args[0], null);
             return "Pulled " + pulled + "\n";
         } catch (Exception e) {
             return "docker: pull 失败：" + e.getMessage() + "\n";
+        }
+    }
+
+    /**
+     * 换源设置。docker mirror 看现状；
+     * docker mirror hub|alpine <地址> 设源；地址传 clear 恢复官方直连。
+     */
+    private static String mirror(Context ctx, String[] args) {
+        if (args.length == 0) {
+            String hub = Containers.hubMirror(ctx);
+            String alpine = Containers.alpineMirror(ctx);
+            return "镜像源设置\n"
+                    + "  hub    " + (hub.isEmpty() ? "官方直连（registry-1.docker.io）" : hub) + "\n"
+                    + "  alpine " + (alpine.isEmpty() ? "官方直连（dl-cdn.alpinelinux.org）" : alpine) + "\n"
+                    + "\n"
+                    + "设置：docker mirror hub docker.1ms.run\n"
+                    + "恢复官方：docker mirror hub clear\n";
+        }
+        String which = args[0];
+        if (!"hub".equals(which) && !"alpine".equals(which)) {
+            return "docker: 用法 docker mirror [hub|alpine] [地址|clear]\n";
+        }
+        String current = "hub".equals(which) ? Containers.hubMirror(ctx) : Containers.alpineMirror(ctx);
+        if (args.length == 1) {
+            return "docker: " + which + " 当前 " + (current.isEmpty() ? "官方直连" : current)
+                    + "\n用法 docker mirror " + which + " <地址|clear>\n";
+        }
+        try {
+            String v = "hub".equals(which)
+                    ? Containers.setHubMirror(ctx, args[1])
+                    : Containers.setAlpineMirror(ctx, args[1]);
+            return "mirror " + which + " → " + (v.isEmpty() ? "官方直连" : v) + "\n";
+        } catch (Exception e) {
+            return "docker: " + e.getMessage() + "\n";
         }
     }
 
@@ -515,12 +540,15 @@ public final class DockerCli {
                 + "\n"
                 + "镜像\n"
                 + "  images                   列出镜像\n"
-                + "  pull [alpine:]VERSION    从 Alpine 官方源下载镜像，如 pull alpine:3.21\n"
+                + "  pull 名[:标签]          拉镜像：alpine 版本走官方源（约 3MB），\n"
+                + "                           其余走 Docker Hub（匿名，gzip 层，几十 MB 起）\n"
                 + "  load -i FILE [名]        导入 docker save 的 tar（含层叠/whiteout）\n"
                 + "  import FILE [名:标签]    导入 docker export 的扁平 rootfs tar\n"
                 + "  rmi IMAGE                删除镜像（有容器在用时拒绝）\n"
                 + "\n"
                 + "其他\n"
+                + "  mirror [hub|alpine] [地址|clear]\n"
+                + "                           查看或设置拉取镜像源（国内网络直连 Hub 失败时换源）\n"
                 + "  info / version / help\n"
                 + "\n"
                 + "说明: 这是 PRoot 容器，镜像只是模板，容器各自持有一份可写 rootfs；\n"

@@ -30,16 +30,35 @@ files/container/
 
 ```
 images                     # 列出镜像
-pull 3.21                  # 从 Alpine 官方源拉一个 minirootfs 作为镜像
+pull alpine:3.21           # Alpine 版本：从官方 CDN 拉 minirootfs（约 3MB）
+pull debian:12             # 其余：从 Docker Hub 匿名拉取（gzip 层，几十 MB 起）
 run --name web alpine:3.21 # 用镜像创建容器（不接管终端）
 ps                         # 运行中的容器
 ps -a                      # 全部容器
-rm web                     # 只删容器，镜像保留
+rm web                     # 删除容器（还有活会话时拒绝；活动容器删后自动落到剩余第一个）
 rmi alpine:3.21            # 有容器在用时拒绝删除
 load -i x.tar              # docker save 的层叠包
 import x.tar 名:标签        # docker export 的扁平 rootfs
+mirror                     # 查看拉取镜像源（hub / alpine 两路各自独立）
+mirror hub docker.1ms.run  # 换 Hub 镜像源；mirror hub clear 恢复官方直连
+mirror alpine mirrors.tuna.tsinghua.edu.cn/alpine
+                           # 换 Alpine CDN 源；mirror alpine clear 恢复官方
 info / version / help
 ```
+
+`pull` 的分发收在 `Containers.pull` 内部（与菜单「拉镜像」共用同一条路）：
+alpine 版本标签 / latest 走 dl-cdn 快路径，其余引用走 Docker Hub 匿名拉取
+（Registry HTTP API v2 子集，manifest list 按设备 ABI 选平台，层边下边验
+sha256）。zstd 压缩的层不支持（需要 native 解码器），明确报错并指路导入；
+自定义 registry（ghcr/quay）、digest 引用、私有仓库第一版不做。
+
+**镜像源（换源）**：Hub 与 Alpine 两路各自可配（菜单「镜像源设置…」或
+`docker mirror`）。Hub 镜像站先匿名拉、401 时按应答的 `WWW-Authenticate`
+realm 取 token（镜像站自报端点，不依赖 auth.docker.io），全匿名站
+（dockerproxy 类）与带 token 站（1ms / daocloud 类）都覆盖。实测
+（2026-11，官方直连被 DNS 污染的网络）：debian:12 经 dockerproxy.net
+约 50s 拉完，busybox:1.36 经 docker.1ms.run 约 45s 拉完。
+设置细节见 [pull-registry.md](pull-registry.md)。
 
 `run -v /sdcard/Download:/mnt/dl ...` 支持绑定宿主目录，写入全局 `Volumes`，与菜单「绑定目录」共用同一份配置。
 

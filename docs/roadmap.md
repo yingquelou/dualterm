@@ -82,7 +82,7 @@ UI：模式 chip 下拉即会话列表（`●` 标当前）+ 新建本地/容器
 
 体积顾虑已消除：APK 不再内置任何 rootfs（原 Alpine pack ×3 ABI ≈ 10MB，
 移出后 APK 10.93MB → 512KB）。镜像统一由用户获取：应用内 `docker pull`
-（Alpine 官方源）或导入 docker save / export 的 tar，容器再从镜像物化；
+（Alpine 官方源，泛化见第八节）或导入 docker save / export 的 tar，容器再从镜像物化；
 **在册容器初始为空**，首次进容器模式弹引导。
 
 因此换发行版的代码层障碍本来就为零（`ContainerBootstrap` 与发行版无关），
@@ -101,6 +101,35 @@ UI 自动化测试兜底，全靠实机手测回归，风险收益比不划算�
 
 菜单分 6 组、键条 17 键这两处已经是「大文件里职责最独立」的块，拆分等有
 UI 测试后按分区逐块做，每块一个提交。
+
+## 八、docker pull 泛化到 Docker Hub —— 已完成（2026-11，实机验证过）
+
+包体积优化后 `docker pull` 成了镜像唯一的内置获取通路，而它只认 Alpine
+官方源——「想用 Debian」的实际答案是去电脑上 docker save 再拷 tar，
+这条弯路值得抹平。设计定稿与实现细节见 pull-registry.md：
+
+- 分发收在 `Containers.pull` 内部（UI 与控制台共用）：alpine 版本标签走
+  dl-cdn 快路径原样保留，其余引用走 `RegistryPuller`（匿名 token、
+  manifest list 按设备 ABI 选平台、blob 边下边验 sha256、串行下载一层叠一层）；
+- **只收 gzip / 未压缩 tar 层，拒 zstd**（native 解码器与零依赖、512KB
+  两条硬约束冲突），遇 zstd 报错指路导入通路；
+- 第一版不做：digest 引用、ghcr/quay 等第三方 registry、登录鉴权、续传；
+- 纯判定逻辑（ref 解析 / 平台选择 / mediaType 白名单 / 换源归一化 /
+  WWW-Authenticate 解析）抽 static 纯函数，桌面 `RegistryTest`（73 用例）
+  回归；JSON 与流下载已实机验证；
+- APK 增量≈0（512KB → 530KB，仍远低于旧基线 10.93MB）。
+
+**镜像源（换源）**：官方 Hub 在大陆经常被 DNS 污染（实测 401 前就连接
+超时），同批加了换源能力——Hub / Alpine 两路各自可配（菜单「镜像源设置…」
+或 `docker mirror`），registry 端点指向镜像站，401 时按应答
+`WWW-Authenticate` 的 realm 取 token（镜像站自报端点，**不依赖
+auth.docker.io**）。实机：debian:12 经 dockerproxy.net 约 50s、
+busybox 经 1ms / daocloud 45s / 23s、alpine 换清华源 12s，全部拉取成功。
+详见 pull-registry.md 第 X 节。
+
+配套统一（见「容器管理统一走 Containers 单一接口」提交）：活动容器落位
+下沉 `Containers.remove`，控制台 rm 守卫对齐多 tab（RUNNING 真源），
+默认容器名 `suggestName` 两入口共用。
 
 ## 硬约束（后续任何条目开工前先对一遍）
 
