@@ -93,14 +93,40 @@ Release 说明由流水线按 tag 区间生成（`上一个 tag..本次 tag` 的
 
 **版本号**：tag `v3.6.0` → `versionName 3.6.0`、`versionCode 30600`（major×10000 + minor×100 + patch，单调递增，可覆盖升级）。
 
-**签名**：仓库内的 `keystore/dualterm-test.jks` 是**测试签名**——等同 debug key，口令即 `dualterm`，公开可查，只为让 Release 包开箱能装、能连续覆盖升级，**不构成任何身份保证**。正式分发请在仓库 Secrets 中配置下列四项，流水线会自动改用：
+**签名**：仓库内的 `keystore/dualterm-test.jks` 是**测试签名**——等同 debug key，口令即 `dualterm`，公开可查，**不构成任何身份保证**。它只在没有配置 Secrets 的构建里兜底（本地随手出包、fork 后跑 CI）；正式发布使用维护者私钥。
 
-| Secret | 内容 |
-|---|---|
-| `KEYSTORE_BASE64` | `base64 -w0 your.jks` 的输出 |
-| `KEYSTORE_PASSWORD` | 密钥库口令 |
-| `KEY_ALIAS` | 别名 |
-| `KEY_PASSWORD` | 别名口令 |
+正式签名通过四个 Secrets 注入，2026-11-17 起生效：
+
+| Secret | 对应 build.gradle | 内容 |
+|---|---|---|
+| `KEYSTORE_BASE64` | `DT_KEYSTORE` | 密钥库文件的 base64，**单行无换行**（`base64 -w0 x.jks`） |
+| `KEYSTORE_PASSWORD` | `DT_STORE_PASSWORD` | 密钥库口令（storepass） |
+| `KEY_ALIAS` | `DT_KEY_ALIAS` | 密钥别名 |
+| `KEY_PASSWORD` | `DT_KEY_PASSWORD` | 该条目口令（keypass） |
+
+当前发布密钥的公开标识（可安全记录，用于核对「包是不是本工程签的」）：
+
+- 别名 `dualterm`
+- 证书 DN `CN=DualTerm, OU=dev, O=DualTerm, L=City, ST=Province, C=CN`
+- RSA 4096 / SHA256withRSA；按 `-validity 10950` 生成，有效期到 2056 年前后（以 `keytool -list -v` 的 `Valid from` 为准）
+- SHA-256 指纹 `98:FE:8D:25:CB:0F:CE:40:85:9E:0C:32:1A:26:DE:38:A9:29:B4:3C:AC:9C:BE:90:A2:8B:F7:85:71:10:18:AC`
+
+核对任意发布包（不需要私钥）：
+
+```bash
+apksigner verify --print-certs dualterm-<版本>.apk | grep "SHA-256"
+```
+
+指纹不符即不是本工程正式签名的包。
+
+**私钥保管**：
+
+- 密钥库文件与口令**分开存放**——文件至少两份、异地离线（移动硬盘 / 加密 U 盘），口令进密码管理器；
+- 密钥库**不入库**，放仓库目录之外（`.gitignore` 只忽略构建产物，`keystore/*.jks` 并未排除，测试签名是故意入库的）；
+- GitHub Secrets **只写不读**，网页与控制台都看不到值，不能充当备份；
+- 备份后要验：`keytool -list -keystore <副本> -storepass <口令>` 能看到 `PrivateKeyEntry` 才算有效副本。
+
+**换签名的代价**：同一 `applicationId` 的升级包必须同签名。私钥丢失只能换包名重发，旧版本永远收不到更新；已装的旧签名包也无法覆盖升级（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`），需先卸载，容器与设置一并清空。因此不要在同一个版本号上悄悄换签名——应升版本号并在说明里写明（2026-11-17 的 3.6.0 是就地覆盖的例外：当时只有维护者自用）。
 
 本地出签名包走同一条路：`./gradlew assembleRelease`（未设置环境变量时使用测试签名），环境变量 `DT_KEYSTORE` / `DT_STORE_PASSWORD` / `DT_KEY_ALIAS` / `DT_KEY_PASSWORD` 可覆盖。
 
