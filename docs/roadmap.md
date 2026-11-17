@@ -125,7 +125,7 @@ UI 测试后按分区逐块做，每块一个提交。
 `WWW-Authenticate` 的 realm 取 token（镜像站自报端点，**不依赖
 auth.docker.io**）。实机：debian:12 经 dockerproxy.net 约 50s、
 busybox 经 1ms / daocloud 45s / 23s、alpine 换清华源 12s，全部拉取成功。
-详见 pull-registry.md 第 X 节。
+详见 pull-registry.md 第八节。
 
 配套统一（见「容器管理统一走 Containers 单一接口」提交）：活动容器落位
 下沉 `Containers.remove`，控制台 rm 守卫对齐多 tab（RUNNING 真源），
@@ -149,10 +149,10 @@ busybox 经 1ms / daocloud 45s / 23s、alpine 换清华源 12s，全部拉取成
 - 2026-11 辅助键盘 v2：「⋯」面板并入 ⌨（取消独立展开）；键集对照系统键盘
   重新取舍（粘贴让位系统输入法剪贴板、^C 留在键条不重复、控制符/符号精简为
   默认键集）；固定区（编辑键/F1–F12）不可自定义，可自定义区支持长按删除、
-  「＋」添加自定义键（文本/控制符/ESC 三模式）、恢复默认键集（长按「＋」或菜单），
-  键集落盘 SharedPreferences
+  「＋」添加自定义键（六种步骤模式：文本/控制符/ESC 序列/字节/回车/延迟）、
+  恢复默认键集（长按「＋」或菜单），键集落盘 SharedPreferences
 - 2026-11 多标签会话：id 用根进程 pid（见第三节）；chip 下拉即会话列表；
-  重启/停止精确到单个 tab；五套桌面回归 + 实机全链路验证
+  重启/停止精确到单个 tab；七套桌面回归 + 实机全链路验证
 - 2026-11 rootfs 移出 APK：在册容器初始为空，首次进容器模式引导拉取/导入；
   APK 10.93MB → 512KB；CI 校验与 fetch 脚本同步收口
 - 2026-11 主菜单分 6 组子菜单（横屏 360dp 下平铺 19 项被裁，后半段不可点）

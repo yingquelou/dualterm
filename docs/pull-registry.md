@@ -1,43 +1,10 @@
 # docker pull 泛化：Docker Hub 官方镜像子集（设计定稿）
 
-状态：已实现并实机验证（2026-11）。RegistryTest 73 用例 + 原五套全绿；
+状态：已实现并实机验证（2026-11）。RegistryTest 73 用例 + 其余各套全绿（现共七套）；
 实机（官方 Hub 被 DNS 污染的网络）：alpine 换清华源 12s、debian:12 经
 dockerproxy.net 约 50s、busybox:1.36/1.37 经 1ms / daocloud（realm token）
 45s / 23s 拉完；digest 拒绝、镜像物化容器、rm 守卫、clear 恢复官方均过。
-同批新增镜像源（换源）能力，见第 X 节。
-
-## X、镜像源（换源）
-
-**动机**：大陆网络官方 Hub（auth.docker.io / registry-1.docker.io）经常
-不可达（DNS 污染），官方直连失败率接近 100%；Alpine 的 dl-cdn 可达但慢。
-
-**配置**：两路各自独立，空值=官方直连。
-
-- 存储：`Containers` prefs 的 `mirror_hub` / `mirror_alpine`，存归一化
-  base（https://host[:port]/path，无尾斜杠）；alpine 的值含 `/alpine`
-  目录前缀。
-- 归一化：`RegistryPuller.normalizeMirror`（纯函数，桌面可测）——裸域名补
-  https://，剥尾斜杠与 `/v2` 后缀，空/clear/官方=清空，协议只收 http(s)，
-  host 与端口校验，非法抛用户可读 IOException。
-- 入口：菜单「容器与镜像 → 镜像源设置…」（两输入框，留空恢复官方）；
-  控制台 `docker mirror`（查看）/ `docker mirror hub|alpine <地址|clear>`。
-
-**拉取流程（mirror 版）**：registry 端点 = `<mirror>/v2/…`。
-
-1. 匿名请求 manifest；401 → 解析应答的 `WWW-Authenticate`：
-   `Bearer realm="…",service="…"`（纯函数 `realmParam`，桌面可测）。
-   realm 就是鉴权端点——镜像站自报自己的（1ms 报
-   `docker.1ms.run/openapi/v1/auth/token`，daocloud 报
-   `m.daocloud.io/auth/token`），**不依赖 auth.docker.io**；无 realm 才
-   退回官方端点。token 字段收 `token` / `access_token` 两版规范。
-2. blob 同理：401 时若尚未持有 token，按 realm 补取重试一次。
-3. 全匿名站（dockerproxy.net 的 `/v2/` 直接 200）跳过整个 token 环节。
-
-**失败语义**：镜像站不可达报「查询/鉴权服务不可达」带原因；非法源在
-保存时就拒绝（设置动作本身报错，不影响既有配置）。
-
-**第一版不做**：多镜像站级联失败转移（用户手动换源即可）、写镜像源的
-凭据（镜像站私有鉴权）、镜像源健康探测。
+同批新增镜像源（换源）能力，见第八节。
 
 ## 一、目标与范围
 
@@ -236,3 +203,36 @@ manifest list 应答或 404。
 `RegistryPuller` 约 300–350 行 + `Containers.pull` 分发 ~15 行 + UI 文案
 十余行。依赖零新增（HttpsURLConnection / org.json / MessageDigest 全是
 Framework），APK 增量≈0，512KB 基线不动。
+
+## 八、镜像源（换源）
+
+**动机**：大陆网络官方 Hub（auth.docker.io / registry-1.docker.io）经常
+不可达（DNS 污染），官方直连失败率接近 100%；Alpine 的 dl-cdn 可达但慢。
+
+**配置**：两路各自独立，空值=官方直连。
+
+- 存储：`Containers` prefs 的 `mirror_hub` / `mirror_alpine`，存归一化
+  base（https://host[:port]/path，无尾斜杠）；alpine 的值含 `/alpine`
+  目录前缀。
+- 归一化：`RegistryPuller.normalizeMirror`（纯函数，桌面可测）——裸域名补
+  https://，剥尾斜杠与 `/v2` 后缀，空/clear/官方=清空，协议只收 http(s)，
+  host 与端口校验，非法抛用户可读 IOException。
+- 入口：菜单「容器与镜像 → 镜像源设置…」（两输入框，留空恢复官方）；
+  控制台 `docker mirror`（查看）/ `docker mirror hub|alpine <地址|clear>`。
+
+**拉取流程（mirror 版）**：registry 端点 = `<mirror>/v2/…`。
+
+1. 匿名请求 manifest；401 → 解析应答的 `WWW-Authenticate`：
+   `Bearer realm="…",service="…"`（纯函数 `realmParam`，桌面可测）。
+   realm 就是鉴权端点——镜像站自报自己的（1ms 报
+   `docker.1ms.run/openapi/v1/auth/token`，daocloud 报
+   `m.daocloud.io/auth/token`），**不依赖 auth.docker.io**；无 realm 才
+   退回官方端点。token 字段收 `token` / `access_token` 两版规范。
+2. blob 同理：401 时若尚未持有 token，按 realm 补取重试一次。
+3. 全匿名站（dockerproxy.net 的 `/v2/` 直接 200）跳过整个 token 环节。
+
+**失败语义**：镜像站不可达报「查询/鉴权服务不可达」带原因；非法源在
+保存时就拒绝（设置动作本身报错，不影响既有配置）。
+
+**第一版不做**：多镜像站级联失败转移（用户手动换源即可）、写镜像源的
+凭据（镜像站私有鉴权）、镜像源健康探测。

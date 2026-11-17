@@ -9,9 +9,9 @@
 5. **Docker 后端未经真机验证**：代码路径完整（探测 → 启 dockerd → `docker run -it --net=host`），但没有带 namespace 内核的设备可测，按实验性功能对待。固定 host 网络的取舍见 [containers.md](containers.md#docker-后端为什么不是默认)。
 6. **运行时按 ABI 单独准备**：`scripts/fetch-runtime.*` 默认只处理一个 ABI。未准备的 ABI 上容器模式会提示缺运行时；本地模式不受影响。发布流水线会准备三个 ABI。
 7. **本地模式的 `PS1` 会被 `/system/etc/mkshrc` 覆盖**：因此提示符是 Android 默认的 `:当前目录$`，而非工程设置的值。纯外观问题。
-8. **软键盘弹出时终端会被压扁**：横屏全键盘可占 600dp 以上，`adjustResize` 之后终端只剩两三行（辅助键盘已收敛为固定区 + 可自定义区共 5 行，比旧「键盘 + 面板」两套浮层更矮）。接入物理键盘时不触发。
+8. **软键盘弹出时终端会被压扁**：横屏下输入法本体可占 600dp 以上，`adjustResize` 之后终端只剩两三行；辅助键盘默认再叠 2 行固定区 + 4 行自定义区（菜单「辅助键盘行数」可降到 2 行）。接入物理键盘时不触发。
 9. **部分终端协议有意不实现**：`IRM` / `LNM`、`modifyOtherKeys` 与 kitty 键盘协议、OSC 0/2 标题、OSC 8 超链接、Sixel 图片、同步输出 `?2026`、ZWJ emoji 合成序列。取舍理由见 [internals.md](internals.md#与-xterm-对表的取舍)，这些程序都会静默降级。OSC 52 不在此列，已在计划中（见 [roadmap.md](roadmap.md)）。
-10. **软键盘与截图**：终端 inputType 曾误用 `TYPE_TEXT_VARIATION_VISIBLE_PASSWORD`，中文输入法因此切安全键盘（`FLAG_SECURE`，截图被系统拒绝、键位残缺）。已改回标准文本输入（不联想 + 多行），普通输入法窗口可正常截图；若截图仍被拒，先确认用的是标准键盘而非密码形态。
+10. **软键盘与截图**：终端 `inputType` 曾误用 `TYPE_TEXT_VARIATION_VISIBLE_PASSWORD`，中文输入法因此切安全键盘（`FLAG_SECURE`，截图被拒、键位残缺）。现已改用终端模拟器的标准做法 `TYPE_NULL`（Termux 同款），输入法不会进入密码形态，截图正常。若截图仍被拒，先确认输入法没有切到安全/密码键盘。
 
 ## 后续计划
 

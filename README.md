@@ -44,7 +44,7 @@ powershell -ExecutionPolicy Bypass -File scripts\fetch-runtime.ps1   # Windows
 | [docs/usage.md](docs/usage.md) | 界面构成、键条、手势、菜单、会话结束与返回键行为（应用内「帮助」指向此篇） |
 | [docs/containers.md](docs/containers.md) | 容器与镜像模型、管理命令、端口直通、会话保活、Docker 后端取舍 |
 | [docs/internals.md](docs/internals.md) | 工程结构、PTY 与仿真器实现、xterm 对齐记录、容器启动前提、远程调试入口 |
-| [docs/building.md](docs/building.md) | 构建环境、五套桌面回归、发布流水线与签名 |
+| [docs/building.md](docs/building.md) | 构建环境、七套桌面回归、发布流水线与签名 |
 | [docs/limitations.md](docs/limitations.md) | 已知限制与后续计划 |
 | [docs/roadmap.md](docs/roadmap.md) | 后续开发的取舍评估：候选功能的边界、成本与不做/缓做的理由 |
 | [docs/verification.md](docs/verification.md) | 实机验证记录 |

@@ -14,7 +14,9 @@ JDK 17、Android SDK（compileSdk 34）、NDK 26.1.10909125、CMake 3.22.1。AGP
 powershell -ExecutionPolicy Bypass -File scripts\fetch-runtime.ps1     # Windows
 bash scripts/fetch-runtime.sh                                          # Linux / macOS / Git Bash
 #    → proot / loader / 依赖库 落进 app/src/main/jniLibs/<abi>/
-#    → Alpine minirootfs 落进 app/src/main/assets/runtime/rootfs-<abi>.pack
+#    → rootfs pack 默认不下载、不进包：镜像由应用内 docker pull / 导入 tar 获得
+#      需要离线调试包时显式 WITH_ROOTFS=1 再跑脚本，Alpine minirootfs 才会落到
+#      app/src/main/assets/runtime/rootfs-<abi>.pack
 
 # 3. 出包（仓库自带 wrapper，Gradle 8.7）
 ./gradlew assembleDebug
@@ -33,7 +35,7 @@ gradle assembleDebug           # 等价，跳过 wrapper 下载
 
 ## 桌面回归测试
 
-五套测试都不需要设备，用桌面 JVM 直接跑。除 EmuTest 外，其余用 `android.jar` 作编译桩（只为类加载，不调用桩方法）。
+七套测试都不需要设备，用桌面 JVM 直接跑。除 EmuTest 外，其余用 `android.jar` 作编译桩（只为类加载，不调用桩方法）。CI 的发布流水线会在打包前跑全七套。
 
 **终端仿真器**（纯 Java，无依赖）：
 
@@ -63,6 +65,10 @@ java -cp "/tmp/tt:$ANDROID_HOME/platforms/android-34/android.jar" TarTest
 
 **端口声明**（`tools/PortsTest.java`，同款跑法）：`-p` 写法解析（同端口直通、重映射识别、udp / 范围 / IPv6 / 越界拒绝）与提示文案。
 
+**辅助键盘**（`tools/KbdTest.java`，同款跑法）：自定义键步骤序列的纯逻辑——`StepMode` 六种模式（文本 / ^X / ESC / 字节 / 回车 / 延迟）的值校验、规范化、字节变换与自动标签，含「回车模式校验误落文本分支致对话框卡死」的历史 bug 锁定；`KbdLayout.visibleCustomRows` 的行数上限算术（0 / 上限 / 不限 / 边界）。改步骤语义或行数算术必须补用例。
+
+**UI 渲染实测**（`tools/verify_spinner.py`，需真机）：不是桌面回归——靠 adb 逐模式展开下拉、dump 文本、统计截图像素，验证大字体等环境下控件确实可见。改了自绘/系统控件的排版后手动跑一次。
+
 ## 发布
 
 `.github/workflows/release.yml` 负责发版。推送 `v*` tag 即出包并创建 Release：
@@ -76,11 +82,12 @@ git push origin v3.6.0
 
 流水线四件事：
 
-1. 用 `scripts/fetch-runtime.sh` 拉三个 ABI 的 proot 与 Alpine rootfs
-   （运行时二进制不入库，见 `.gitignore`；不拉就会产出「能安装、但容器模式一进就报缺运行时」的包）
-2. 跑五套桌面回归：EmuTest / SecTest / TarTest / ImportTest / PortsTest
+1. 用 `scripts/fetch-runtime.sh` 拉三个 ABI 的 proot 运行时（二进制不入库，见
+   `.gitignore`；不拉就会产出「能安装、但容器模式一进就报缺运行时」的包）。
+   rootfs 不进包，镜像由用户在应用内 `docker pull` / 导入 tar 获取
+2. 跑七套桌面回归：EmuTest / TarTest / ImportTest / RegistryTest / SecTest / PortsTest / KbdTest
 3. `assembleRelease`，产物重命名为 `dualterm-<版本>.apk` 并附 `SHA256SUMS`
-4. 校验 APK 内三个 ABI 的 `libproot.so` 与 arm64 的 rootfs 都在，缺失即失败
+4. 校验 APK 内三个 ABI 的 `libproot.so` 都在，缺失即失败（rootfs 不进包，不校验）
 
 Release 说明由流水线按 tag 区间生成（`上一个 tag..本次 tag` 的提交列表），不使用 `--generate-notes`：后者在没有上一个 Release 时只输出一行 Full Changelog，首个发布会等于没有变更说明。同一 tag 重跑时会补传产物并刷新说明，不会产生第二个 Release。
 

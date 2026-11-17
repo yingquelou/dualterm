@@ -8,7 +8,7 @@ app/src/main/
 │   ├── CMakeLists.txt
 │   └── pty.c                     ← openpty + fork + setsid + TIOCSCTTY + execvp（JNI 符号在 dev.dualterm.term 包下）
 ├── jniLibs/<abi>/                ← 脚本生成：libproot.so / libproot_loader.so / 依赖库
-├── assets/runtime/               ← 脚本生成：rootfs-<abi>.pack
+├── assets/runtime/               ← 脚本生成（仅 WITH_ROOTFS=1 的离线调试）：rootfs-<abi>.pack，默认不进包
 ├── java/dev/dualterm/
 │   ├── MainActivity.java         ← 应用入口：模式 chip、自适应键条、输入设备监听、菜单
 │   ├── term/                     ← 终端内核（不依赖容器，可单独复用）
@@ -33,7 +33,9 @@ app/src/main/
 │   │   └── DockerCli.java        ← 控制台背后的命令实现：ps/images/run/rm/rmi/pull…
 │   ├── ui/
 │   │   ├── ConsoleActivity.java  ← 容器管理控制台界面（docker 语法的子集）
-│   │   └── SoftKeyboard.java     ← 自绘软键盘（全键盘 / 数字符号页、Shift、光标键）
+│   │   ├── SoftKeyboard.java     ← 辅助键盘：固定区（编辑键/F 键）+ 可自定义区（步骤序列键）
+│   │   ├── StepMode.java         ← 自定义键的单步模式枚举（校验/规范化/字节变换/自动标签集中在此）
+│   │   └── KbdLayout.java        ← 键区行数算术（超出上限时自定义区滚动的可见行数）
 │   └── util/
 │       └── Fs.java               ← ensureDir 之类的小工具
 └── res/…
@@ -73,11 +75,36 @@ app/src/main/
 
 ## 输入
 
-自实现 `InputConnection`：中文输入法的预编辑串（`setComposingText`）不进 PTY，只有 `commitText` 才发送；退格走 `deleteSurroundingText` → `0x7f`。
+`EditorInfo.inputType` 用 `TYPE_NULL`——安卓终端模拟器的标准做法（Termux 同款），
+告诉输入法「这里不是普通文本框」，压掉联想与自动纠错。中文输入不受影响：拼音组词
+仍在输入法内部，选词上屏走 `commitText`。
+
+`InputConnection` 用 `BaseInputConnection(this, true)`（**fullEditor = true**），
+只覆写四处，其余交给基类：
+
+| 方法 | 处理 |
+|---|---|
+| `commitText` | 先 `super`（把 composing 落成已提交文本），再把内部 `Editable` 的全文发往 PTY 并清空 |
+| `finishComposingText` | 先 `super`，IME 强制收尾（切焦点、按实体键）时把残留内容照常提交，再清空 |
+| `deleteSurroundingText` | 按 `leftLength` 逐个发 DEL 键事件——三星等键盘开启自动纠错时会一次报多个字符的删除 |
+| `sendKeyEvent` | `ACTION_DOWN` 时先走 `handleKeyCode`（方向键/功能键翻译），未认领才交回基类 |
+
+`setComposingText` **不覆写**：composing 文本由基类默认实现落进内部 `Editable` 并维护
+composing span，输入法回读状态自洽，待选区才能正常收尾。
+
+这里有一个踩过的坑：早先按「预编辑串不进 PTY」的思路用 `fullEditor=false` 并吞掉
+`setComposingText` / `finishComposingText`，结果是输入法的 composing 永远「落不了地」——
+表现为键入全程无响应、点选待选区也不消失。终端只需要「最终内容送达 PTY」，中间态由
+输入法自己保管即可，不必在 InputConnection 层再拦一道。
+
+**跨机型差异**（实测同一版搜狗）：Android 11 上英文首键即 `commitText`，逐字进终端；
+Android 12 上键盘会话首轮走 composing（英文联想），首次上屏后转为逐字，收起再开键盘
+又会复位。这是 IME/系统侧的自适应行为，应用侧没有标准 API 可控制；功能上无损（每个
+字符恰好送达 PTY 一次），按可接受处理。
 
 粘贴时先看程序是否开启括号粘贴（`DECSET 2004`）：开启则用 `ESC[200~ … ESC[201~` 包裹，否则多行内容会被当作连续回车逐条执行（粘贴 token、粘贴多行命令时尤其危险）。未开启括号粘贴且内容含换行时，先弹确认框。
 
-软键盘的回车发送 `\r`（CR）而非 `\n`：`\n` 在 vim 中等同 `<C-J>`，与回车语义不同。
+`commitText` 收到的换行统一转成 `\r`（CR）再写入：`\n` 在 vim 中等同 `<C-J>`，与回车语义不同。
 
 ### 物理键盘映射
 
@@ -188,6 +215,11 @@ adb shell 'am start -n dev.dualterm/.MainActivity --ez console true --es cmd "ps
 # 走的是 TerminalView.dispatchKeyEvent → onKeyDown，与真实按键同一条路径
 adb shell 'am start -n dev.dualterm/.MainActivity --es mode container --es keytest "ctrl+c"'
 ```
+
+`ConsoleActivity` 在 release 里 `exported=false`，只能经 `MainActivity` 转发；debug 变体
+（`app/src/debug/AndroidManifest.xml`，只有清单没有源码）把它导出，可直接
+`am start -n dev.dualterm/.ui.ConsoleActivity --es cmd "ps -a"`，供 adb 自动化驱动。
+`--es cmd` 与 `--ei chunklog <n>` 本身在主源集，两种构建都可用。
 
 `--es keytest` 的写法：`ctrl+` / `alt+` / `shift+` 任意前缀组合（可叠加），键名用 `a`–`z`、`0`–`9`、`tab` `enter` `esc` `space` `backspace` `delete` `insert` `up` `down` `left` `right` `home` `end` `pgup` `pgdn` `f1`–`f12`。按键在 5 秒后注入，留出时间让 shell 进入 raw 模式。
 
