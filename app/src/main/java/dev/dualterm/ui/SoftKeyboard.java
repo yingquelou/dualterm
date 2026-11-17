@@ -124,6 +124,9 @@ public final class SoftKeyboard {
         for (String[] spec : rows) {
             LinearLayout row = new LinearLayout(host.terminal().getContext());
             row.setOrientation(LinearLayout.HORIZONTAL);
+            // 与主键条同行：关 baseline 对齐。底行空格键 15sp、其余 14sp，
+            // 默认的基线对齐同样会把小字键块往下推（同键行圆角残缺的根因）。
+            row.setBaselineAligned(false);
             row.setLayoutParams(new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             kbdRows.add(row);

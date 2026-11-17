@@ -880,6 +880,11 @@ public class MainActivity extends Activity
                 {"→", KEY_CURSOR, "C"},
                 {"⋯", KEY_PANEL, null},
         };
+        // 关闭 baseline 对齐：行内混着 11sp 文字键（CTRL/ALT…）和 15sp 图标键
+        // （⌨/⛶），LinearLayout 默认按文字基线对齐会把小字键块整体下推约 2dp，
+        // 底部伸进下一行被盖住——表现为「部分键下圆角残缺」。按键行要的是
+        // 顶边对齐，键内文字各自居中。
+        keyRow.setBaselineAligned(false);
         for (Object[] spec : primary) {
             Button b = makeKeyButton((String) spec[0]);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1f);
@@ -955,14 +960,14 @@ public class MainActivity extends Activity
         for (String[][] rowKeys : PANEL_ROWS) {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setBaselineAligned(false);
             row.setLayoutParams(new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             keyPanel.addView(row);
             for (String[] key : rowKeys) {
                 Button b = makeKeyButton(key[0]);
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1f);
-                // 12 键一行比 6 键行挤：键间距从 2dp 收到 1dp，宽度换给文字
-                lp.setMargins(dp(1), dp(2), dp(1), 0);
+                lp.setMargins(dp(2), dp(2), dp(2), 0);
                 b.setLayoutParams(lp);
                 final String sequence = key[1];
                 b.setOnClickListener(new View.OnClickListener() {
@@ -976,6 +981,28 @@ public class MainActivity extends Activity
                     }
                 });
                 row.addView(b);
+            }
+        }
+        applyPanelMetrics(getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+    }
+
+    /**
+     * 面板行高与主键盘同档（横屏 27dp / 竖屏 34dp，随 updateChrome 刷新）。
+     * 之前写死 34dp：竖屏恰好一致，横屏键盘弹出时主键盘压到 27dp 而面板
+     * 还是 34dp，两块区域并排一高一低。键间距统一成与键盘键相同的 2dp。
+     */
+    private void applyPanelMetrics(boolean landscape) {
+        int h = dp(landscape ? 27 : 34);
+        for (int i = 0; i < keyPanel.getChildCount(); i++) {
+            LinearLayout row = (LinearLayout) keyPanel.getChildAt(i);
+            for (int j = 0; j < row.getChildCount(); j++) {
+                View c = row.getChildAt(j);
+                ViewGroup.LayoutParams lp = c.getLayoutParams();
+                if (lp.height != h) {
+                    lp.height = h;
+                    c.setLayoutParams(lp);
+                }
             }
         }
     }
@@ -1234,6 +1261,8 @@ public class MainActivity extends Activity
             softKbd.setVisible(false);
         }
         softKbd.applyMetrics(landscape);
+        // 面板行高跟主键盘同档，转屏/键盘弹收都要刷新
+        applyPanelMetrics(landscape);
     }
 
     /** 键盘还没构建时（onCreate 前段）updateChrome 也会跑，统一从这里取。 */
