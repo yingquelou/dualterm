@@ -1207,6 +1207,11 @@ public class MainActivity extends Activity
             }
 
             @Override
+            public int maxCustomRows() {
+                return prefs.getInt("soft_kbd_max_rows", 4);
+            }
+
+            @Override
             public void onSoftKbdVisibilityChanged(boolean visible) {
                 btnKeyboard.setTextColor(visible ? COLOR_ACCENT : COLOR_TEXT);
                 updateChrome();
@@ -1486,8 +1491,9 @@ public class MainActivity extends Activity
                         prefs.getBoolean("root", false) ? "Root Shell：开" : "Root Shell：关",
                         "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"),
                         "辅助键盘：恢复默认键集",
+                        "辅助键盘行数：" + maxRowsLabel(),
                 },
-                new int[]{7, 13, 20}));
+                new int[]{7, 13, 20, 21}));
         groups.add(new MenuGroup("帮助",
                 new String[]{"使用说明…", "关于"},
                 new int[]{19, 10}));
@@ -1669,6 +1675,9 @@ public class MainActivity extends Activity
                 softKbd.restoreDefaults();
                 toast("辅助键盘已恢复默认键集");
                 return true;
+            case 21:
+                showKeyboardRowsDialog();
+                return true;
             case 8:
                 toggleRuntime();
                 return true;
@@ -1708,6 +1717,47 @@ public class MainActivity extends Activity
             default:
                 return false;
         }
+    }
+
+    /** 菜单里显示可自定义区的行数上限设置。 */
+    private String maxRowsLabel() {
+        int n = prefs.getInt("soft_kbd_max_rows", 4);
+        return n <= 0 ? "不限（键多则键盘变高）" : "最多 " + n + " 行（超出滚动）";
+    }
+
+    /**
+     * 可自定义区行数上限：键的数量本身不设上限，超出行数的部分在键盘内部
+     * 竖向滚动，固定区（编辑键/F 键）和键条不动，终端不会被顶走。
+     */
+    private void showKeyboardRowsDialog() {
+        final int[] values = {0, 2, 3, 4, 5, 6};
+        final String[] labels = {"不限（键多则键盘一直变高）", "2 行", "3 行",
+                "4 行（默认）", "5 行", "6 行"};
+        int cur = prefs.getInt("soft_kbd_max_rows", 4);
+        int checked = 3;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == cur) {
+                checked = i;
+                break;
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("辅助键盘最多几行")
+                .setSingleChoiceItems(labels, checked,
+                        new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int which) {
+                                prefs.edit().putInt("soft_kbd_max_rows", values[which]).apply();
+                                if (softKbd != null) {
+                                    softKbd.refresh();
+                                }
+                                d.dismiss();
+                                toast(values[which] <= 0
+                                        ? "键盘行数：不限"
+                                        : "键盘最多 " + values[which] + " 行，超出可竖向滚动");
+                            }
+                        })
+                .show();
     }
 
     /** 真正结束会话（返回键只退后台，避免误触把正在跑的编译/tmux 杀掉）。 */

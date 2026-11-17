@@ -80,6 +80,12 @@ public final class SoftKeyboard {
         /** 保存键集 JSON；传 null 表示清除（恢复默认）。 */
         void storeKeysJson(String json);
 
+        /**
+         * 可自定义区最多占几行；≤0 表示不限（键多则键盘一直变高）。
+         * 超过上限时自定义区竖向滚动，固定区与键条高度不受影响。
+         */
+        int maxCustomRows();
+
         /** 键盘显隐/键集变化后：主界面刷 chrome/键行布局/状态行/⌨ 键颜色。 */
         void onSoftKbdVisibilityChanged(boolean visible);
     }
@@ -149,6 +155,12 @@ public final class SoftKeyboard {
     private ViewGroup kbd;
     /** 所有按键行，横竖屏切换时统一改行高。 */
     private final List<LinearLayout> kbdRows = new ArrayList<>();
+    /** 可自定义区的滚动容器与内容盒（键多超过行数上限时竖向滚动）。 */
+    private ScrollView customScroll;
+    /** 固定区行数（编辑键一行 + F 键一行），行高计算用。 */
+    private int fixedRowCount = 2;
+    /** 可自定义区实际行数（含「＋」所在行）。 */
+    private int customRowCount;
     private boolean kbdVisible;
     private boolean landscape;
 
@@ -259,16 +271,12 @@ public final class SoftKeyboard {
     /** 键集变更后：落盘 + 整体重建（行数会变，高度必须跟着重算）。 */
     private void applyKeys(List<KeySpec> keys) {
         host.storeKeysJson(toJson(keys));
-        renderAll();
-        applyMetrics(landscape);
-        host.onSoftKbdVisibilityChanged(kbdVisible);
+        refresh();
     }
 
     public void restoreDefaults() {
         host.storeKeysJson(null);
-        renderAll();
-        applyMetrics(landscape);
-        host.onSoftKbdVisibilityChanged(kbdVisible);
+        refresh();
     }
 
     private LinearLayout makeRow() {
@@ -313,6 +321,8 @@ public final class SoftKeyboard {
         }
         kbd.removeAllViews();
         kbdRows.clear();
+        customScroll = null;
+        customRowCount = 0;
 
         // ---- 固定区：编辑键一行 + F 键一行（不可自定义，无长按） ----
         LinearLayout row = makeRow();
@@ -329,6 +339,20 @@ public final class SoftKeyboard {
         // ---- 可自定义区：12 键换行，「＋」固定挂在最后一行末尾 ----
         // 键的身份 = 在键集列表里的下标（不是内容相等——两个内容相同的键
         // 必须能各自被编辑/删除，内容匹配会永远命中第一个）
+        //
+        // 自定义区装进 ScrollView：超过行数上限（Host.maxCustomRows）时
+        // 只让这一块滚，固定区和键条不被顶走。键的数量本身不设上限。
+        Context ctx = host.terminal().getContext();
+        LinearLayout customBox = new LinearLayout(ctx);
+        customBox.setOrientation(LinearLayout.VERTICAL);
+        ScrollView scroll = new ScrollView(ctx);
+        scroll.setFillViewport(false);
+        scroll.addView(customBox, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        kbd.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        customScroll = scroll;
+
         final List<KeySpec> keys = currentKeys();
         int rows = (keys.size() + CUSTOM_PER_ROW - 1) / CUSTOM_PER_ROW;
         for (int r = 0; r < rows; r++) {
@@ -359,13 +383,16 @@ public final class SoftKeyboard {
             if (r == rows - 1) {
                 addAddKey(crow);
             }
-            kbd.addView(crow);
+            customBox.addView(crow);
         }
         if (rows == 0) {
             LinearLayout addRow = makeRow();
             addAddKey(addRow);
-            kbd.addView(addRow);
+            customBox.addView(addRow);
+            rows = 1;
         }
+        customRowCount = rows;
+        fixedRowCount = 2;
     }
 
     private boolean isDefaultKey(KeySpec key) {
@@ -675,6 +702,16 @@ public final class SoftKeyboard {
             keys.add(spec);
         }
         applyKeys(keys);
+        if (existingIndex < 0 && customScroll != null) {
+            // 新键排在键集末尾：超过行数上限时滚到底，刚加的键才看得见
+            final ScrollView sv = customScroll;
+            sv.post(new Runnable() {
+                @Override
+                public void run() {
+                    sv.fullScroll(View.FOCUS_DOWN);
+                }
+            });
+        }
     }
 
     /* -------------------- 按键发送：步骤序列 -------------------- */
@@ -748,12 +785,30 @@ public final class SoftKeyboard {
         }
         ViewGroup.LayoutParams klp = kbd.getLayoutParams();
         if (klp != null) {
-            int kbdH = kbdRows.size() * (h + margin);
+            // 自定义区可能被行数上限截短（超出部分在 ScrollView 里滚），
+            // 键盘总高按「固定行 + 可见自定义行」算，不能按 kbdRows.size()
+            int visibleCustom = KbdLayout.visibleCustomRows(customRowCount, host.maxCustomRows());
+            if (customScroll != null) {
+                ViewGroup.LayoutParams slp = customScroll.getLayoutParams();
+                int scrollH = visibleCustom * (h + margin);
+                if (slp.height != scrollH) {
+                    slp.height = scrollH;
+                    customScroll.setLayoutParams(slp);
+                }
+            }
+            int kbdH = (fixedRowCount + visibleCustom) * (h + margin);
             if (klp.height != kbdH) {
                 klp.height = kbdH;
                 kbd.setLayoutParams(klp);
             }
         }
+    }
+
+    /** 键集或行数上限变化后重建布局并重算高度（显隐状态不变）。 */
+    public void refresh() {
+        renderAll();
+        applyMetrics(landscape);
+        host.onSoftKbdVisibilityChanged(kbdVisible);
     }
 
     public void toggle() {

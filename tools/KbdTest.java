@@ -1,3 +1,4 @@
+import dev.dualterm.ui.KbdLayout;
 import dev.dualterm.ui.StepMode;
 
 /**
@@ -23,6 +24,7 @@ public class KbdTest {
         hexCases();
         retCases();
         delayCases();
+        rowsCases();
 
         System.out.println();
         System.out.println("PASS " + pass + "  FAIL " + fail);
@@ -185,5 +187,16 @@ public class KbdTest {
         eq(m.autoLabel("300"), "⏱300", "delay autoLabel");
         bytes(m.bytesOf("300"), new int[]{}, "delay 不产出字节");
         ok(m.hasInput(), "delay 有输入框");
+    }
+
+    // ---- 可自定义区行数上限（C13：键不限量，超过上限竖向滚动） ----
+
+    static void rowsCases() {
+        eq(KbdLayout.visibleCustomRows(3, 0), 3, "上限不限：全展开");
+        eq(KbdLayout.visibleCustomRows(3, -1), 3, "负上限按不限处理");
+        eq(KbdLayout.visibleCustomRows(6, 4), 4, "6 行超上限 4 → 取 4");
+        eq(KbdLayout.visibleCustomRows(4, 4), 4, "恰好等于上限：不滚");
+        eq(KbdLayout.visibleCustomRows(2, 4), 2, "未到上限：取实际行数");
+        eq(KbdLayout.visibleCustomRows(0, 4), 0, "无键：0 行");
     }
 }
