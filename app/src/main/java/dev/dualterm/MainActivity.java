@@ -120,16 +120,33 @@ public class MainActivity extends Activity
     /** onCreate 走完之前不弹「已连接物理键盘」的提示，避免每次冷启动都刷一条。 */
     private boolean uiReady;
 
-    private final Map<String, TermSession> sessions = new HashMap<>();
-
     /**
-     * MODE_CONTAINER 会话所属的容器名，随会话一起记录。
-     * 退出回调清 running 标记时用这个名字，而不是当下的 activeName()——
-     * 旧容器的退出回调若在切到新容器之后才跑到，拿 live activeName()
-     * 会把新容器误标成「未运行」。
+     * 一个标签页 = 一个终端会话 + 它的身份（模式 / 容器名）。
+     * id 用会话根进程的 pid（字符串化）：内核保证存活期内唯一，logcat/adb 调试时
+     * id 与 ps 直接对上；进程退出立即从表里摘除，pid 复用也就无从撞上。
      */
-    private String containerSessionName;
+    private static final class Tab {
+        final TermSession session;
+        final String mode;       // MODE_LOCAL / MODE_CONTAINER
+        final String container;  // 仅容器模式有意义
+
+        Tab(TermSession session, String mode, String container) {
+            this.session = session;
+            this.mode = mode;
+            this.container = container;
+        }
+    }
+
+    /** tabId(=根进程 pid) → Tab。LinkedHashMap 保持创建顺序，会话列表按此排序。 */
+    private final java.util.LinkedHashMap<String, Tab> tabs = new java.util.LinkedHashMap<>();
+    /** 当前贴在界面上的 tab id；null 表示没有激活的 tab（比如刚退出）。 */
+    private String activeTabId;
+    /** 顶栏 chip 的「当前模式」：从激活 tab 派生；无激活 tab 时保持上次值。 */
     private String mode = MODE_LOCAL;
+    /** 最近激活 tab 的身份。tab 退出后被「重启」按钮用来重建同类会话——
+     *  退出回调会把 tab 从表里摘掉，届时只能靠这两个字段记下它是什么。 */
+    private String lastRestartMode = MODE_LOCAL;
+    private String lastRestartContainer;
 
     /** 调试入口：启动后自动敲入的一条命令（正常使用为 null）。 */
     private String pendingCommand;
@@ -219,7 +236,7 @@ public class MainActivity extends Activity
         findViewById(R.id.btn_restart).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                switchMode(mode, true);
+                restartLastKind();
             }
         });
         findViewById(R.id.btn_copy_out).setOnClickListener(new View.OnClickListener() {
@@ -430,45 +447,124 @@ public class MainActivity extends Activity
     }
 
     /* -------------------- 模式切换 -------------------- */
-    private void switchMode(String target, boolean restart) {
-        TermSession cached = sessions.get(target);
-        if (!restart && cached != null && cached.isRunning()) {
-            mode = target;
-            prefs.edit().putString("mode", target).apply();
+
+    /** 按身份起一个新会话（不动任何现有 tab）。 */
+    private void startKind(String sessionMode, String container) {
+        if (MODE_LOCAL.equals(sessionMode)) {
+            startLocal();
+        } else {
+            startContainer(container != null ? container : Containers.activeName(this));
+        }
+    }
+
+    /** 只摘掉并停掉这一个 tab（重启单个会话用，不波及同类 tab）。 */
+    private void dropTab(Tab tab) {
+        String id = tabIdOf(tab.session);
+        tabs.remove(id);
+        if (id.equals(activeTabId)) {
+            activeTabId = null;
+        }
+        if (MODE_CONTAINER.equals(tab.mode)) {
+            syncContainerRunning(tab.container);
+        }
+        tab.session.stop();
+        updateKeepAlive();
+    }
+
+    /**
+     * 重启「当前这种」会话。多标签语义下只动一个 tab：
+     * 激活 tab 还在 → 只重启它；已被进程退出摘掉 → 按记住的身份另起一个新的，
+     * 两种情况都不暗杀其余同类 tab。
+     */
+    private void restartLastKind() {
+        Tab tab = activeTabId != null ? tabs.get(activeTabId) : null;
+        if (tab != null) {
+            String m = tab.mode;
+            String c = tab.container;
+            dropTab(tab);
+            startKind(m, c);
+        } else {
+            startKind(lastRestartMode, lastRestartContainer);
+        }
+    }
+
+    /** 引导创建第一个容器：rootfs 不再随 APK 分发，第一次进容器模式必然走到这里。 */
+    private void showNoContainerGuide() {
+        new AlertDialog.Builder(this)
+                .setTitle("还没有容器")
+                .setMessage("安装包不再内置系统镜像。先获取一个镜像，再从镜像创建容器：\n\n"
+                        + "· 拉取 Alpine 镜像（联网，约 3MB）\n"
+                        + "· 导入 docker save / export 出的 tar\n\n"
+                        + "创建好之后就能进容器模式了。")
+                .setNegativeButton("取消", null)
+                .setNeutralButton("导入 tar 镜像", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        pickArchiveForImport();
+                    }
+                })
+                .setPositiveButton("拉取 Alpine 镜像", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        showPullDialog();
+                    }
+                })
+                .show();
+        // 界面别空着：没有贴着的会话（比如冷启动直奔容器模式）就先起本地 shell
+        if (terminal.getSession() == null) {
+            mode = MODE_LOCAL;
+            prefs.edit().putString("mode", MODE_LOCAL).apply();
             updateModeButtons();
-            attach(cached);
+            startLocal();
+        }
+    }
+
+    private void switchMode(String target, boolean restart) {
+        switchMode(target, Containers.activeName(this), restart);
+    }
+
+    /**
+     * 切到（或新建）一个标签页。
+     * 多标签语义：同类 tab 已存活就只切换贴屏，绝不暗杀别的 tab；
+     * restart=true 才把同类 tab 全部掐掉重建（「重启当前会话」/ 重建容器）。
+     */
+    private void switchMode(String target, String containerName, boolean restart) {
+        // 容器模式一个容器都没有：引导用户去拉镜像/导入，别把人扔进报错堆栈
+        if (MODE_CONTAINER.equals(target) && Containers.items(this).isEmpty()) {
+            showNoContainerGuide();
             return;
+        }
+        if (!restart) {
+            Tab existing = findTab(target, containerName);
+            if (existing != null) {
+                attachTab(existing);
+                return;
+            }
+        } else {
+            dropTabs(target, containerName);
         }
         mode = target;
         prefs.edit().putString("mode", target).apply();
         updateModeButtons();
         fallbackTried = false;
         if (MODE_LOCAL.equals(target)) {
-            startLocal(restart);
+            startLocal();
         } else {
-            startContainer(restart);
+            startContainer(containerName);
         }
     }
 
-    private void startLocal(boolean restart) {
-        dropSession(MODE_LOCAL);
+    private void startLocal() {
         try {
             boolean useRoot = prefs.getBoolean("root", false);
             LaunchSpec spec = Shells.localSpec(getApplicationContext(), useRoot);
-            startSession(MODE_LOCAL, spec);
+            startSession(MODE_LOCAL, null, spec);
         } catch (Throwable t) {
             showError("无法启动本地 Shell", describe(t));
         }
     }
 
-    private void startContainer(boolean restart) {
-        startContainer(Containers.activeName(getApplicationContext()), restart);
-    }
-
-    private void startContainer(final String containerName, boolean restart) {
-        dropSession(MODE_CONTAINER);
-        Containers.setRunning(containerName, false);
-
+    private void startContainer(String containerName) {
         showOverlay("准备容器 " + containerName + " …");
         final String preferred = prefs.getString("runtime", "proot");
         final Context appContext = getApplicationContext();
@@ -499,8 +595,7 @@ public class MainActivity extends Activity
                             hideOverlay();
                             fallbackTried = false;
                             Containers.setActive(MainActivity.this, containerName);
-                            containerSessionName = containerName;
-                            startSession(MODE_CONTAINER, spec);
+                            startSession(MODE_CONTAINER, containerName, spec);
                             Containers.setRunning(containerName, true);
                             updateStatus(null);
                         }
@@ -518,7 +613,7 @@ public class MainActivity extends Activity
                                     fallbackTried = true;
                                     Containers.setActive(MainActivity.this, alt);
                                     toast("容器 " + containerName + " 无法启动，已切到 " + alt);
-                                    startContainer(alt, true);
+                                    startContainer(alt);
                                     return;
                                 }
                             }
@@ -545,7 +640,7 @@ public class MainActivity extends Activity
         }
     }
 
-    private void startSession(String key, LaunchSpec spec) {
+    private void startSession(String sessionMode, String container, LaunchSpec spec) {
         int rows = Math.max(3, terminal.getGridRows());
         int cols = Math.max(20, terminal.getGridCols());
         TermSession session = new TermSession(spec, rows, cols, 3000, this);
@@ -555,8 +650,10 @@ public class MainActivity extends Activity
             showError("启动终端会话失败", describe(t));
             return;
         }
-        sessions.put(key, session);
-        attach(session);
+        // id = 根进程 pid：start() 成功后必然 > 0，存活期内内核保证唯一
+        Tab tab = new Tab(session, sessionMode, container);
+        tabs.put(String.valueOf(session.getPid()), tab);
+        attachTab(tab);
         updateKeepAlive();
         // 接了物理键盘（蓝牙/USB）就别强弹软键盘：横屏时软键盘能吃掉大半个屏幕，
         // 终端会被压到只剩两三行，而且软键盘窗口是 secure 的，连截图都会被系统拦掉。
@@ -569,26 +666,88 @@ public class MainActivity extends Activity
         return detectHardKeyboard();
     }
 
-    /** 掐掉某个模式的会话并收回保活。会话表的所有移除都该走这里。 */
-    private void dropSession(String key) {
-        TermSession existing = sessions.remove(key);
-        if (MODE_CONTAINER.equals(key)) {
-            containerSessionName = null;
+    private static String tabIdOf(TermSession session) {
+        return String.valueOf(session.getPid());
+    }
+
+    /** 找一个同类且存活的 tab（模式相同；容器模式还要求容器同名）。 */
+    private Tab findTab(String sessionMode, String containerName) {
+        for (Tab t : tabs.values()) {
+            if (!t.mode.equals(sessionMode)) {
+                continue;
+            }
+            if (MODE_CONTAINER.equals(sessionMode) && containerName != null
+                    && !containerName.equals(t.container)) {
+                continue;
+            }
+            if (t.session.isRunning()) {
+                return t;
+            }
         }
-        if (existing != null) {
-            existing.stop();
+        return null;
+    }
+
+    /**
+     * 掐掉匹配的 tab 并同步摘表（stop() 只发信号，onExit 的摘表是异步的；
+     * 先摘再停才能保证保活计数与本方法语义同步）。
+     */
+    private void dropTabs(String sessionMode, String containerName) {
+        java.util.Iterator<Tab> it = tabs.values().iterator();
+        java.util.List<String> stoppedContainers = new java.util.ArrayList<>();
+        while (it.hasNext()) {
+            Tab t = it.next();
+            if (!t.mode.equals(sessionMode)) {
+                continue;
+            }
+            if (MODE_CONTAINER.equals(sessionMode) && containerName != null
+                    && !containerName.equals(t.container)) {
+                continue;
+            }
+            it.remove();
+            if (tabIdOf(t.session).equals(activeTabId)) {
+                activeTabId = null;
+            }
+            if (MODE_CONTAINER.equals(t.mode)) {
+                stoppedContainers.add(t.container);
+            }
+            t.session.stop();
+        }
+        for (String name : stoppedContainers) {
+            syncContainerRunning(name);
         }
         updateKeepAlive();
     }
 
+    /** 同容器还有存活的 tab 就保持 running 标记，全退干净才摘。 */
+    private void syncContainerRunning(String containerName) {
+        for (Tab t : tabs.values()) {
+            if (MODE_CONTAINER.equals(t.mode) && containerName.equals(t.container)
+                    && t.session.isRunning()) {
+                return;
+            }
+        }
+        Containers.setRunning(containerName, false);
+    }
+
+    /** 贴一个 tab 到界面上，并把它记为「当前」。 */
+    private void attachTab(Tab tab) {
+        activeTabId = tabIdOf(tab.session);
+        mode = tab.mode;
+        prefs.edit().putString("mode", tab.mode).apply();
+        lastRestartMode = tab.mode;
+        lastRestartContainer = tab.container;
+        attach(tab.session);
+        updateModeButtons();
+    }
+
     /**
      * 会话数变了就同步保活状态：还有活着的会话就顶前台服务 + 唤醒锁，一个不剩就收摊。
-     * 只在 UI 线程调用（sessions 不是并发容器）。
+     * 只在 UI 线程调用（tabs 不是并发容器）。
      */
     private void updateKeepAlive() {
         int alive = 0;
-        for (TermSession s : sessions.values()) {
-            if (s != null && s.isRunning()) {
+        for (Tab t : tabs.values()) {
+            if (t.session != null && t.session.isRunning()) {
                 alive++;
             }
         }
@@ -700,14 +859,17 @@ public class MainActivity extends Activity
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                // 会话真的退出了，容器就该从 running 里摘掉；
-                // 用会话自带的容器名，避免与 setActive 的竞态误清新容器
-                if (session == sessions.get(MODE_CONTAINER)
-                        && !session.isRunning()) {
-                    String name = containerSessionName;
-                    if (name != null) {
-                        Containers.setRunning(name, false);
-                    }
+                String id = tabIdOf(session);
+                Tab tab = tabs.remove(id);
+                if (tab != null && MODE_CONTAINER.equals(tab.mode)) {
+                    // 用 tab 自带的容器名清 running 标记，避免与 setActive 的竞态误清新容器；
+                    // 同容器若还有别的活 tab，标记要留着
+                    syncContainerRunning(tab.container);
+                }
+                if (tab != null && id.equals(activeTabId)) {
+                    activeTabId = null;
+                    lastRestartMode = tab.mode;
+                    lastRestartContainer = tab.container;
                 }
                 if (terminal.getSession() == session) {
                     lastExitCode = code;
@@ -746,7 +908,8 @@ public class MainActivity extends Activity
      * 实际还在旧身份里跑；会话没起来时才回退到配置值（这时显示的就是预期值）。
      */
     private void updateModeButtons() {
-        boolean local = MODE_LOCAL.equals(mode);
+        Tab tab = activeTabId != null ? tabs.get(activeTabId) : null;
+        boolean local = tab != null ? MODE_LOCAL.equals(tab.mode) : MODE_LOCAL.equals(mode);
         TermSession session = terminal.getSession();
         LaunchSpec spec = session == null ? null : session.getSpec();
         boolean root = spec != null ? spec.root : prefs.getBoolean("root", false);
@@ -755,7 +918,8 @@ public class MainActivity extends Activity
                 : "docker".equals(prefs.getString("runtime", "proot"));
 
         StringBuilder label = new StringBuilder(
-                local ? "本地" : "容器 · " + Containers.activeName(this));
+                local ? "本地" : "容器 · " + (tab != null ? tab.container
+                        : Containers.activeName(this)));
         if (local && root) {
             label.append(" · root");
         }
@@ -1174,18 +1338,50 @@ public class MainActivity extends Activity
 
     private void showModePicker() {
         PopupMenu menu = new PopupMenu(this, btnMode);
-        menu.getMenu().add(0, 1, 0, "本地 Shell");
-        menu.getMenu().add(0, 2, 1, "容器：" + Containers.activeName(this));
-        menu.getMenu().add(0, 3, 2, "容器与镜像…");
+        android.view.Menu root = menu.getMenu();
+        int order = 0;
+        // 已有的标签页：● = 当前贴屏的，点击直接切换（不杀任何会话）
+        for (java.util.Map.Entry<String, Tab> e : tabs.entrySet()) {
+            Tab t = e.getValue();
+            String label = (MODE_LOCAL.equals(t.mode) ? "本地" : "容器 · " + t.container)
+                    + " · pid " + t.session.getPid()
+                    + (t.session.isRunning() ? "" : "（已退出）");
+            root.add(0, 100 + order, order++,
+                    e.getKey().equals(activeTabId) ? "● " + label : "   " + label);
+        }
+        root.add(0, 1, order++, "＋ 新建本地 Shell");
+        root.add(0, 2, order++, "＋ 新建容器会话（" + Containers.activeName(this) + "）");
+        root.add(0, 3, order++, "容器与镜像…");
         menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
             @Override
             public boolean onMenuItemClick(android.view.MenuItem item) {
-                switch (item.getItemId()) {
+                int id = item.getItemId();
+                if (id >= 100) {
+                    // 会话列表项：按创建顺序找到对应 tab
+                    int idx = id - 100;
+                    int i = 0;
+                    for (Tab t : tabs.values()) {
+                        if (i++ == idx) {
+                            attachTab(t);
+                            return true;
+                        }
+                    }
+                    return true;
+                }
+                switch (id) {
                     case 1:
-                        switchMode(MODE_LOCAL, false);
+                        // 新建 = 直接起会话，已有本地 tab 不会被复用也不会被杀
+                        startLocal();
                         return true;
                     case 2:
-                        switchMode(MODE_CONTAINER, false);
+                        if (Containers.items(MainActivity.this).isEmpty()) {
+                            showNoContainerGuide();
+                        } else {
+                            mode = MODE_CONTAINER;
+                            prefs.edit().putString("mode", MODE_CONTAINER).apply();
+                            updateModeButtons();
+                            startContainer(Containers.activeName(MainActivity.this));
+                        }
                         return true;
                     case 3:
                         showContainersDialog();
@@ -1538,7 +1734,7 @@ public class MainActivity extends Activity
     private boolean onMenuClick(int id) {
         switch (id) {
             case 1:
-                switchMode(mode, true);
+                restartLastKind();
                 return true;
             case 2:
                 copyAll();
@@ -2071,11 +2267,8 @@ public class MainActivity extends Activity
                         } else if ("停止".equals(action)) {
                             Containers.Item it = Containers.find(MainActivity.this, item.name);
                             if (it != null && it.isRunning()) {
-                                // 会话只属于活动容器；停非活动容器时不能误杀活动会话
-                                if (item.name.equals(Containers.activeName(MainActivity.this))) {
-                                    dropSession(MODE_CONTAINER);
-                                }
-                                Containers.setRunning(item.name, false);
+                                // 只掐这个容器的 tab，别的容器会话不受影响
+                                dropTabs(MODE_CONTAINER, item.name);
                                 updateStatus("已停止 " + item.name);
                             }
                         } else {
@@ -2084,7 +2277,7 @@ public class MainActivity extends Activity
                             fallbackTried = false;
                             Containers.setActive(MainActivity.this, item.name);
                             updateModeButtons();
-                            startContainer(item.name, true);
+                            startContainer(item.name);
                         }
                     }
                 })
@@ -2101,22 +2294,24 @@ public class MainActivity extends Activity
                 .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
-                        boolean wasActive = item.name.equals(Containers.activeName(MainActivity.this));
-                        if (wasActive) {
-                            // 只有删的是活动容器才停会话；删别的容器不该误杀正在跑的终端
-                            dropSession(MODE_CONTAINER);
-                        }
+                        // 不管是不是活动容器都先停它的 tab，否则 rootfs 目录被 proot 占着删不掉
+                        dropTabs(MODE_CONTAINER, item.name);
                         if (!Containers.remove(MainActivity.this, item.name)) {
                             toast("删除失败：" + item.name + " 的目录还在被占用");
                             return;
                         }
                         toast("已删除 " + item.name);
-                        if (wasActive) {
-                            // 旧的活动容器没了，落到剩下的第一个（全删完则重建默认容器）
-                            java.util.List<Containers.Item> rest = Containers.items(MainActivity.this);
-                            String next = rest.isEmpty() ? Containers.DEFAULT_CONTAINER : rest.get(0).name;
-                            Containers.setActive(MainActivity.this, next);
-                            startContainer(next, true);
+                        java.util.List<Containers.Item> rest = Containers.items(MainActivity.this);
+                        if (item.name.equals(Containers.activeName(MainActivity.this))) {
+                            if (rest.isEmpty()) {
+                                // 最后一个容器删掉就回到空册：不自动重建，等用户自己拉镜像
+                                Containers.setActive(MainActivity.this, "");
+                                updateStatus("已删除最后一个容器");
+                            } else {
+                                // 旧的活动容器没了，落到剩下的第一个
+                                Containers.setActive(MainActivity.this, rest.get(0).name);
+                                updateStatus(null);
+                            }
                         } else {
                             updateStatus(null);
                         }
@@ -2191,7 +2386,7 @@ public class MainActivity extends Activity
                             mode = MODE_CONTAINER;
                             prefs.edit().putString("mode", MODE_CONTAINER).apply();
                             updateModeButtons();
-                            startContainer(created.name, true);
+                            startContainer(created.name);
                         }
                     });
                 } catch (final Exception e) {
@@ -2524,6 +2719,10 @@ public class MainActivity extends Activity
 
     private void confirmWipe() {
         final String name = Containers.activeName(this);
+        if (Containers.find(this, name) == null) {
+            showNoContainerGuide();
+            return;
+        }
         new AlertDialog.Builder(this)
                 .setTitle("重建容器 " + name)
                 .setMessage("会用镜像重新物化一份干净的 rootfs。容器里装过的软件会全部丢失；"
@@ -2532,8 +2731,8 @@ public class MainActivity extends Activity
                 .setPositiveButton("确定重建", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
-                        dropSession(MODE_CONTAINER);
-                        Containers.setRunning(name, false);
+                        // 只重建这一个容器的 tab；别的容器会话继续跑
+                        dropTabs(MODE_CONTAINER, name);
                         showOverlay("重建容器 " + name + " …");
                         background.execute(new Runnable() {
                             @Override
@@ -2544,7 +2743,7 @@ public class MainActivity extends Activity
                                         @Override
                                         public void run() {
                                             hideOverlay();
-                                            startContainer(name, true);
+                                            startContainer(name);
                                         }
                                     });
                                 } catch (final Exception e) {
@@ -2689,10 +2888,10 @@ public class MainActivity extends Activity
         }
         if (isFinishing()) {
             background.shutdownNow(); // 排队/在跑的后台任务全部中断
-            for (TermSession session : sessions.values()) {
-                session.stop();
+            for (Tab t : tabs.values()) {
+                t.session.stop();
             }
-            sessions.clear();
+            tabs.clear();
             Containers.clearRunning();
             SessionService.sync(getApplicationContext(), 0);
         }
