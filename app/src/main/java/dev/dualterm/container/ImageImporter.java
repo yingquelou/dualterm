@@ -285,11 +285,14 @@ public final class ImageImporter {
 
     private static File prepareTarget(Context ctx, String ref) throws IOException {
         File rootfs = Containers.imageRootfs(ctx, ref);
-        File dir = rootfs.getParentFile();
-        if (dir.exists()) {
-            File[] kids = dir.listFiles();
-            if (kids != null && kids.length > 0) {
-                throw new IOException("镜像已存在：" + ref + "（先 docker rmi " + ref + " 再导入）");
+        int st = Containers.imageState(ctx, ref);
+        if (st == Containers.IMG_REGISTERED) {
+            throw new IOException("镜像已存在：" + ref + "（先 docker rmi " + ref + " 再导入）");
+        }
+        if (st == Containers.IMG_ORPHAN) {
+            // pull 中断的残留目录：清掉再导入，口径与 pull / rmi 一致
+            if (!Containers.clearOrphanImage(ctx, ref)) {
+                throw new IOException("残留目录删不掉（被占用？），重试后再导入");
             }
         }
         Fs.ensureDir(rootfs);

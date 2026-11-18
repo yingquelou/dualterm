@@ -264,11 +264,17 @@ public final class RegistryPuller {
                 + ref.repo + ":" + ref.tag + " …");
 
         File rootfs = Containers.imageRootfs(ctx, ref.local);
-        File dir = rootfs.getParentFile();
-        if (dir.exists()) {
-            File[] kids = dir.listFiles();
-            if (kids != null && kids.length > 0) {
-                throw new IOException("镜像已存在：" + ref.local + "（先 docker rmi " + ref.local + "）");
+        int st = Containers.imageState(ctx, ref.local);
+        if (st == Containers.IMG_REGISTERED) {
+            throw new IOException("镜像已存在：" + ref.local + "（先 docker rmi " + ref.local + "）");
+        }
+        if (st == Containers.IMG_ORPHAN) {
+            // 上次 pull 中途进程被杀的残留：注册表里没有，照 docker 语义清掉续拉。
+            // 旧版在这里直接报「已存在（先 docker rmi）」，而 rmi 又说「镜像不存在」，
+            // 用户两头被堵
+            report(progress, "清理上次未完成的拉取残留…");
+            if (!Containers.clearOrphanImage(ctx, ref.local)) {
+                throw new IOException("残留目录删不掉（被占用？），重试或重启应用后再 pull");
             }
         }
 

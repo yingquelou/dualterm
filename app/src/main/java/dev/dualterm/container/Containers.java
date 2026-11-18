@@ -489,6 +489,41 @@ public final class Containers {
         }
     }
 
+    /* -------------------- 镜像状态（集中判定） -------------------- */
+
+    /** imageState 的三个结果。 */
+    public static final int IMG_ABSENT = 0;        // 注册表没有、目录也没有
+    public static final int IMG_ORPHAN = 1;        // 注册表没有、目录却有内容（pull 中途进程被杀的残留）
+    public static final int IMG_REGISTERED = 2;    // 注册表在册且目录有效
+
+    /**
+     * 镜像三态集中判定。pull 的「已存在」检查、rmi、导入都必须走这里，
+     * 不允许各自用目录或注册表单边判断——那正是「pull 说已存在、rmi 说不存在」
+     * 这种自相矛盾的来源。
+     */
+    public static int imageState(Context ctx, String ref) {
+        String name = normalizeImage(ref);
+        File dir = imageRootfs(ctx, name).getParentFile();
+        File[] kids = dir.exists() ? dir.listFiles() : null;
+        boolean hasDir = kids != null && kids.length > 0;
+        if (findImage(ctx, name) != null) {
+            return hasDir ? IMG_REGISTERED : IMG_ORPHAN; // 在册但目录空了：同样按孤儿收
+        }
+        return hasDir ? IMG_ORPHAN : IMG_ABSENT;
+    }
+
+    /** 删掉一个未登记的镜像残留目录（含大小缓存），成功返回 true。 */
+    public static boolean clearOrphanImage(Context ctx, String ref) {
+        String name = normalizeImage(ref);
+        File dir = imageRootfs(ctx, name).getParentFile();
+        deleteRecursive(dir, imagesDir(ctx));
+        if (dir.exists()) {
+            return false; // 目录被占用删不掉：注册表本来就没有，别动注册表
+        }
+        cacheImageSize(ctx, name, -1);
+        return true;
+    }
+
     public static void removeImage(Context ctx, String ref) throws IOException {
         String name = normalizeImage(ref);
         for (Item item : items(ctx)) {
@@ -496,10 +531,19 @@ public final class Containers {
                 throw new IOException("还有容器（" + item.name + "）基于该镜像，先 docker rm 它们");
             }
         }
-        Image img = findImage(ctx, name);
-        if (img == null) {
+        int state = imageState(ctx, name);
+        if (state == IMG_ABSENT) {
             throw new IOException("镜像不存在：" + name);
         }
+        if (state == IMG_ORPHAN) {
+            // 注册表里没有、目录却有内容：上次 pull 中途进程被杀的残留。
+            // 照 docker 语义删掉即可，别再报「镜像不存在」把用户堵死
+            if (!clearOrphanImage(ctx, name)) {
+                throw new IOException("镜像残留目录删不掉（被占用？）：" + name);
+            }
+            return;
+        }
+        Image img = findImage(ctx, name);
         deleteRecursive(img.rootfs.getParentFile(), imagesDir(ctx));
         cacheImageSize(ctx, name, -1); // 大小缓存一并清掉
         List<Image> list = images(ctx);
@@ -742,8 +786,14 @@ public final class Containers {
 
         String ref = "alpine:" + best.substring(0, best.lastIndexOf('.'));
         File target = imageRootfs(ctx, ref);
-        if (new File(target, "bin").isDirectory()) {
+        int st = imageState(ctx, ref);
+        if (st == IMG_REGISTERED) {
             throw new IOException("镜像已存在：" + ref);
+        }
+        if (st == IMG_ORPHAN) {
+            // 上次拉取中断的残留目录：清掉续拉，别让用户卡在「已存在但 rmi 不掉」
+            report(progress, "清理上次未完成的拉取残留…");
+            deleteRecursive(target.getParentFile(), imagesDir(ctx));
         }
 
         report(progress, "下载 " + bestFile + " …");
@@ -1058,8 +1108,11 @@ public final class Containers {
         File[] children = dir.listFiles();
         if (children != null) {
             for (File child : children) {
-                total += child.isDirectory() && !Files.isSymbolicLink(child.toPath())
-                        ? dirSize(child) : child.length();
+                if (Files.isSymbolicLink(child.toPath())) {
+                    continue; // File.length() 会跟着链接算目标大小：uutils 全家链接
+                              // 都指向同一个 10MB 主二进制，会把 130MB 算成 2.3GB
+                }
+                total += child.isDirectory() ? dirSize(child) : child.length();
             }
         }
         return total;
