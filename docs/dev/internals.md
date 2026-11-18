@@ -260,3 +260,30 @@ adb shell 'am start -n dev.dualterm/.MainActivity --es mode container --es keyte
 - **自定义 View 在布局里写全限定名**（`<dev.dualterm.term.TerminalView>`），挪包同样要改 XML。
 - **单元测试跑不了容器**：proot 依赖真机内核特性，验证走「容器内写文件 → 宿主 `run-as` 读」，不要用 logcat 判断输出完整性（高频输出会被 chatty 丢弃）。
 - **单线程后台执行器**：所有磁盘与进程操作走 `background`（`dualterm-bg` 单线程），UI 回调经 `postUi` 并检查 `isFinishing`/`isDestroyed`；容器启动带代次号，旧任务的回调直接丢弃。
+
+## 容器内为什么不提供 docker 命令
+
+曾试过在每个容器的 `/usr/local/bin/docker` 放转发脚本，靠绑定目录加文件信箱把
+命令转发给 App。能运行，但代价不划算：
+
+- 与镜像自带的真 `docker` 同名冲突，`apk add docker` 会顶掉入口，之后行为不可控；
+- 需要维护一条跨 proot 的 IPC（请求/响应文件、轮询、超时）；
+- 要支持「只让某一个终端能管理」，还得引入「管理终端」概念并与 UI 同步会话状态。
+
+现行方案：管理动作在 App 进程内直接调用 `Containers` / `DockerCli`，没有 IPC、
+没有同名冲突、没有会话状态的双向同步。控制台只做增删查（`run` 只创建容器，
+不切换终端）；「启动 / 停止 / 进入容器」属于终端会话，由 UI 负责，数据流保持单向。
+用户视角的行为说明见 [../containers.md](../containers.md#容器内没有-docker-命令)。
+
+## Docker 后端抽象
+
+后端抽象 `ContainerRuntime`，两个实现：
+
+1. `ProotRuntime`（默认）：纯用户态，验证过的路线。
+2. `DockerRuntime`（实验）：探测 `su` → 探测 `dockerd` → 启动 `dockerd` →
+   `docker run -it --net=host`。探测失败会明确报错并提示切回 PRoot，不会假装可用。
+
+固定 host 网络是刻意的选择：手机内核常常没有 iptables nat 表，bridge 模式下
+容器能起来但两头都不通；host 模式复用宿主网络栈，端口语义与 PRoot 后端一致，
+代价是端口冲突直接 `EADDRINUSE`。
+用户视角的说明见 [../containers.md](../containers.md#docker-后端为什么不是默认)。

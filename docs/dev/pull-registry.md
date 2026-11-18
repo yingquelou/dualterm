@@ -196,7 +196,7 @@ pull 说「已存在（先 docker rmi）」，rmi 又说「镜像不存在」。
   「镜像名，如 debian:12 / alpine:3.21」，默认值 `debian:12`；
   说明文案按输入分支（alpine → 官方 CDN 约 3MB；其它 → Docker Hub，
   提示几十 MB 起步）。overlay 复用不动。
-- `docs/containers.md`、`docs/usage.md`、`docs/roadmap.md` 行为实现后同步。
+- `docs/containers.md`、`docs/usage.md`、`docs/dev/roadmap.md` 行为实现后同步。
 
 ## 六、测试计划
 

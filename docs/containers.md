@@ -48,11 +48,11 @@ mirror alpine mirrors.tuna.tsinghua.edu.cn/alpine
 info / version / help
 ```
 
-`pull` 的分发收在 `Containers.pull` 内部（与菜单「拉镜像」共用同一条路）：
-alpine 版本标签 / latest 走 dl-cdn 快路径，其余引用走 Docker Hub 匿名拉取
-（Registry HTTP API v2 子集，manifest list 按设备 ABI 选平台，层边下边验
-sha256）。zstd 压缩的层不支持（需要 native 解码器），明确报错并指路导入；
-自定义 registry（ghcr/quay）、digest 引用、私有仓库第一版不做。
+`pull` 支持两类来源：Alpine 版本标签走官方 CDN 快路径（约 3MB），其余引用
+从 Docker Hub 匿名拉取（gzip 层，几十 MB 起，边下边校验）。zstd 压缩的层
+不支持（拉取会明确报错），可 `docker save` 后用「导入镜像」；
+自定义 registry（ghcr/quay）、digest 引用、私有仓库暂不支持。
+设计边界与镜像站鉴权细节见 [dev/pull-registry.md](dev/pull-registry.md)。
 
 **镜像源（换源）**：Hub 与 Alpine 两路各自可配（菜单「镜像源设置…」或
 `docker mirror`）。Hub 镜像站先匿名拉、401 时按应答的 `WWW-Authenticate`
@@ -60,7 +60,7 @@ realm 取 token（镜像站自报端点，不依赖 auth.docker.io），全匿�
 （dockerproxy 类）与带 token 站（1ms / daocloud 类）都覆盖。实测
 （2026-11，官方直连被 DNS 污染的网络）：debian:12 经 dockerproxy.net
 约 50s 拉完，busybox:1.36 经 docker.1ms.run 约 45s 拉完。
-设置细节见 [pull-registry.md](pull-registry.md)。
+设置细节见 [dev/pull-registry.md](dev/pull-registry.md)。
 
 `run -v /sdcard/Download:/mnt/dl ...` 支持绑定宿主目录，写入全局 `Volumes`，与菜单「绑定目录」共用同一份配置。
 
@@ -68,13 +68,10 @@ realm 取 token（镜像站自报端点，不依赖 auth.docker.io），全匿�
 
 ## 容器内没有 docker 命令
 
-第一版在每个容器的 `/usr/local/bin/docker` 放脚本，靠绑定目录加文件信箱把命令转发给 App。能运行，但代价不划算：
-
-- 与镜像自带的真 `docker` 同名冲突，`apk add docker` 会顶掉入口，之后行为不可控；
-- 需要维护一条跨 proot 的 IPC（请求/响应文件、轮询、超时）；
-- 要支持「只让某一个终端能管理」，还得引入「管理终端」概念并与 UI 同步会话状态。
-
-现在容器内不存在任何 docker 命令。管理动作在 App 进程内直接调用 `Containers` / `DockerCli`，没有 IPC、没有同名冲突、没有会话状态的双向同步。控制台只做增删查（`run` 只创建容器，不切换终端）；「启动 / 停止 / 进入容器」属于终端会话，由 UI 负责，数据流保持单向。
+容器内不存在任何 docker 命令：管理动作（拉镜像、建删容器、换镜像源）都在
+App 的管理界面或控制台里做，容器里只跑你的程序。曾考虑过在容器内放转发
+脚本、经文件信箱转发命令给 App 的方案，因与镜像自带 docker 同名冲突等
+代价放弃，取舍记录见 [dev/internals.md](dev/internals.md#容器内为什么不提供-docker-命令)。
 
 ## 端口：同端口直通，不做映射
 
@@ -92,15 +89,14 @@ realm 取 token（镜像站自报端点，不依赖 auth.docker.io），全匿�
 
 ## Docker 后端为什么不是默认
 
-Docker Engine 需要 namespace、cgroup 与 overlayfs，运行 `dockerd` 还需要 root；而多数手机厂商内核没有开启 `CONFIG_NAMESPACES`，`dockerd` 起不来。因此工程做了后端抽象，两个实现：
-
-1. `ProotRuntime`（默认）：纯用户态，验证过的路线。
-2. `DockerRuntime`（实验）：探测 `su` → 探测 `dockerd` → 启动 `dockerd` → `docker run -it --net=host`。探测失败会明确报错并提示切回 PRoot，不会假装可用。
-
-固定 host 网络是刻意的选择：手机内核常常没有 iptables nat 表，bridge 模式下容器能起来但两头都不通；host 模式复用宿主网络栈，端口语义与 PRoot 后端一致，代价是端口冲突直接 `EADDRINUSE`。
+在手机上运行真 Docker Engine 需要内核开启 namespace/cgroup/overlayfs，且
+启动 `dockerd` 需要 root；多数手机厂商内核没有开启这些选项，`dockerd` 起不来。
+因此默认使用 PRoot（纯用户态、验证过的路线），Docker 后端按实验性功能对待：
+探测失败会明确报错并提示切回，不会假装可用。后端抽象与固定 host 网络的
+工程取舍见 [dev/internals.md](dev/internals.md#docker-后端抽象)。
 
 要在手机上获得真正的 Docker 支持，前提是设备运行带 namespace 的内核，属于 ROM 层面的改动。
 
 ## 相关实现细节
 
-proot 启动参数、Android 专属前提（`exec` 权限、`extractNativeLibs`、`PROOT_LOADER`）见 [internals.md](internals.md#容器启动)。
+proot 启动参数、Android 专属前提（`exec` 权限、`extractNativeLibs`、`PROOT_LOADER`）见 [dev/internals.md](dev/internals.md#容器启动)。

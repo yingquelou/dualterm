@@ -25,3 +25,4 @@ Thumbs.db
 # （rootfs 打包 4MB、proot 一组 .so，按 ABI 生成，跟着版本走会让仓库迅速膨胀）
 app/src/main/assets/runtime/rootfs-*.pack
 app/src/main/jniLibs/
+SHA256SUMS

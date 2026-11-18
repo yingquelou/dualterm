@@ -23,7 +23,7 @@ Android 终端模拟器。一个 APK 提供两种会话模式：
 
 从 [Releases](https://github.com/yingquelou/dualterm/releases) 下载 `dualterm-<版本>.apk`。
 
-发布包的签名方式见 [docs/building.md](docs/building.md#发布)。覆盖安装要求与已装版本同签名，debug 包与本工程 Release 包互装需先卸载。
+发布包的签名方式见 [docs/dev/building.md](docs/dev/building.md#发布)。覆盖安装要求与已装版本同签名，debug 包与本工程 Release 包互装需先卸载。
 
 ## 从源码构建
 
@@ -35,18 +35,30 @@ powershell -ExecutionPolicy Bypass -File scripts\fetch-runtime.ps1   # Windows
 ./gradlew assembleDebug
 ```
 
-环境要求、桌面回归测试与发布流程见 [docs/building.md](docs/building.md)。
+环境要求、桌面回归测试与发布流程见 [docs/dev/building.md](docs/dev/building.md)。
 
 ## 文档
 
+文档分两类：**用户文档**（docs/ 根目录，讲怎么用）与**开发者文档**（docs/dev/，讲怎么实现/构建/测试）。两者可互相引用，但内容不混排。
+
+**用户文档：**
+
 | 文档 | 内容 |
 |---|---|
-| [docs/usage.md](docs/usage.md) | 界面构成、键条、手势、菜单、会话结束与返回键行为（应用内「帮助」指向此篇） |
+| [docs/usage.md](docs/usage.md) | 界面构成、键条与自定义键、手势、菜单、会话结束与返回键行为（应用内「帮助」指向此篇） |
 | [docs/containers.md](docs/containers.md) | 容器与镜像模型、管理命令、端口直通、会话保活、Docker 后端取舍 |
-| [docs/internals.md](docs/internals.md) | 工程结构、PTY 与仿真器实现、xterm 对齐记录、容器启动前提、远程调试入口 |
-| [docs/building.md](docs/building.md) | 构建环境、七套桌面回归、发布流水线与签名 |
-| [docs/limitations.md](docs/limitations.md) | 已知限制与后续计划 |
-| [docs/roadmap.md](docs/roadmap.md) | 后续开发的取舍评估：候选功能的边界、成本与不做/缓做的理由 |
+| [docs/limitations.md](docs/limitations.md) | 已知限制 |
+
+**开发者文档（docs/dev/）：**
+
+| 文档 | 内容 |
+|---|---|
+| [docs/dev/internals.md](docs/dev/internals.md) | 工程结构、PTY 与仿真器实现、xterm 对齐记录、容器启动前提、远程调试入口 |
+| [docs/dev/building.md](docs/dev/building.md) | 构建环境、七套桌面回归、发布流水线与签名 |
+| [docs/dev/roadmap.md](docs/dev/roadmap.md) | 后续开发的取舍评估：候选功能的边界、成本与不做/缓做的理由 |
+| [docs/dev/verification.md](docs/dev/verification.md) | 实机验证记录 |
+| [docs/dev/pull-registry.md](docs/dev/pull-registry.md) | docker pull 泛化与镜像源设计定稿 |
+| [docs/dev/manual-test.md](docs/dev/manual-test.md) | 手动测试清单（桌面回归之外的真机交互项） || [docs/roadmap.md](docs/roadmap.md) | 后续开发的取舍评估：候选功能的边界、成本与不做/缓做的理由 |
 | [docs/verification.md](docs/verification.md) | 实机验证记录 |
 
 ## 设计取向
