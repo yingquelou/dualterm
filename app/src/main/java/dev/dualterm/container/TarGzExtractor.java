@@ -344,9 +344,15 @@ public final class TarGzExtractor {
     }
 
     /**
-     * tar 硬链接条目（type '1'）。部分设备的 app 数据目录拒绝 link() 系统调用
-     * （实测 MIUI 12.5 上 Files.createLink 一律 Permission denied），兜底顺序：
-     *   1. createLink（最佳：零拷贝、语义一致）
+     * tar 硬链接条目（type '1'）。link() 一律被 SELinux 拒绝——**不是**系统调用
+     * 缺失（bionic 有 link(2)，Files.createLink 直通它），也**不是**存储权限
+     * （app 私有目录不需要任何权限）：AOSP sepolicy 对 untrusted_app/priv_app
+     * 域一律 neverallow file_type:file link（Android 6 起如此；注释写明理由：
+     * installd 无法保证删净被链接文件、硬链接易被用于安全攻击）。实测同一台
+     * 设备上 shell 域（/data/local/tmp）也被拒，符号链接（lnk_file 类、独立
+     * 权限线）则可创建。proot 在 app 进程内跑，容器里 link() 同样被拒。
+     * 兜底顺序：
+     *   1. createLink（最佳：零拷贝、语义一致；root 设备/某些域可过）
      *   2. 实体拷贝并从源恢复可执行位——硬链接条目的 tar 头不带 x 位，丢了它
      *      proot 会报 "'/usr/bin/env' is not executable"
      *   3. 相对符号链接（最后手段）——**不能**用来兜多调用二进制：uutils coreutils
