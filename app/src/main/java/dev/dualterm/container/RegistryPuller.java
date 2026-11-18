@@ -295,42 +295,89 @@ public final class RegistryPuller {
         if (layers == null || layers.length() == 0) {
             throw new IOException("manifest 里没有任何镜像层");
         }
+        // 层类型全部前置校验：任何一层不可收就直接拒绝，一个字节都别浪费
+        for (int i = 0; i < layers.length(); i++) {
+            JSONObject layer = layerAt(layers, i);
+            String digest = layer.optString("digest", "");
+            if (digest.isEmpty()) {
+                throw new IOException("第 " + (i + 1) + " 层缺少 digest");
+            }
+            String reason = rejectReason(layer.optString("mediaType", ""));
+            if (reason != null) {
+                throw new IOException(reason);
+            }
+        }
+
+        // 上次 pull 中断留在 cache 的临时层一并清掉（流水线会同时有两个）
+        File cache = ctx.getCacheDir();
+        File[] stale = cache.listFiles();
+        if (stale != null) {
+            for (File f : stale) {
+                if (f.getName().startsWith("pull-layer-")) {
+                    //noinspection ResultOfMethodCallIgnored
+                    f.delete();
+                }
+            }
+        }
 
         Fs.ensureDir(rootfs);
         try {
-            File cache = ctx.getCacheDir();
-            for (int i = 0; i < layers.length(); i++) {
-                JSONObject layer;
-                try {
-                    layer = layers.getJSONObject(i);
-                } catch (org.json.JSONException e) {
-                    throw new IOException("manifest 层条目解析失败：" + e.getMessage());
+            // 流水线：当前层解包时，下一层已在后台线程下载（磁盘不闲着，网络也不闲着）。
+            // gcc 这类多分层大镜像，串行「下载→解包→下载」的空转占了近一半墙钟时间。
+            // 代价只是盘上同时多留一个临时层文件
+            int n = layers.length();
+            File cur = new File(cache, "pull-layer-" + System.nanoTime());
+            report(progress, "下载 层 1/" + n + " …");
+            downloadBlob(registryBase, ref.repo, token, layerAt(layers, 0).optString("digest", ""),
+                    cur, progress, "层 1/" + n);
+            for (int i = 0; i < n; i++) {
+                final File next;
+                Thread prefetch = null;
+                final IOException[] prefetchErr = new IOException[1];
+                if (i + 1 < n) {
+                    next = new File(cache, "pull-layer-" + System.nanoTime());
+                    final String nextDigest = layerAt(layers, i + 1).optString("digest", "");
+                    final String nextLabel = "层 " + (i + 2) + "/" + n;
+                    report(progress, "后台预取 " + nextLabel + " …");
+                    final String tk = token;
+                    prefetch = new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                downloadBlob(registryBase, ref.repo, tk, nextDigest, next,
+                                        null, nextLabel);
+                            } catch (IOException e) {
+                                prefetchErr[0] = e;
+                            }
+                        }
+                    }, "pull-prefetch");
+                    prefetch.start();
+                } else {
+                    next = null;
                 }
-                String digest = layer.optString("digest", "");
-                String reason = rejectReason(layer.optString("mediaType", ""));
-                if (digest == null || digest.isEmpty()) {
-                    throw new IOException("第 " + (i + 1) + " 层缺少 digest");
-                }
-                if (reason != null) {
-                    throw new IOException(reason);
-                }
-                String label = "层 " + (i + 1) + "/" + layers.length();
-                // 串行「下载一层、叠一层、删临时」：debian 解包后 80MB+，
-                // 不把整镜像和解包副本同时留在盘上
-                report(progress, "下载 " + label + " …");
-                File tmp = new File(cache, "pull-" + System.nanoTime());
-                downloadBlob(registryBase, ref.repo, token, digest, tmp, progress, label);
-                report(progress, "解包 " + label + " …");
-                try (InputStream in = new FileInputStream(tmp)) {
+
+                report(progress, "解包 层 " + (i + 1) + "/" + n + " …");
+                try (InputStream in = new FileInputStream(cur)) {
                     TarGzExtractor.extractLayer(in, rootfs, null);
                 } finally {
                     //noinspection ResultOfMethodCallIgnored
-                    tmp.delete();
+                    cur.delete();
                 }
+                if (prefetch != null) {
+                    prefetch.join();
+                    if (prefetchErr[0] != null) {
+                        throw prefetchErr[0];
+                    }
+                }
+                cur = next;
             }
         } catch (IOException e) {
-            Containers.deleteRecursive(dir, Containers.imagesDir(ctx));
+            Containers.deleteRecursive(rootfs.getParentFile(), Containers.imagesDir(ctx));
             throw e;
+        } catch (InterruptedException e) {
+            Containers.deleteRecursive(rootfs.getParentFile(), Containers.imagesDir(ctx));
+            Thread.currentThread().interrupt();
+            throw new IOException("拉取被中断", e);
         }
 
         // manifest 选对了平台也可能被中间层串味，落地后按 ELF 头再核一次
@@ -338,7 +385,7 @@ public final class RegistryPuller {
         // 完还没有任何用户数据，直接丢弃更干净）
         String problem = Containers.archProblem(rootfs);
         if (problem != null) {
-            Containers.deleteRecursive(dir, Containers.imagesDir(ctx));
+            Containers.deleteRecursive(rootfs.getParentFile(), Containers.imagesDir(ctx));
             throw new IOException("拉取到的镜像与本机架构不符（" + problem + "），已丢弃");
         }
 
@@ -480,6 +527,14 @@ public final class RegistryPuller {
         }
         throw new IOException("标签 " + ref.repo + ":" + ref.tag
                 + " 下没有匹配本设备（" + abi + "）的镜像\n可用平台：" + avail);
+    }
+
+    private static JSONObject layerAt(JSONArray layers, int i) throws IOException {
+        try {
+            return layers.getJSONObject(i);
+        } catch (org.json.JSONException e) {
+            throw new IOException("manifest 层条目解析失败：" + e.getMessage());
+        }
     }
 
     private static JSONObject parseJson(String body, String what) throws IOException {
