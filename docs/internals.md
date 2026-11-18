@@ -185,6 +185,26 @@ proot --kill-on-exit --link2symlink -0 -r <rootfs> \
 Debian 是 `/bin/bash`、Alpine 是 `/bin/sh`——发行版自己决定，app 不选。
 passwd 缺失、解析不出或该 shell 不在 rootfs 里时回退 `/bin/sh`。
 
+启动预检（`launchSpec`）会先把「rootfs 不完整 / 架构不符 / `/usr/bin/env`
+没有可执行位」翻译成带修复指引的中文报错，而不是放给 proot 吐一句英文
+`not executable` / SIGBUS。
+
+### 镜像层解包：硬链接兜底与 uutils
+
+部分设备的 app 数据目录拒绝 `link()` 系统调用（实测 MIUI 12.5 / Android 11
+上 `Files.createLink` 一律 Permission denied）。docker 镜像层里的硬链接条目
+（type '1'）按「createLink → 带权限实体拷贝 → 相对符号链接」兜底：
+
+- 拷贝必须从源恢复可执行位——硬链接条目的 tar 头不带 x 位，丢了它
+  proot 报 `'/usr/bin/env' is not executable`；
+- 符号链接只能作最后手段：ubuntu 25.10 起默认 Rust 版 coreutils（uutils），
+  `/usr/bin/env` → `…/coreutils/env` → 硬链接 `/usr/bin/coreutils`，多调用
+  分发要求 `argv[0]` 的符号链接**直接目标**就是实际执行的文件
+  （对 `/proc/self/exe` 校验），链接链多跳一跳就被它自己的
+  `Security violation` 拒掉；硬链接没有这个跳转所以真 docker 没事。
+  拷贝兜底的代价是盘空间：uutils 全家 ≈ 120 × 10MB，`ubuntu:latest`
+  在 link 不可用的设备上落盘 1.2GB（真 docker 靠硬链接只要 ~130MB）。
+
 ### Android 专属前提
 
 以下三条均为实机验证得出的必要条件，任一条不满足都会启动失败：

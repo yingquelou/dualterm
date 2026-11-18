@@ -136,8 +136,13 @@ manifest list 应答或 404。
 - **边下边验**：流式写 cache 临时文件，同时 `MessageDigest` 算 sha256，
   完成后与 `digest` 比对；不符即删临时 + 报错（防 CDN 串味/截断，
   与 alpine 快路径落地后 ELF 复核同一防御思想）。
-- **串行处理省磁盘**：下载完一层立即 `extractLayer` 叠进 rootfs、删临时，
-  再下下一层。debian 解包后 80MB+，不把整镜像和解包副本同时留在盘上。
+- **流水线**：当前层解包时，下一层在后台线程预取（盘上同时最多两个临时层，
+  文件名 `pull-layer-*`，pull 开始时顺手清掉上次中断的残留）。
+  gcc 这类多分层大镜像，串行「下载→解包→下载」的网络/磁盘空转占近一半墙钟时间；
+  流水线把两边都喂满。预取线程不报进度，主线程只报「后台预取 层 i/n …」。
+  层类型（mediaType）全部**前置校验**：任何一层不可收就直接拒绝，一个字节都不浪费。
+- **失败自愈**：任何异常删掉半个 rootfs 重新抛出；而「进程被杀」留下的
+  残留目录由镜像三态判定收口（见 §3.9）。
 - 进度：用 `Content-Length` 报「下载 层 i/n（30.2MB）…」，复用现有
   `Progress` 通路（overlay / 控制台 sink）。
 - **重定向**：blob 端点会 302/307 到 `production.cloudflare.docker.com`。
@@ -150,6 +155,23 @@ manifest list 应答或 404。
 `Containers.finalizeImage(ctx, ref, rootfs, progress)`（DNS / 绑定目录 /
 登记）→ `ImageImporter.detectArch` 兜底校验（不一致只给 note，不删——
 导入路径已是这个语义，保持一致）。
+
+### 3.9 镜像三态（集中判定）
+
+镜像状态只有一种判定入口 `Containers.imageState`，pull / rmi / 导入共用，
+不允许各自用目录或注册表单边判断：
+
+| 状态 | 含义 | pull | rmi |
+|---|---|---|---|
+| `IMG_REGISTERED` | 注册表在册 + 目录有效 | 报「已存在」 | 正常删除 |
+| `IMG_ORPHAN` | 注册表没有、目录却有内容（pull 中途进程被杀的残留） | 清残留续拉 | 清残留并成功返回 |
+| `IMG_ABSENT` | 都没有 | 正常拉取 | 报「镜像不存在」 |
+
+没有这套收口时，pull 中断的残留会让用户被两头堵死：
+pull 说「已存在（先 docker rmi）」，rmi 又说「镜像不存在」。
+镜像大小统计（`dirSize`）不跟随符号链接——`File.length()` 会顺着链接
+算目标大小，uutils 全家链接都指向同一个 10MB 主二进制，会把 130MB
+算成 2.3GB。
 
 ## 四、错误分类表（HTTP → 用户可读消息）
 
