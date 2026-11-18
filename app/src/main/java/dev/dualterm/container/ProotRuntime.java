@@ -55,6 +55,18 @@ public final class ProotRuntime extends ContainerRuntime {
             throw new IllegalStateException("容器 " + containerName + " 的根文件系统不完整（缺 /bin/sh）"
                     + "\n可删除后重新创建：docker rm " + containerName);
         }
+        // /usr/bin/env 没有可执行位时 proot 只会吐一句英文 "not executable"，
+        // 用户不知道该怎么办。典型成因：老版本解包硬链接时丢过 x 位
+        // （ubuntu:25.10 的 /usr/bin/env 是指向多调用二进制的链接链）。
+        // 镜像本身可能也是好的（create 复制链路丢位），所以重建容器和重拉镜像都给出来
+        File env = new File(rootfs, "usr/bin/env");
+        if (env.exists() && !env.canExecute()) {
+            throw new IllegalStateException("容器 " + containerName + " 的 /usr/bin/env 没有可执行位，无法启动"
+                    + "\n先试重建（不影响镜像）：docker rm " + containerName
+                    + " && docker run --name " + containerName + " " + item.image
+                    + "\n仍不行说明镜像本身缺位：docker rmi " + item.image
+                    + " 后重新 pull / 导入");
+        }
         String archProblem = Containers.archProblem(rootfs);
         if (archProblem != null) {
             // 架构不对时 proot 只会吐一个 SIGBUS，用户完全看不出是镜像拉错了

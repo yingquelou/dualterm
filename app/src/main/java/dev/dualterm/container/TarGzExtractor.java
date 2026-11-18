@@ -343,8 +343,21 @@ public final class TarGzExtractor {
         }
     }
 
+    /**
+     * tar 硬链接条目（type '1'）。部分设备的 app 数据目录拒绝 link() 系统调用
+     * （实测 MIUI 12.5 上 Files.createLink 一律 Permission denied），兜底顺序：
+     *   1. createLink（最佳：零拷贝、语义一致）
+     *   2. 实体拷贝并从源恢复可执行位——硬链接条目的 tar 头不带 x 位，丢了它
+     *      proot 会报 "'/usr/bin/env' is not executable"
+     *   3. 相对符号链接（最后手段）——**不能**用来兜多调用二进制：uutils coreutils
+     *      （ubuntu 25.10 起默认）要求 argv[0] 的符号链接直接目标就是实际执行的
+     *      文件（/proc/self/exe），链接链多跳一跳就会被它的 "Security violation"
+     *      拒掉；硬链接没有这个跳转所以真 docker 没事。拷贝会多占盘
+     *      （uutils 全家 ≈ 120 × 10MB），但语义与硬链接一致
+     */
     private static void makeHardLink(File destDir, File link, String target) throws IOException {
-        File src = new File(destDir, cleanName(target) == null ? target : cleanName(target));
+        String cleanTarget = cleanName(target);
+        File src = new File(destDir, cleanTarget == null ? target : cleanTarget);
         File parent = link.getParentFile();
         if (parent != null && !parent.exists()) {
             //noinspection ResultOfMethodCallIgnored
@@ -352,17 +365,27 @@ public final class TarGzExtractor {
         }
         try {
             Files.createLink(link.toPath(), src.toPath());
-        } catch (Exception e) {
-            if (src.isFile()) {
-                try (InputStream in = Files.newInputStream(src.toPath());
-                     FileOutputStream out = new FileOutputStream(link)) {
-                    byte[] buf = new byte[8192];
-                    int n;
-                    while ((n = in.read(buf)) > 0) {
-                        out.write(buf, 0, n);
-                    }
-                }
+            return;
+        } catch (Exception ignored) {
+            // 本机不支持硬链接：走拷贝兜底
+        }
+        if (src.isFile()) {
+            try {
+                copyFile(src, link);
+                //noinspection ResultOfMethodCallIgnored
+                link.setExecutable(src.canExecute(), true);
+                return;
+            } catch (Exception ignored) {
+                // 盘满等拷贝失败：符号链接聊胜于无
             }
+        }
+        try {
+            Path rel = link.toPath().getParent().relativize(src.toPath());
+            //noinspection ResultOfMethodCallIgnored
+            link.delete();
+            Files.createSymbolicLink(link.toPath(), rel);
+        } catch (Exception ignored) {
+            // 全部落空：留空，启动时会有更明确的报错
         }
     }
 
