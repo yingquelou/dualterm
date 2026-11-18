@@ -54,6 +54,9 @@ android {
     buildTypes {
         debug {
             minifyEnabled false
+            // 旁路包：debug 变体装成 dev.dualterm.debug，与正式签名包并存，
+            // 用于实机取证/回归，不用卸载正式包
+            applicationIdSuffix '.debug'
         }
         release {
             minifyEnabled false
