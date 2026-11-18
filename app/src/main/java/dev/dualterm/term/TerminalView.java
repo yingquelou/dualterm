@@ -111,6 +111,15 @@ public class TerminalView extends View {
 
     private int textSizeSp = 13;
 
+    /**
+     * 字号区间下限/上限。默认 6..28 是 2024 年主流机型的经验值，但竖屏
+     * 80 列能不能放下是「屏宽 × 字号」的联合结果：同为最小字号，Note 8
+     * 富余、Note 9 溢出折行——固定下限对窄屏机不够用。菜单「设置 →
+     * 终端字号范围」可改，捏合与字号 ± 一律走这里的钳制。
+     */
+    private int minSizeSp = 6;
+    private int maxSizeSp = 28;
+
     private int scrollOffset;
     private boolean ctrlDown;
     private boolean altDown;
@@ -281,13 +290,35 @@ public class TerminalView extends View {
     }
 
     public void setTextSizeSp(int sp) {
-        sp = Math.max(6, Math.min(28, sp));
+        sp = Math.max(minSizeSp, Math.min(maxSizeSp, sp));
         if (sp == textSizeSp) {
             return;
         }
         textSizeSp = sp;
         computeGrid(getWidth(), getHeight());
         invalidate();
+    }
+
+    /**
+     * 设置字号区间。区间收窄时把当前字号一并夹回（比如把最小字号从 6
+     * 调到 9，而当前正停在 6，就升到 9），调用方不用再自己补一次。
+     */
+    public void setFontRange(int min, int max) {
+        if (min < 2) {
+            min = 2;
+        }
+        if (max > 72) {
+            max = 72;
+        }
+        if (min > max) {
+            min = max;
+        }
+        minSizeSp = min;
+        maxSizeSp = max;
+        int cur = Math.max(min, Math.min(max, textSizeSp));
+        if (cur != textSizeSp) {
+            setTextSizeSp(cur);
+        }
     }
 
     public boolean isCtrlDown() {

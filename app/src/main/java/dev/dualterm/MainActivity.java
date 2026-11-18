@@ -206,6 +206,7 @@ public class MainActivity extends Activity
                 updateStatus(null);
             }
         });
+        terminal.setFontRange(fontMinSp(), fontMaxSp());
         terminal.setTextSizeSp(prefs.getInt("font_size", 13));
 
         buildKeyBar();
@@ -1492,8 +1493,9 @@ public class MainActivity extends Activity
                         "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"),
                         "辅助键盘：恢复默认键集",
                         "辅助键盘行数：" + maxRowsLabel(),
+                        "终端字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp",
                 },
-                new int[]{7, 13, 20, 21}));
+                new int[]{7, 13, 20, 21, 22}));
         groups.add(new MenuGroup("帮助",
                 new String[]{"使用说明…", "关于"},
                 new int[]{19, 10}));
@@ -1678,6 +1680,9 @@ public class MainActivity extends Activity
             case 21:
                 showKeyboardRowsDialog();
                 return true;
+            case 22:
+                showFontMinDialog();
+                return true;
             case 8:
                 toggleRuntime();
                 return true;
@@ -1760,6 +1765,80 @@ public class MainActivity extends Activity
                 .show();
     }
 
+    /**
+     * 终端字号范围：两步单选——先定最小字号，再定最大字号（最大列表里
+     * 小于等于最小值的项标注「不可选」，选了提示重来）。
+     *
+     * 背景：竖屏 80 列（vim 默认限行宽）放不放得下由「屏宽 × 字号」决定，
+     * 同为 6sp 最小字号，Note 8 有富余、Note 9 溢出折行——窄屏机需要一个
+     * 能再往下的下限，宽屏机则可以把下限调高避免误捏到看不清的字号。
+     * 改完立即生效：终端把区间外字号夹回；font_size 落盘值不迁移，下次
+     * 读取时由 setTextSizeSp 的钳制兜住。
+     */
+    private static final int[] FONT_MIN_CHOICES = {4, 5, 6, 7, 8, 9, 10};
+    private static final int[] FONT_MAX_CHOICES = {12, 16, 20, 24, 28, 32, 36, 40};
+
+    private void showFontMinDialog() {
+        int cur = fontMinSp();
+        int checked = 2; // 默认 6
+        for (int i = 0; i < FONT_MIN_CHOICES.length; i++) {
+            if (FONT_MIN_CHOICES[i] == cur) {
+                checked = i;
+                break;
+            }
+        }
+        String[] labels = new String[FONT_MIN_CHOICES.length];
+        for (int i = 0; i < FONT_MIN_CHOICES.length; i++) {
+            labels[i] = FONT_MIN_CHOICES[i] + "sp" + (FONT_MIN_CHOICES[i] == 6 ? "（默认）" : "");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("最小字号")
+                .setSingleChoiceItems(labels, checked,
+                        new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int which) {
+                                prefs.edit().putInt("font_min", FONT_MIN_CHOICES[which]).apply();
+                                d.dismiss();
+                                showFontMaxDialog();
+                            }
+                        })
+                .show();
+    }
+
+    private void showFontMaxDialog() {
+        int min = fontMinSp();
+        int cur = fontMaxSp();
+        int checked = 4; // 默认 28
+        java.util.List<String> labelList = new java.util.ArrayList<>();
+        for (int v : FONT_MAX_CHOICES) {
+            String bad = v <= min ? "（小于等于最小字号，不可选）" : "";
+            labelList.add(v + "sp" + (v == 28 ? "（默认）" : "") + bad);
+            if (v == cur) {
+                checked = labelList.size() - 1;
+            }
+        }
+        final String[] labels = labelList.toArray(new String[0]);
+        new AlertDialog.Builder(this)
+                .setTitle("最大字号")
+                .setSingleChoiceItems(labels, checked,
+                        new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int which) {
+                                int v = FONT_MAX_CHOICES[which];
+                                if (v <= fontMinSp()) {
+                                    toast("最大字号必须大于最小字号（当前最小 " + fontMinSp() + "sp）");
+                                    return;
+                                }
+                                prefs.edit().putInt("font_max", v).apply();
+                                terminal.setFontRange(fontMinSp(), fontMaxSp());
+                                updateStatus(null);
+                                d.dismiss();
+                                toast("字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp");
+                            }
+                        })
+                .show();
+    }
+
     /** 真正结束会话（返回键只退后台，避免误触把正在跑的编译/tmux 杀掉）。 */
     private void confirmQuit() {
         new AlertDialog.Builder(this)
@@ -1836,15 +1915,24 @@ public class MainActivity extends Activity
 
     private void changeFontSize(int delta) {
         int size = terminal.getTextSizeSp() + delta;
-        if (size < 6) {
-            size = 6;
+        if (size < fontMinSp()) {
+            size = fontMinSp();
         }
-        if (size > 28) {
-            size = 28;
+        if (size > fontMaxSp()) {
+            size = fontMaxSp();
         }
         terminal.setTextSizeSp(size);
         prefs.edit().putInt("font_size", size).apply();
         updateStatus(null);
+    }
+
+    /** 终端字号区间（菜单「设置 → 终端字号范围」可改，落盘 font_min/font_max）。 */
+    private int fontMinSp() {
+        return prefs.getInt("font_min", 6);
+    }
+
+    private int fontMaxSp() {
+        return prefs.getInt("font_max", 28);
     }
 
     /* -------------------- 全屏 -------------------- */
