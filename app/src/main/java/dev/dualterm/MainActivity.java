@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -1681,7 +1682,7 @@ public class MainActivity extends Activity
                 showKeyboardRowsDialog();
                 return true;
             case 22:
-                showFontMinDialog();
+                showFontRangeDialog();
                 return true;
             case 8:
                 toggleRuntime();
@@ -1733,41 +1734,56 @@ public class MainActivity extends Activity
     /**
      * 可自定义区行数上限：键的数量本身不设上限，超出行数的部分在键盘内部
      * 竖向滚动，固定区（编辑键/F 键）和键条不动，终端不会被顶走。
+     * 数字输入框而不是单选列表：留空或 0 = 不限，1–10 = 最多几行。
      */
     private void showKeyboardRowsDialog() {
-        final int[] values = {0, 2, 3, 4, 5, 6};
-        final String[] labels = {"不限（键多则键盘一直变高）", "2 行", "3 行",
-                "4 行（默认）", "5 行", "6 行"};
+        final EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setSingleLine(true);
         int cur = prefs.getInt("soft_kbd_max_rows", 4);
-        int checked = 3;
-        for (int i = 0; i < values.length; i++) {
-            if (values[i] == cur) {
-                checked = i;
-                break;
-            }
+        if (cur > 0) {
+            input.setText(String.valueOf(cur));
+        } else {
+            input.setHint("留空 = 不限");
         }
-        new AlertDialog.Builder(this)
+        final AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("辅助键盘最多几行")
-                .setSingleChoiceItems(labels, checked,
-                        new android.content.DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(android.content.DialogInterface d, int which) {
-                                prefs.edit().putInt("soft_kbd_max_rows", values[which]).apply();
-                                if (softKbd != null) {
-                                    softKbd.refresh();
-                                }
-                                d.dismiss();
-                                toast(values[which] <= 0
-                                        ? "键盘行数：不限"
-                                        : "键盘最多 " + values[which] + " 行，超出可竖向滚动");
-                            }
-                        })
+                .setMessage("可自定义区的行数上限，超出部分在键盘内竖向滚动。\n留空或 0 表示不限（键多则键盘一直变高）。")
+                .setView(input)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确定", null)
                 .show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int value = parseDialogInt(input.getText().toString(), 0);
+                if (value < 0 || value > 10) {
+                    toast("行数只能是 0–10（0 或留空 = 不限）");
+                    return;
+                }
+                prefs.edit().putInt("soft_kbd_max_rows", value).apply();
+                if (softKbd != null) {
+                    softKbd.refresh();
+                }
+                dialog.dismiss();
+                toast(value <= 0
+                        ? "键盘行数：不限"
+                        : "键盘最多 " + value + " 行，超出可竖向滚动");
+            }
+        });
+    }
+
+    /** 对话框数字输入的统一解析：空白按 fallback，非数字（脏输入）也按 fallback。 */
+    private static int parseDialogInt(String text, int fallback) {
+        try {
+            return text.trim().isEmpty() ? fallback : Integer.parseInt(text.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     /**
-     * 终端字号范围：两步单选——先定最小字号，再定最大字号（最大列表里
-     * 小于等于最小值的项标注「不可选」，选了提示重来）。
+     * 终端字号范围：一个对话框两个数字输入框，直接改上下限。
      *
      * 背景：竖屏 80 列（vim 默认限行宽）放不放得下由「屏宽 × 字号」决定，
      * 同为 6sp 最小字号，Note 8 有富余、Note 9 溢出折行——窄屏机需要一个
@@ -1775,68 +1791,69 @@ public class MainActivity extends Activity
      * 改完立即生效：终端把区间外字号夹回；font_size 落盘值不迁移，下次
      * 读取时由 setTextSizeSp 的钳制兜住。
      */
-    private static final int[] FONT_MIN_CHOICES = {4, 5, 6, 7, 8, 9, 10};
-    private static final int[] FONT_MAX_CHOICES = {12, 16, 20, 24, 28, 32, 36, 40};
+    private void showFontRangeDialog() {
+        float density = getResources().getDisplayMetrics().density;
+        int pad = (int) (20 * density);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(pad, pad / 2, pad, 0);
 
-    private void showFontMinDialog() {
-        int cur = fontMinSp();
-        int checked = 2; // 默认 6
-        for (int i = 0; i < FONT_MIN_CHOICES.length; i++) {
-            if (FONT_MIN_CHOICES[i] == cur) {
-                checked = i;
-                break;
-            }
-        }
-        String[] labels = new String[FONT_MIN_CHOICES.length];
-        for (int i = 0; i < FONT_MIN_CHOICES.length; i++) {
-            labels[i] = FONT_MIN_CHOICES[i] + "sp" + (FONT_MIN_CHOICES[i] == 6 ? "（默认）" : "");
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("最小字号")
-                .setSingleChoiceItems(labels, checked,
-                        new android.content.DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(android.content.DialogInterface d, int which) {
-                                prefs.edit().putInt("font_min", FONT_MIN_CHOICES[which]).apply();
-                                d.dismiss();
-                                showFontMaxDialog();
-                            }
-                        })
-                .show();
-    }
+        TextView minLabel = new TextView(this);
+        minLabel.setText("最小字号（sp，2–36）");
+        minLabel.setTextSize(12);
+        minLabel.setTextColor(0xFF9AA0AE);
 
-    private void showFontMaxDialog() {
-        int min = fontMinSp();
-        int cur = fontMaxSp();
-        int checked = 4; // 默认 28
-        java.util.List<String> labelList = new java.util.ArrayList<>();
-        for (int v : FONT_MAX_CHOICES) {
-            String bad = v <= min ? "（小于等于最小字号，不可选）" : "";
-            labelList.add(v + "sp" + (v == 28 ? "（默认）" : "") + bad);
-            if (v == cur) {
-                checked = labelList.size() - 1;
-            }
-        }
-        final String[] labels = labelList.toArray(new String[0]);
-        new AlertDialog.Builder(this)
-                .setTitle("最大字号")
-                .setSingleChoiceItems(labels, checked,
-                        new android.content.DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(android.content.DialogInterface d, int which) {
-                                int v = FONT_MAX_CHOICES[which];
-                                if (v <= fontMinSp()) {
-                                    toast("最大字号必须大于最小字号（当前最小 " + fontMinSp() + "sp）");
-                                    return;
-                                }
-                                prefs.edit().putInt("font_max", v).apply();
-                                terminal.setFontRange(fontMinSp(), fontMaxSp());
-                                updateStatus(null);
-                                d.dismiss();
-                                toast("字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp");
-                            }
-                        })
+        final EditText minInput = new EditText(this);
+        minInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        minInput.setSingleLine(true);
+        minInput.setText(String.valueOf(fontMinSp()));
+
+        TextView maxLabel = new TextView(this);
+        maxLabel.setText("最大字号（sp，最大需大于最小）");
+        maxLabel.setTextSize(12);
+        maxLabel.setTextColor(0xFF9AA0AE);
+        maxLabel.setPadding(0, (int) (10 * density), 0, 0);
+
+        final EditText maxInput = new EditText(this);
+        maxInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        maxInput.setSingleLine(true);
+        maxInput.setText(String.valueOf(fontMaxSp()));
+
+        box.addView(minLabel);
+        box.addView(minInput);
+        box.addView(maxLabel);
+        box.addView(maxInput);
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("终端字号范围")
+                .setView(box)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确定", null)
                 .show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int min = parseDialogInt(minInput.getText().toString(), -1);
+                int max = parseDialogInt(maxInput.getText().toString(), -1);
+                if (min < 2 || min > 36) {
+                    toast("最小字号只能是 2–36");
+                    return;
+                }
+                if (max < 4 || max > 72) {
+                    toast("最大字号只能是 4–72");
+                    return;
+                }
+                if (min >= max) {
+                    toast("最大字号（" + max + "）必须大于最小字号（" + min + "）");
+                    return;
+                }
+                prefs.edit().putInt("font_min", min).putInt("font_max", max).apply();
+                terminal.setFontRange(min, max);
+                updateStatus(null);
+                dialog.dismiss();
+                toast("字号范围：" + min + "–" + max + "sp");
+            }
+        });
     }
 
     /** 真正结束会话（返回键只退后台，避免误触把正在跑的编译/tmux 杀掉）。 */
