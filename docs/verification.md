@@ -26,7 +26,7 @@
 | 空册引导 | （代码路径）无容器时进容器模式弹引导：拉取 Alpine / 导入 tar；本地 shell 兜底启动 |
 | rootfs 移出 APK | assets 三份 rootfs pack 删除；release APK 10.93MB → 512KB；CI 校验与 fetch 脚本同步（rootfs 仅 WITH_ROOTFS=1 时下载） |
 | 系统键盘输入（Android 11） | 搜狗英文逐字进终端，`echo 123456` 正常执行并回显；中文组词在输入法内、选词上屏一次送达；待选区正常收尾 |
-| 系统键盘输入（Android 12，Note 9） | 功能无损（每字符恰好送达一次）；键盘会话首轮走 composing（待选区），首次上屏后转逐字，重开键盘复位——IME 侧自适应，见 internals.md 的跨机型差异 |
+| 系统键盘输入（Android 12，Note 9） | 功能无损（每字符恰好送达一次）。曾把「首轮 composing、上屏后转逐字、重开键盘复位」误判为 Android 12 的机型差异——**2026-11-18 更正**：实为搜狗输入法的英文模式配置不同（**字母模式**=逐字上屏 / **单词模式**=组词待选），配置相同行为一致，见 internals.md 输入章 |
 | 容器登录 shell | Debian rootfs → `/bin/bash`（方向键 / HOME 行编辑生效）；Alpine → `/bin/sh`；passwd 缺失或 shell 不在 rootfs 时回退 `/bin/sh` |
 | 辅助键盘行数上限 | Note 9：上限 2 行时 kbd 高 392px，上滑滚到底「＋」可见；改回 4 行即时恢复 588px；固定区高度不变 |
 | 步骤模式下拉渲染 | MIUI 12.5（font_scale 1.17）六种模式文本全部可见且与所选一致（`tools/verify_spinner.py` 逐模式 dump + 截图像素校验） |
