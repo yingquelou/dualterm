@@ -43,22 +43,33 @@ public enum StepMode {
         }
     },
 
-    /** ^X：控制字符，填单个字母或 \（如 A 发 ^A、\ 发 ^\）。 */
+    /**
+     * ^X：控制字符。可填 ASCII 字母、\、标点 @ [ ] ^ _ ? 和空格——
+     * 字节 = 字符 & 0x1f，与 xterm 的 Ctrl 组合一致（A→^A、]→^] 0x1d、
+     * [→ESC、@→NUL、_→0x1f）；? 特例发 DEL(0x7f)（Ctrl+? 不落 & 0x1f）。
+     * 数字不收：'3'&0x1f=0x13=^S 是错的，Ctrl+数字只有方言映射，不猜。
+     */
     CTRL("^X") {
         @Override
         public byte[] bytesOf(String value) {
-            char c = value.toUpperCase().charAt(0);
+            char c = stripCaret(value).toUpperCase().charAt(0);
+            if (c == '?') {
+                return new byte[]{0x7f};
+            }
             return new byte[]{(byte) (c & 0x1f)};
         }
 
         @Override
         public String validate(String value) {
             String v = stripCaret(value);
-            if (v.length() != 1
-                    || !(Character.isLetter(v.charAt(0)) || v.charAt(0) == '\\')) {
-                return "填单个字母或 \\";
+            if (v.length() != 1) {
+                return ERR;
             }
-            return null;
+            char c = v.charAt(0);
+            boolean ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                    || c == '\\' || c == '@' || c == '[' || c == ']'
+                    || c == '^' || c == '_' || c == '?' || c == ' ';
+            return ok ? null : ERR;
         }
 
         @Override
@@ -68,7 +79,7 @@ public enum StepMode {
 
         @Override
         public String hint() {
-            return "单个字母或 \\（如 A 发 ^A）";
+            return "单个：字母、\\ 或 @ [ ] ^ _ ? 空格（如 A 发 ^A、] 发 ^]）";
         }
 
         @Override
@@ -76,8 +87,14 @@ public enum StepMode {
             return "^" + value.toUpperCase();
         }
 
-        /** 接受 "^a" 这类带前缀的写法，剥掉前缀留字母。 */
+        /**
+         * 接受 "^a" 这类带前缀的写法，剥掉前缀留字母。
+         * 空格本身是合法值（Ctrl+空格=NUL），单空格不能被 trim 吞掉。
+         */
         private static String stripCaret(String value) {
+            if (value.length() == 1 && value.charAt(0) == ' ') {
+                return " ";
+            }
             String v = value.trim();
             return v.length() == 2 && v.charAt(0) == '^' ? v.substring(1) : v;
         }
@@ -216,6 +233,9 @@ public enum StepMode {
 
     public static final long DELAY_MIN_MS = 1;
     public static final long DELAY_MAX_MS = 10000;
+
+    /** CTRL 校验失败的统一文案（KbdTest 按前缀锁定）。 */
+    private static final String ERR = "填单个：字母、\\ 或 @ [ ] ^ _ ? 空格";
 
     /** 对话框 Spinner 上的显示名。 */
     public final String label;

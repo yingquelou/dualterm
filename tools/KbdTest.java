@@ -113,16 +113,35 @@ public class KbdTest {
         ok(m.validate("A") == null, "ctrl 字母合法");
         ok(m.validate("\\") == null, "ctrl 反斜杠合法");
         ok(m.validate("^a") == null, "ctrl 带前缀合法");
-        err(m.validate("AB"), "单个字母", "ctrl 两字符");
-        err(m.validate("1"), "单个字母", "ctrl 数字");
-        err(m.validate(""), "单个字母", "ctrl 空");
+        ok(m.validate("]") == null, "ctrl ] 合法（vim tag 跳转 ^]）");
+        ok(m.validate("^]") == null, "ctrl 前缀 ] 合法");
+        ok(m.validate("[") == null, "ctrl [ 合法（ESC）");
+        ok(m.validate("@") == null, "ctrl @ 合法（NUL）");
+        ok(m.validate("^") == null, "ctrl ^ 合法（^^=RS）");
+        ok(m.validate("_") == null, "ctrl _ 合法（US）");
+        ok(m.validate("?") == null, "ctrl ? 合法（DEL 特例）");
+        ok(m.validate(" ") == null, "ctrl 空格合法（NUL）");
+        err(m.validate("AB"), "填单个", "ctrl 两字符");
+        err(m.validate("1"), "填单个", "ctrl 数字（'3'&0x1f=^S 是错的）");
+        err(m.validate(""), "填单个", "ctrl 空");
+        err(m.validate("ä"), "填单个", "ctrl 非 ASCII 字母");
         eq(m.normalize("^a"), "A", "ctrl 剥前缀+大写");
         eq(m.normalize("z"), "Z", "ctrl 大写");
         eq(m.normalize("\\"), "\\", "ctrl 反斜杠原样");
+        eq(m.normalize("^]"), "]", "ctrl 剥前缀 ]");
         bytes(m.bytesOf("A"), new int[]{0x01}, "ctrl A=^A");
         bytes(m.bytesOf("Z"), new int[]{0x1a}, "ctrl Z=^Z");
         bytes(m.bytesOf("\\"), new int[]{0x1c}, "ctrl \\=^\\(FS)");
+        bytes(m.bytesOf("]"), new int[]{0x1d}, "ctrl ]=^](GS)——vim tag 跳转");
+        bytes(m.bytesOf("^]"), new int[]{0x1d}, "ctrl 前缀 ] 同 ^]");
+        bytes(m.bytesOf("["), new int[]{0x1b}, "ctrl [=ESC");
+        bytes(m.bytesOf("@"), new int[]{0x00}, "ctrl @=NUL");
+        bytes(m.bytesOf("^"), new int[]{0x1e}, "ctrl ^=^^");
+        bytes(m.bytesOf("_"), new int[]{0x1f}, "ctrl _=US");
+        bytes(m.bytesOf("?"), new int[]{0x7f}, "ctrl ?=DEL 特例（不落 &0x1f）");
+        bytes(m.bytesOf(" "), new int[]{0x00}, "ctrl 空格=NUL");
         eq(m.autoLabel("u"), "^U", "ctrl autoLabel");
+        eq(m.autoLabel("]"), "^]", "ctrl autoLabel 标点");
         ok(m.hasInput(), "ctrl 有输入框");
     }
 
