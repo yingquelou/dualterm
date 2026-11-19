@@ -25,9 +25,10 @@ import android.view.ScaleGestureDetector;
  * 输入：自己实现 InputConnection（IME 走 commitText），硬件键走 onKeyDown。
  * 滚动：上下拖动看 scrollback，点一下回到光标/弹出键盘。
  *
- * 触摸端的三个约定（都在手机单手握持的范围内）：
+ * 触摸端的四个约定（都在手机单手握持的范围内）：
  * <ul>
  *   <li>单指拖动 = 看历史；右下角浮出「回到底部」胶囊，点它一键回游标（否则用户会被留在历史里）</li>
+ *   <li>长按拖动 = 选区（复制 / 全选 / 取消浮动条），跨屏幕与 scrollback；鼠标上报模式归程序</li>
  *   <li>双指捏合 = 改字号（桌面终端靠 Ctrl+滚轮，触屏用捏合最直觉）</li>
  *   <li>鼠标滚轮 / 触控板 = 滚屏；程序开了鼠标上报就转成滚轮序列交给它（vim、htop）</li>
  * </ul>
@@ -55,8 +56,8 @@ public class TerminalView extends View {
         void onInputWhileDead();
     }
 
-    /** 长按钩子。菜单已经从这个手势上挪走了（见 MainActivity），现在保留它是给
-     *  将来的「长按选词 → 复制」用：选区一旦落地，长按必须先归选区。 */
+    /** 长按钩子。非鼠标模式下长按已归选区（见 longPressRunnable）；此钩子只在
+     *  鼠标上报模式下触发——触摸归程序，长按留给将来的浮层菜单。 */
     public interface LongPressListener {
         void onLongPress();
     }
@@ -83,6 +84,12 @@ public class TerminalView extends View {
             // 不管有没有监听者，长按都算「被长按吃掉」：否则按住稍久再松手会
             // 退化成一次点击（点终端 = 切键盘），手感上像误触
             longPressFired = true;
+            // 选区接管长按（非鼠标模式，或 Shift 直通的手势）：
+            // 锚点落在长按处，后续 MOVE 扩展、UP 固定并弹浮动条
+            if (longPressForSelect && session != null && session.isRunning()) {
+                startSelectionAt(selTouchX, selTouchY);
+                return;
+            }
             if (longPressListener == null) {
                 return;
             }
@@ -150,6 +157,31 @@ public class TerminalView extends View {
     private boolean wheelMode;
     private float lastWheelY;
 
+    /* -------------------- 选区（roadmap 第一节） -------------------- */
+
+    /*
+     * 坐标系：选区端点用「全局行号 = evictedRows + 绝对行号」（0 基列）。
+     * 新输出把历史行挤出 scrollback 时，全局行号不受影响（逐出只从头部裁、
+     * clearScreen 计入逐出），选区不会漂移；被逐出的部分高亮/取文本时自动消失。
+     */
+    private int selAnchorRow, selAnchorCol;     // 长按锚点（拖动期间固定）
+    private int selMoveRow, selMoveCol;         // 活动端（随手指）
+    private int selStartRow, selStartCol, selEndRow, selEndCol; // 归一化后
+    private boolean selecting;                  // 长按拖选进行中
+    private boolean selActive;                  // 有生效中的选区
+    private float selTouchX, selTouchY;         // 手指位置（边缘自动滚动用）
+    /** DOWN 时刻快照：长按是否允许转成选区（鼠标上报模式下归程序）。 */
+    private boolean longPressForSelect;
+    /** 硬件键盘 Shift+按下：本手势不再上报程序，走本地选区（xterm shift override）。 */
+    private boolean shiftSelect;
+
+    private final RectF selBarRect = new RectF();
+    private final RectF[] selBarButton = {new RectF(), new RectF(), new RectF()};
+    private boolean selBarVisible;
+    private static final int SEL_BAR_COPY = 0;
+    private static final int SEL_BAR_ALL = 1;
+    private static final int SEL_BAR_CANCEL = 2;
+
     public TerminalView(Context context) {
         super(context);
         init();
@@ -178,6 +210,10 @@ public class TerminalView extends View {
                         scaleStartSize = textSizeSp;
                         scaleAccum = 1f;
                         removeCallbacks(longPressRunnable);
+                        // 拖选进行中转捏合：选区手势让位，状态收干净
+                        if (selecting) {
+                            clearSelection();
+                        }
                         // 鼠标上报模式：第一根手指落下时多半已给程序发了「按下」，
                         // 捏合抢走手势后必须补一个释放，否则 vim 卡在拖拽选中态
                         if (mouseDown && session != null) {
@@ -255,6 +291,7 @@ public class TerminalView extends View {
     public void setSession(TermSession value) {
         this.session = value;
         this.scrollOffset = 0;
+        clearSelection();
         if (value != null) {
             pushTextMetrics(value);
             invalidate();
@@ -592,6 +629,10 @@ public class TerminalView extends View {
             notifyDead();
             return;
         }
+        // xterm：key press discards selection——任何往 PTY 写内容都结束选区
+        if (selActive || selecting) {
+            clearSelection();
+        }
         boolean consumed = ctrlDown || altDown;
         session.write(applyModifiers(text));
         scrollOffset = 0;
@@ -643,6 +684,9 @@ public class TerminalView extends View {
             notifyDead();
             return;
         }
+        if (selActive || selecting) {
+            clearSelection();
+        }
         session.write(text);
         scrollOffset = 0;
         clearModifiers();
@@ -660,6 +704,9 @@ public class TerminalView extends View {
         if (!session.isRunning()) {
             notifyDead();
             return;
+        }
+        if (selActive || selecting) {
+            clearSelection();
         }
         session.writeBytes(data);
         scrollOffset = 0;
@@ -687,6 +734,151 @@ public class TerminalView extends View {
         altDown = false;
         if (modifierWatcher != null) {
             modifierWatcher.onModifiersChanged();
+        }
+    }
+
+    /* -------------------- 选区 -------------------- */
+
+    /** 触点 → {全局行号, 0 基列}，行列都钳制到现有内容范围。 */
+    private int[] cellAt(float x, float y) {
+        TerminalEmulator e = session.getEmulator();
+        int row = (int) ((y - padY) / cellHeight);
+        int abs = e.getScrollbackCount() - scrollOffset + row;
+        int total = e.getEvictedRows() + e.getTotalLineCount();
+        int global = Math.max(e.getEvictedRows(), Math.min(total - 1, e.getEvictedRows() + abs));
+        int col = Math.max(0, Math.min(gridCols - 1, (int) ((x - padX) / cellWidth)));
+        return new int[]{global, col};
+    }
+
+    private void startSelectionAt(float x, float y) {
+        int[] cell = cellAt(x, y);
+        selAnchorRow = selMoveRow = cell[0];
+        selAnchorCol = selMoveCol = cell[1];
+        selecting = true;
+        selActive = false;
+        selBarVisible = false;
+        normalizeSelection();
+        invalidate();
+    }
+
+    private void extendSelectionTo(float x, float y) {
+        int[] cell = cellAt(x, y);
+        selMoveRow = cell[0];
+        selMoveCol = cell[1];
+        normalizeSelection();
+        invalidate();
+    }
+
+    private void normalizeSelection() {
+        if (selAnchorRow < selMoveRow
+                || (selAnchorRow == selMoveRow && selAnchorCol <= selMoveCol)) {
+            selStartRow = selAnchorRow;
+            selStartCol = selAnchorCol;
+            selEndRow = selMoveRow;
+            selEndCol = selMoveCol;
+        } else {
+            selStartRow = selMoveRow;
+            selStartCol = selMoveCol;
+            selEndRow = selAnchorRow;
+            selEndCol = selAnchorCol;
+        }
+    }
+
+    private boolean selectionEmpty() {
+        return selStartRow == selEndRow && selStartCol == selEndCol;
+    }
+
+    private void clearSelection() {
+        selecting = false;
+        selActive = false;
+        selBarVisible = false;
+        removeCallbacks(edgeScrollRunnable);
+        invalidate();
+    }
+
+    /**
+     * 拖选到屏幕上下边缘时的自动滚动：手指停在边缘就每 40ms 走一行，
+     * 选区端点跟着新进入视口的内容延伸（xterm 拖出窗口自动滚的同款语义）。
+     */
+    private final Runnable edgeScrollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!selecting || session == null) {
+                return;
+            }
+            float topEdge = padY + cellHeight;
+            float bottomEdge = getHeight() - padY - cellHeight;
+            int dir;
+            if (selTouchY < topEdge) {
+                dir = 1;        // 顶边 = 向更早的内容滚（scrollOffset 增）
+            } else if (selTouchY > bottomEdge) {
+                dir = -1;
+            } else {
+                return;
+            }
+            int max = session.getEmulator().getScrollbackCount();
+            int next = Math.max(0, Math.min(max, scrollOffset + dir));
+            if (next != scrollOffset) {
+                scrollOffset = next;
+                extendSelectionTo(selTouchX, selTouchY);
+            }
+            postDelayed(this, 40);
+        }
+    };
+
+    private void scheduleEdgeScroll() {
+        removeCallbacks(edgeScrollRunnable);
+        float topEdge = padY + cellHeight;
+        float bottomEdge = getHeight() - padY - cellHeight;
+        if (selTouchY < topEdge || selTouchY > bottomEdge) {
+            postDelayed(edgeScrollRunnable, 40);
+        }
+    }
+
+    private void copySelection() {
+        TerminalEmulator e = session.getEmulator();
+        String text = e.getSelectionText(selStartRow, selStartCol, selEndRow, selEndCol);
+        if (text.isEmpty()) {
+            hint("选区里没有文本");
+            return;
+        }
+        ClipboardManager cm =
+                (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null) {
+            return;
+        }
+        try {
+            cm.setPrimaryClip(ClipData.newPlainText("terminal", text));
+            hint("已复制 " + text.length() + " 个字符");
+        } catch (Exception ex) {
+            hint("复制失败：" + ex.getMessage());
+        }
+        clearSelection();
+    }
+
+    private void selectAllSelection() {
+        TerminalEmulator e = session.getEmulator();
+        selAnchorRow = e.getEvictedRows();
+        selAnchorCol = 0;
+        selMoveRow = e.getEvictedRows() + e.getTotalLineCount() - 1;
+        selMoveCol = gridCols - 1;
+        normalizeSelection();
+        selActive = true;
+        invalidate();
+    }
+
+    private void handleSelectionBarTap(float x) {
+        for (int i = 0; i < selBarButton.length; i++) {
+            if (x >= selBarButton[i].left && x <= selBarButton[i].right) {
+                if (i == SEL_BAR_COPY) {
+                    copySelection();
+                } else if (i == SEL_BAR_ALL) {
+                    selectAllSelection();
+                } else {
+                    clearSelection();
+                }
+                return;
+            }
         }
     }
 
@@ -747,6 +939,7 @@ public class TerminalView extends View {
         // 写入端按 4~16KB 块持锁，这里最多等一个块的处理时间（毫秒级），可接受。
         // 注意 getLine/getScrollbackLine 是 synchronized 方法，监视器可重入，无死锁面。
         synchronized (emulator) {
+            int evicted = emulator.getEvictedRows();
             for (int row = 0; row < gridRows; row++) {
                 int virtualRow = row - scrollOffset;
                 TerminalEmulator.Line line;
@@ -759,6 +952,23 @@ public class TerminalView extends View {
                 if (line != null) {
                     drawLine(canvas, line, row);
                 }
+                // 选区高亮：半透明叠层压在文字上。行号换算与绘制共用同一把锁，
+                // 不会拿到撕裂的坐标
+                if (selecting || selActive) {
+                    int global = evicted + scrollbackCount - scrollOffset + row;
+                    if (global >= selStartRow && global <= selEndRow) {
+                        int from = global == selStartRow ? selStartCol : 0;
+                        int to = global == selEndRow ? selEndCol : gridCols - 1;
+                        from = Math.max(0, from);
+                        to = Math.min(gridCols - 1, to);
+                        if (from <= to) {
+                            fillPaint.setColor(0x597CE38B);
+                            rect.set(padX + from * cellWidth, padY + row * cellHeight,
+                                    padX + (to + 1) * cellWidth, padY + (row + 1) * cellHeight);
+                            canvas.drawRect(rect, fillPaint);
+                        }
+                    }
+                }
             }
 
             if (scrollOffset == 0 && emulator.isCursorVisible()) {
@@ -766,10 +976,63 @@ public class TerminalView extends View {
             }
         }
 
+        // 选区浮动条：长按拖完/Shift 拖完出现，复制 / 全选 / 取消
+        selBarVisible = selActive && !selecting;
+        if (selBarVisible) {
+            drawSelectionBar(canvas);
+        }
+
         scrollPillVisible = scrollOffset > 0;
         if (scrollPillVisible) {
             drawScrollPill(canvas);
         }
+    }
+
+    /**
+     * 选区浮动条（自绘，不用 ActionMode：终端全屏自绘 View 上弹系统浮层
+     * 会被 stateAlwaysHidden 的窗口配置和焦点问题反复折腾）。三个按钮
+     * 命中区各自记 rect，onTouchEvent 的 DOWN 在最前面拦截。
+     */
+    private void drawSelectionBar(Canvas canvas) {
+        String[] labels = {"复制", "全选", "取消"};
+        textPaint.setTextSize(sp(12));
+        textPaint.setFakeBoldText(false);
+        textPaint.setUnderlineText(false);
+        textPaint.setStrikeThruText(false);
+
+        float h = dp(30);
+        float gap = dp(16);
+        float padH = dp(10);
+        float w = 0;
+        float[] tw = new float[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            tw[i] = textPaint.measureText(labels[i]);
+            w += tw[i] + padH * 2;
+            if (i < labels.length - 1) {
+                w += gap;
+            }
+        }
+        float left = Math.max(dp(6), (getWidth() - w) / 2f);
+        float top = dp(6);
+        selBarRect.set(left, top, left + w, top + h);
+
+        fillPaint.setColor(0xEE2A2A33);
+        rect.set(selBarRect);
+        canvas.drawRoundRect(rect, h / 2f, h / 2f, fillPaint);
+
+        Paint.FontMetrics fm = textPaint.getFontMetrics();
+        float baseline = top + h / 2f - (fm.ascent + fm.descent) / 2f;
+        float x = left;
+        for (int i = 0; i < labels.length; i++) {
+            selBarButton[i].set(x, top, x + tw[i] + padH * 2, top + h);
+            textPaint.setColor(COLOR_FG);
+            canvas.drawText(labels[i], x + padH, baseline, textPaint);
+            x += tw[i] + padH * 2;
+            if (i < labels.length - 1) {
+                x += gap;
+            }
+        }
+        textPaint.setTextSize(sp(textSizeSp));
     }
 
     /**
@@ -940,6 +1203,12 @@ public class TerminalView extends View {
         TerminalEmulator emulator = session == null ? null : session.getEmulator();
         // vim 的 set mouse=a 会开鼠标上报；这时触摸要变成鼠标事件交给它，而不是本地滚屏
         boolean tracking = emulator != null && emulator.isMouseTracking();
+        // 选中态的浮动条最优先：复制 / 全选 / 取消
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN
+                && selBarVisible && selBarRect.contains(event.getX(), event.getY())) {
+            handleSelectionBarTap(event.getX());
+            return true;
+        }
         // 先看是不是点在「回到底部」胶囊上：上滚状态下的这一下不该弹键盘
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN
                 && scrollPillVisible && scrollPill.contains(event.getX(), event.getY())) {
@@ -959,7 +1228,26 @@ public class TerminalView extends View {
             return true;
         }
         if (tracking) {
-            return handleMouseTouch(event, emulator);
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                // xterm「shift override」惯例：硬件键盘 Shift+按下 → 本手势
+                // 不上报程序，改走本地选区；没有 Shift 就照旧全归程序
+                shiftSelect = (event.getMetaState() & KeyEvent.META_SHIFT_MASK) != 0;
+                if (shiftSelect) {
+                    removeCallbacks(longPressRunnable);
+                    longPressFired = true;
+                    downY = event.getY();
+                    lastY = downY;
+                    dragging = false;
+                    selTouchX = event.getX();
+                    selTouchY = event.getY();
+                    startSelectionAt(selTouchX, selTouchY);
+                    return true;
+                }
+            }
+            if (!shiftSelect) {
+                return handleMouseTouch(event, emulator);
+            }
+            // Shift 直通手势落到下面的通用分支里走选区扩展
         }
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
@@ -967,6 +1255,10 @@ public class TerminalView extends View {
                 lastY = downY;
                 dragging = false;
                 longPressFired = false;
+                selTouchX = event.getX();
+                selTouchY = event.getY();
+                // 鼠标上报模式下长按归程序（程序优先），不转选区
+                longPressForSelect = !tracking && !isDead();
                 removeCallbacks(longPressRunnable);
                 postDelayed(longPressRunnable, LONG_PRESS_MS);
                 return true;
@@ -976,6 +1268,13 @@ public class TerminalView extends View {
                 removeCallbacks(longPressRunnable);
                 return true;
             case MotionEvent.ACTION_MOVE: {
+                if (selecting) {
+                    selTouchX = event.getX();
+                    selTouchY = event.getY();
+                    extendSelectionTo(selTouchX, selTouchY);
+                    scheduleEdgeScroll();
+                    return true;
+                }
                 float dy = event.getY() - lastY;
                 if (!dragging && Math.abs(event.getY() - downY) > cellHeight) {
                     dragging = true;
@@ -994,7 +1293,25 @@ public class TerminalView extends View {
             }
             case MotionEvent.ACTION_UP:
                 removeCallbacks(longPressRunnable);
+                removeCallbacks(edgeScrollRunnable);
+                if (selecting) {
+                    // 长按没拖动 = 空选区，照旧吃掉手势但不进入选中态
+                    selecting = false;
+                    if (!selectionEmpty()) {
+                        selActive = true;
+                        selBarVisible = true;
+                    } else {
+                        clearSelection();
+                    }
+                    invalidate();
+                    return true;
+                }
                 if (!dragging && !longPressFired) {
+                    if (selActive) {
+                        // xterm 惯例：单击清除选区（这一下不弹键盘）
+                        clearSelection();
+                        return true;
+                    }
                     if (isDead()) {
                         // 键盘弹出来也没处输入，直接引导去重启
                         notifyDead();
@@ -1007,6 +1324,8 @@ public class TerminalView extends View {
                 return true;
             case MotionEvent.ACTION_CANCEL:
                 removeCallbacks(longPressRunnable);
+                removeCallbacks(edgeScrollRunnable);
+                selecting = false;
                 return true;
             default:
                 return super.onTouchEvent(event);
@@ -1070,6 +1389,9 @@ public class TerminalView extends View {
                 wheelMode = false;
                 longPressFired = false;
                 mouseDown = true;
+                // 鼠标上报模式：长按与选区都归程序
+                longPressForSelect = false;
+                shiftSelect = false;
                 removeCallbacks(longPressRunnable);
                 postDelayed(longPressRunnable, LONG_PRESS_MS);
                 send(emulator.mouseReport(0, col, row, false, false));

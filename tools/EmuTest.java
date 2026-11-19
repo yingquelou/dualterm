@@ -475,6 +475,78 @@ public class EmuTest {
                 cg.getText().equals("top\n\nbottom\n"),
                 "[" + cg.getText() + "]");
 
+        // 37) 选区：单行局部列范围（20 列避免 "hello world" 触发折行）
+        TerminalEmulator sl = new TerminalEmulator(20, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(sl, "hello world\r\nsecond line");
+        check("selection partial line",
+                sl.getSelectionText(0, 0, 0, 4).equals("hello\n"),
+                "[" + sl.getSelectionText(0, 0, 0, 4) + "]");
+
+        // 38) 选区：起止顺序自动归一
+        check("selection normalizes reversed order",
+                sl.getSelectionText(0, 4, 0, 0).equals("hello\n"),
+                "[" + sl.getSelectionText(0, 4, 0, 0) + "]");
+
+        // 39) 选区：跨行（行尾填充剥除，取到第二行第 2 列止）
+        check("selection spans rows trims padding",
+                sl.getSelectionText(0, 6, 1, 2).equals("world\nsec\n"),
+                "[" + sl.getSelectionText(0, 6, 1, 2) + "]");
+
+        // 40) 选区：软换行拼接——满行折行的内容复制回一个逻辑行
+        // （终点行照全工程复制口径补结尾 \n）
+        TerminalEmulator sw = new TerminalEmulator(10, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(sw, "abcdefghijk");     // 11 列内容 → abcdefghij + k（wrapped）
+        check("selection joins soft-wrapped lines",
+                sw.getSelectionText(0, 0, 1, 9).equals("abcdefghijk\n"),
+                "[" + sw.getSelectionText(0, 0, 1, 9) + "]");
+
+        // 41) 选区：终点落在软换行块中间 → 换行标记截断
+        check("selection end mid-wrap adds newline",
+                sw.getSelectionText(0, 0, 0, 3).equals("abcd\n"),
+                "[" + sw.getSelectionText(0, 0, 0, 3) + "]");
+
+        // 42) 选区：宽字符——起点落在占位尾格上要收拢到头格
+        TerminalEmulator wc = new TerminalEmulator(10, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(wc, "中文");
+        check("selection wide char tail-cell clamp",
+                wc.getSelectionText(0, 1, 0, 3).equals("中文\n"),
+                "[" + wc.getSelectionText(0, 1, 0, 3) + "]");
+
+        // 43) 选区：组合字符随主格取出（分解形式：e + U+0301，不做 NFC 合成）
+        TerminalEmulator cc = new TerminalEmulator(10, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(cc, "e\u0301x");
+        check("selection keeps combining chars",
+                cc.getSelectionText(0, 0, 0, 0).equals("e\u0301\n"),
+                "[" + cc.getSelectionText(0, 0, 0, 0) + "]");
+
+        // 44) 选区：可见空格不剥（反显空格是内容）
+        TerminalEmulator rv = new TerminalEmulator(10, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(rv, "ab\u001b[7m  \u001b[0mcd");
+        check("selection keeps reverse-video spaces",
+                rv.getSelectionText(0, 0, 0, 9).equals("ab  cd\n"),
+                "[" + rv.getSelectionText(0, 0, 0, 9) + "]");
+
+        // 45) 选区：全局行号在 scrollback 逐出后保持稳定，逐出部分自动消失
+        // （终点列给行尾 9，整行都在选区内）
+        TerminalEmulator ev = new TerminalEmulator(10, 3, 2, 0xFFE6E6E6, 0xFF101014);
+        feed(ev, "L0\r\nL1\r\nL2\r\nL3\r\nL4\r\nL5");   // L0 挤出 scrollback
+        check("global row stable after eviction",
+                ev.getEvictedRows() == 1
+                        && ev.getSelectionText(1, 0, 3, 9).equals("L1\nL2\nL3\n"),
+                "evicted=" + ev.getEvictedRows()
+                        + " [" + ev.getSelectionText(1, 0, 3, 9) + "]");
+        check("selection skips evicted head",
+                ev.getSelectionText(0, 0, 3, 9).equals("L1\nL2\nL3\n"),
+                "[" + ev.getSelectionText(0, 0, 3, 9) + "]");
+
+        // 46) 逐出继续推进：被逐出的全局行号只会消失，不会错配到新内容
+        feed(ev, "\r\nL6");   // L1 再被挤出
+        check("global rows monotonic across more eviction",
+                ev.getEvictedRows() == 2
+                        && ev.getSelectionText(2, 0, 4, 9).equals("L2\nL3\nL4\n"),
+                "evicted=" + ev.getEvictedRows()
+                        + " [" + ev.getSelectionText(2, 0, 4, 9) + "]");
+
         System.out.println(fails == 0 ? "ALL PASS" : fails + " FAILURES");
         System.exit(fails == 0 ? 0 : 1);
     }

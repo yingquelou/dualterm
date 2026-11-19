@@ -152,6 +152,8 @@ public final class TerminalEmulator {
     private Line[] lines;
     private boolean altActive;
     private final ArrayList<Line> scrollback = new ArrayList<>();
+    /** scrollback 逐出的累计行数。选区锚点用它换算成稳定的全局行号。 */
+    private int evictedRows;
 
     private int cursorRow;
     private int cursorCol;
@@ -614,6 +616,81 @@ public final class TerminalEmulator {
         return scrollback.get(index);
     }
 
+    /** 绝对行总数 = scrollback + 当前屏。 */
+    public synchronized int getTotalLineCount() {
+        return scrollback.size() + rows;
+    }
+
+    /** scrollback 逐出的累计行数（clearScreen 的清空也计入）。 */
+    public synchronized int getEvictedRows() {
+        return evictedRows;
+    }
+
+    /**
+     * 按全局行号取行。全局行号 = evictedRows + 绝对下标：历史被逐出时后继
+     * 行号不变（逐出只从头部裁、clearScreen 计入逐出），选区/复制用它做
+     * 稳定坐标。已逐出的行返回 null。
+     */
+    public synchronized Line getGlobalLine(int global) {
+        int abs = global - evictedRows;
+        if (abs < 0 || abs >= scrollback.size() + rows) {
+            return null;
+        }
+        return abs < scrollback.size() ? scrollback.get(abs) : lines[abs - scrollback.size()];
+    }
+
+    /**
+     * 选区文本。参数为全局行号 + 0 基列号，起止顺序自动归一。
+     * 语义对齐 xterm 的线性（click-drag）选区：
+     * <ul>
+     *   <li>行尾填充空格逐行剥除（反显/下划线/非默认背景的空格可见，不剥），
+     *       与 getScreenText 同口径；</li>
+     *   <li>软换行（autowrap 折行）的行拼回一个逻辑行，行间不补换行符——
+     *       长命令/URL 折行后复制出来仍是完整一行；选区终点落在被折行块
+     *       中间时，终点行仍补一个换行标记截断；</li>
+     *   <li>起止列落在宽字符的占位尾格（text==0）上时收拢到该字符头格；</li>
+     *   <li>组合字符随主格一起取出。</li>
+     * </ul>
+     * 已逐出的行（getGlobalLine 返回 null）跳过。
+     */
+    public synchronized String getSelectionText(int g0, int c0, int g1, int c1) {
+        if (g1 < g0 || (g1 == g0 && c1 < c0)) {
+            int t = g0; g0 = g1; g1 = t;
+            t = c0; c0 = c1; c1 = t;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int g = g0; g <= g1; g++) {
+            Line li = getGlobalLine(g);
+            if (li == null) {
+                continue;
+            }
+            int len = li.text.length;
+            int from = Math.max(0, Math.min(len - 1, g == g0 ? c0 : 0));
+            int to = Math.max(0, Math.min(len - 1, g == g1 ? c1 : len - 1));
+            if (li.text[from] == 0 && from > 0) {
+                from--;     // 起点落在宽字符尾格 → 收到头格
+            }
+            while (to >= from && isTrailingPadding(li, to)) {
+                to--;       // 行尾填充剥除
+            }
+            for (int i = from; i <= to; i++) {
+                int cp = li.text[i];
+                if (cp != 0) {
+                    sb.appendCodePoint(cp);
+                    String extra = li.extraAt(i);
+                    if (extra != null) {
+                        sb.append(extra);
+                    }
+                }
+            }
+            boolean endsSelection = g == g1;
+            if (!li.wrapped || endsSelection || getGlobalLine(g + 1) == null) {
+                sb.append('\n');
+            }
+        }
+        return sb.toString();
+    }
+
     public synchronized int getCursorRow() {
         return cursorRow;
     }
@@ -750,6 +827,9 @@ public final class TerminalEmulator {
         for (int r = 0; r < rows; r++) {
             blankLine(r);
         }
+        // 清掉的历史行同样计入逐出：全局行号只增不减，旧的选区坐标
+        // 不会撞上清屏之后的新内容
+        evictedRows += scrollback.size();
         scrollback.clear();
         cursorRow = 0;
         cursorCol = 0;
@@ -1943,6 +2023,7 @@ public final class TerminalEmulator {
         scrollback.add(line);
         while (scrollback.size() > maxScrollback) {
             scrollback.remove(0);
+            evictedRows++;
         }
     }
 
