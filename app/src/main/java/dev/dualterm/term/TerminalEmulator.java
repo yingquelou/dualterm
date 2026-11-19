@@ -36,6 +36,15 @@ public final class TerminalEmulator {
         void onReply(String reply);
     }
 
+    /**
+     * OSC 52 写剪贴板的出口：由 TermSession 转给 Activity，再落系统剪贴板。
+     * 收到的是解码后的明文；是否真的写（菜单开关、前台判定）是 Activity 侧的策略，
+     * 仿真器只负责解析与解码——保持纯 Java，桌面 EmuTest 可直接回归。
+     */
+    public interface ClipboardSink {
+        void onClipboardWrite(String text);
+    }
+
     public static final int ATTR_BOLD = 1;
     public static final int ATTR_DIM = 2;
     public static final int ATTR_ITALIC = 4;
@@ -176,6 +185,15 @@ public final class TerminalEmulator {
     private int state = STATE_GROUND;
     private final StringBuilder csi = new StringBuilder();
     private final StringBuilder osc = new StringBuilder();
+    /**
+     * OSC 缓冲上限：老值 64 字符装不下 OSC 52 的 base64（64KB 文本 ≈ 87KB base64），
+     * 放宽到 100KB；超长的序列整体丢弃（防滥用：截半截的 base64 解出来是垃圾）。
+     */
+    private static final int OSC_MAX_CHARS = 100 * 1024;
+    /** OSC 52 解码后写入剪贴板的字节上限（roadmap 定稿：解码后 > 64KB 截断）。 */
+    private static final int CLIPBOARD_MAX_BYTES = 64 * 1024;
+    /** 当前 OSC 序列是否因超长被截断：置位后终止符到来时整体丢弃。 */
+    private boolean oscOverflow;
     private final int[] params = new int[16];
     private int paramCount;
     /** params[i] 所属的「;」组：组内用「:」分隔的是子参数（SGR 38:2::r:g:b 这种）。 */
@@ -184,6 +202,9 @@ public final class TerminalEmulator {
 
     /** 终端应答出口，null 表示只做屏模型不回应（例如纯回放）。 */
     private volatile ReplySink replySink;
+
+    /** OSC 52 剪贴板出口，null 表示程序写剪贴板直接落空（例如纯回放）。 */
+    private volatile ClipboardSink clipboardSink;
 
     /**
      * 文字区与单元格的像素尺寸，供 XTWINOPS（CSI 14/16/18 t）应答用。
@@ -292,6 +313,7 @@ public final class TerminalEmulator {
         state = STATE_GROUND;
         csi.setLength(0);
         osc.setLength(0);
+        oscOverflow = false;
         pendingLen = 0;
     }
 
@@ -929,19 +951,19 @@ public final class TerminalEmulator {
                 break;
             case STATE_OSC:
                 if (c == 0x07) {
-                    handleOsc(osc.toString());
-                    osc.setLength(0);
+                    finishOsc();
                     state = STATE_GROUND;
                 } else if (c == 0x1B) {
                     state = STATE_OSC_ESC;
-                } else if (osc.length() < 64) {
+                } else if (osc.length() < OSC_MAX_CHARS) {
                     osc.append((char) c);
+                } else {
+                    oscOverflow = true;
                 }
                 break;
             case STATE_OSC_ESC:
                 if (c == '\\') {
-                    handleOsc(osc.toString());
-                    osc.setLength(0);
+                    finishOsc();
                     state = STATE_GROUND;
                 } else {
                     state = STATE_OSC;
@@ -1023,6 +1045,7 @@ public final class TerminalEmulator {
                 break;
             case ']':
                 osc.setLength(0);
+                oscOverflow = false;
                 state = STATE_OSC;
                 break;
             case '(':
@@ -1360,12 +1383,29 @@ public final class TerminalEmulator {
         }
     }
 
+    /** OSC 序列收尾：超长被截断的序列整体丢弃（半截 base64 解出来是垃圾），其余交给 handleOsc。 */
+    private void finishOsc() {
+        if (!oscOverflow) {
+            handleOsc(osc.toString());
+        }
+        oscOverflow = false;
+        osc.setLength(0);
+    }
+
     /**
-     * OSC 查询应答。只处理带 `?` 的颜色查询（10 前景 / 11 背景 / 12 光标 / 4;N 调色板），
-     * 其它 OSC（改标题、超链接、剪贴板）一律忽略。
+     * OSC 分发。先拦 OSC 52（程序写剪贴板，数据不带「?」，老逻辑只认带「?」的查询），
+     * 其余保持原语义：只处理带 `?` 的颜色查询（10 前景 / 11 背景 / 12 光标 / 4;N 调色板），
+     * 其它 OSC（改标题、超链接）一律忽略。
      */
     private void handleOsc(String payload) {
-        if (payload.isEmpty() || !payload.endsWith("?")) {
+        if (payload.isEmpty()) {
+            return;
+        }
+        if (payload.startsWith("52;")) {
+            handleOsc52(payload.substring(3));
+            return;
+        }
+        if (!payload.endsWith("?")) {
             return;
         }
         int semi = payload.indexOf(';');
@@ -1414,6 +1454,58 @@ public final class TerminalEmulator {
 
     public void setReplySink(ReplySink sink) {
         this.replySink = sink;
+    }
+
+    public void setClipboardSink(ClipboardSink sink) {
+        this.clipboardSink = sink;
+    }
+
+    /**
+     * OSC 52「程序写剪贴板」：vim 的 `"+y`、tmux 的 copy-mode 靠它把文本落进系统剪贴板。
+     * 语义按 roadmap 定稿边界：
+     * <ul>
+     *   <li>只支持目标 `c`（系统剪贴板），`c2`/`sc` 等其它目标直接忽略；</li>
+     *   <li>查询（数据为 `?`）不支持——不回读剪贴板，也不应答；</li>
+     *   <li>空数据忽略（xterm 的「清空剪贴板」语义，手机上没有意义）；</li>
+     *   <li>base64 用 MIME 宽容解码（容忍发送方夹的换行/空白），解不动整个忽略；</li>
+     *   <li>解码后超 64KB 截断。</li>
+     * </ul>
+     * 是否真的写由 Activity 决定（菜单开关默认关、仅前台写入），这里只管解析与解码。
+     */
+    private void handleOsc52(String rest) {
+        int semi = rest.indexOf(';');
+        if (semi < 0) {
+            return;
+        }
+        if (!"c".equals(rest.substring(0, semi))) {
+            return;
+        }
+        String data = rest.substring(semi + 1);
+        if (data.isEmpty() || "?".equals(data)) {
+            return;
+        }
+        byte[] raw = decodeBase64Lenient(data);
+        if (raw == null || raw.length == 0) {
+            return;
+        }
+        if (raw.length > CLIPBOARD_MAX_BYTES) {
+            byte[] clamped = new byte[CLIPBOARD_MAX_BYTES];
+            System.arraycopy(raw, 0, clamped, 0, CLIPBOARD_MAX_BYTES);
+            raw = clamped;
+        }
+        ClipboardSink sink = clipboardSink;
+        if (sink != null) {
+            sink.onClipboardWrite(new String(raw, java.nio.charset.StandardCharsets.UTF_8));
+        }
+    }
+
+    /** MIME 宽容 base64 解码：容忍发送方夹的换行/空白，解不动返回 null。 */
+    static byte[] decodeBase64Lenient(String data) {
+        try {
+            return java.util.Base64.getMimeDecoder().decode(data);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /** 括号粘贴是否开启（DECSET 2004）。开启时粘贴内容必须用 ESC[200~/ESC[201~ 包起来。 */

@@ -848,6 +848,27 @@ public class MainActivity extends Activity
         }
     }
 
+    /**
+     * OSC 52：程序请求写系统剪贴板（vim `"+y`、tmux copy-mode 等）。
+     * 安全边界全在这层（roadmap 定稿）：菜单开关默认关 + 仅应用前台时写入，
+     * 焦点判定放 UI 线程，避免从读线程摸窗口状态。
+     */
+    @Override
+    public void onClipboardWrite(final TermSession session, final String text) {
+        if (text == null || text.isEmpty() || !prefs.getBoolean("osc52", false)) {
+            return;
+        }
+        postUi(new Runnable() {
+            @Override
+            public void run() {
+                if (isFinishing() || isDestroyed() || !hasWindowFocus()) {
+                    return;
+                }
+                copyToClipboard(text, "程序已写入剪贴板（%d 个字符）");
+            }
+        });
+    }
+
     @Override
     public void onExit(final TermSession session, final int code) {
         runOnUiThread(new Runnable() {
@@ -1491,12 +1512,13 @@ public class MainActivity extends Activity
         groups.add(new MenuGroup("设置",
                 new String[]{
                         prefs.getBoolean("root", false) ? "Root Shell：开" : "Root Shell：关",
+                        prefs.getBoolean("osc52", false) ? "程序写剪贴板：开" : "程序写剪贴板：关",
                         "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"),
                         "辅助键盘：恢复默认键集",
                         "辅助键盘行数：" + maxRowsLabel(),
                         "终端字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp",
                 },
-                new int[]{7, 13, 20, 21, 22}));
+                new int[]{7, 23, 13, 20, 21, 22}));
         groups.add(new MenuGroup("帮助",
                 new String[]{"使用说明…", "关于"},
                 new int[]{19, 10}));
@@ -1673,6 +1695,9 @@ public class MainActivity extends Activity
                 return true;
             case 7:
                 toggleRoot();
+                return true;
+            case 23:
+                toggleOsc52();
                 return true;
             case 20:
                 softKbd.restoreDefaults();
@@ -2817,6 +2842,18 @@ public class MainActivity extends Activity
         }
         // 没有活动会话时 chip 回退显示配置值，切换后立刻反映出来
         updateModeButtons();
+    }
+
+    /**
+     * OSC 52 总开关：程序（vim `"+y`、tmux copy-mode 等）请求写系统剪贴板。
+     * 默认关——终端里跑的任何程序都能摸到剪贴板是真实的安全面，
+     * 和 Termux 的 allow-clipboard 外部访问同一条界线。
+     */
+    private void toggleOsc52() {
+        boolean next = !prefs.getBoolean("osc52", false);
+        prefs.edit().putBoolean("osc52", next).apply();
+        toast(next ? "已允许程序写剪贴板（vim 的 \"+y 等生效）"
+                : "已禁止程序写剪贴板");
     }
 
     private void toggleRuntime() {

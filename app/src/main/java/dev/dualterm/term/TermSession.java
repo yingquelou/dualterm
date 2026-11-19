@@ -14,6 +14,9 @@ public final class TermSession {
         void onOutput(TermSession session);
 
         void onExit(TermSession session, int status);
+
+        /** OSC 52：程序请求写系统剪贴板（开关与前台判定在 Activity 侧的策略层）。 */
+        void onClipboardWrite(TermSession session, String text);
     }
 
     private static final int SIG_HUP = 1;
@@ -51,6 +54,16 @@ public final class TermSession {
             public void onReply(String reply) {
                 if (pendingReply.length() < 8192) {
                     pendingReply.append(reply);
+                }
+            }
+        });
+        // OSC 52 剪贴板：Emulator → TermSession → Listener（Activity），与 reply 出站路径同构
+        this.emulator.setClipboardSink(new TerminalEmulator.ClipboardSink() {
+            @Override
+            public void onClipboardWrite(String text) {
+                TermSession.Listener l = TermSession.this.listener;
+                if (l != null) {
+                    l.onClipboardWrite(TermSession.this, text);
                 }
             }
         });

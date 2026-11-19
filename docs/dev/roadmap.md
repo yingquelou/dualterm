@@ -36,25 +36,25 @@ token 只能复制整屏再手动删。现由长按拖选覆盖，实测全项�
 **遗留**：手感类复核项在 manual-test.md E8（长按时机、滚动速度、
 浮动条遮挡观感）。
 
-## 二、OSC 52 —— 缓做（选区已落地，随时可开工）
+## 二、OSC 52 写剪贴板 —— 已完成（2026-11，实机验证过）
 
 让 vim 的 `"+y`、tmux 的 copy-mode 写入系统剪贴板。前置（第一节选区）
-已完成，本节是下一个候选。
+完成后随即落地，实机 adb 全链路验证（写入 → 粘贴回读一致；关闭后写入被
+拦，输入法剪贴板栏第三方位证）。实现细节见 internals.md「OSC 52 写剪贴板」。
 
-**现状**：`handleOsc` 已有完整解析与 reply（OSC 10/11/12/4），加一个分支即可；
-`osc` 缓冲上限 64 字符需放宽（OSC 52 的 base64 远超此数，给 100KB 上限防滥用）；
-`android.util.Base64` 解码，零依赖可满足。
+**定稿边界逐条落地**：
 
-**安全边界（必须全部满足）**：
-
-- 菜单开关「允许程序写剪贴板」，默认关
-- 仅应用在前台时写入（Android 后台本就受限）
-- 只支持 `c`（系统剪贴板）目标，`c2` 等其它目标直接忽略
-- 解码后 > 64KB 截断
-
-**结构约束**：`TerminalEmulator` 是纯 Java（桌面可跑 EmuTest），不能引入
-Context。写入必须经 listener 回调（Emulator → TermSession → Activity），
-与现有 `reply` 的出站路径同构。
+- `handleOsc` 先拦 `52;` 前缀再走颜色查询分支；OSC 缓冲 64 → 100KB，
+  超长序列置 overflow 标志整体丢弃（半截 base64 是垃圾）；
+- 解码用 `java.util.Base64.getMimeDecoder()`（minSdk 26，零依赖成立，
+  容忍发送方夹换行）；解码后 > 64KB 截断；
+- 只支持 `c` 目标；`c2`/`sc` 忽略；`?` 读请求不应答（只写不读）；空数据忽略；
+- `TerminalEmulator` 保持纯 Java：出口走 `ClipboardSink` 回调
+  （Emulator → TermSession → Activity），策略层在 Activity——
+  prefs `osc52` 菜单开关默认关 + 前台判定（UI 线程 `hasWindowFocus`）；
+- EmuTest 46 → 57 用例：基本写入 / ST 终止 / 目标过滤 / 读请求 / 空数据 /
+  坏 base64 / MIME 宽容 / UTF-8 往返 / 64KB 截断 / 超长丢弃 / 丢弃后恢复 /
+  其它 OSC 不回归。
 
 ## 三、多标签会话 —— 已完成（2026-11）
 
@@ -151,6 +151,8 @@ busybox 经 1ms / daocloud 45s / 23s、alpine 换清华源 12s，全部拉取成
 
 ## 已完成记录
 
+- 2026-11 OSC 52 写剪贴板：菜单开关默认关 + 前台写入（见第二节）；
+  EmuTest 46→57 用例，实机 adb 全链路验证（含关闭拦截）
 - 2026-11 文本选区复制：长按拖选 + 浮动条（见第一节），对照 xterm 核实
   边界；EmuTest 36→46 用例，实机 adb 注入全项验证
 - 2026-11 辅助键盘 v2：「⋯」面板并入 ⌨（取消独立展开）；键集对照系统键盘

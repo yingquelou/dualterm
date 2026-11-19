@@ -90,6 +90,32 @@ app/src/main/
   维持「程序优先」；单击在选区存在时清选区不弹键盘，选中态下任何写 PTY 的
   输入弃选区（xterm key press discards selection）。
 
+## OSC 52 写剪贴板
+
+vim `"+y`、tmux copy-mode 靠它把文本写进系统剪贴板。实现分三层，
+与 reply 出站路径同构：
+
+- **`TerminalEmulator`（解析与解码，纯 Java）**：`handleOsc` 先拦 `52;` 前缀
+  再走老的颜色查询分支（OSC 52 数据不带 `?`，老分支只认 `?` 结尾，互不干扰）。
+  只收目标 `c`；`c2`/`sc` 等忽略；数据为 `?` 是读请求——只写不读，不应答；
+  空数据忽略（xterm 的「清空剪贴板」语义在手机上没有意义）。
+  base64 用 `java.util.Base64.getMimeDecoder()`（minSdk 26 恰好可用，
+  零依赖且容忍发送方夹的换行），解不动整个丢弃。解码后超 64KB 截断。
+  出口是 `ClipboardSink` 回调，不引入 Context，EmuTest 直接回归（47–57 共
+  11 个用例，含 UTF-8 往返、64KB 截断、超长序列丢弃与丢弃后恢复）。
+- **OSC 缓冲放宽**：64 字符 → 100KB（64KB 文本 ≈ 87KB base64）。
+  超过 100KB 的序列置 `oscOverflow`，终止符到来时**整体丢弃**——半截
+  base64 解出来是垃圾，宁可不写；`escape()` 开新 OSC 与 `reset()` 都清标志。
+- **`TermSession` → `MainActivity`（策略层）**：监听器收到的已是解码明文。
+  写不写由 Activity 决定：prefs `osc52`（菜单「程序写剪贴板」，默认关）+
+  前台判定（`postUi` 内 `hasWindowFocus()`，焦点判定放 UI 线程），
+  两道门都过了才走 `copyToClipboard`（复用 MIUI 安全异常兜底），
+  成功 toast「程序已写入剪贴板（N 个字符）」。
+
+实机验证（2026-11-19）：开关开 → 本地会话 `printf '\033]52;c;'$(printf hello52
+| base64)'\007'` → toast 出现 → 菜单「粘贴」回读 `hello52` 一致；
+开关关 → 换 `off52` 重跑 → 无 toast，输入法剪贴板栏内容仍是旧值（写入被拦）。
+
 ## 输入
 
 `EditorInfo.inputType` 用 `TYPE_NULL`——安卓终端模拟器的标准做法（Termux 同款），
@@ -185,7 +211,9 @@ vim 一类全屏程序需要下列终端能力，均已实现：
 
 - `IRM`（插入模式）、`LNM`：几乎没有现代程序依赖 terminfo 的 `smir`。
 - `modifyOtherKeys`、kitty 键盘协议：开启后需要程序按新格式解码按键；不回话则使用旧格式，无损。
-- OSC 52（剪贴板）：等于允许远端进程改写手机剪贴板，多数现代终端也默认禁用。
+- OSC 52 的**读**方向（程序查询剪贴板内容）：读比写更敏感且没有正当高频场景；
+  写方向已实现（菜单开关默认关 + 仅前台，见「OSC 52 写剪贴板」一节），
+  关闭状态下回到本条「远端进程不该摸剪贴板」的原语义。
 - OSC 0/2（标题）、OSC 8（超链接）、同步输出 `?2026`：只影响不显示的内容，不影响正确性。
 - ZWJ emoji 合成序列按多格绘制；真终端的字形簇合并依赖完整 harfbuzz 管线，不值得引入该复杂度。
 
