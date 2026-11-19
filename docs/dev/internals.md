@@ -73,6 +73,23 @@ app/src/main/
 
 整帧绘制与光标绘制都在 `synchronized (emulator)` 内完成，避免读到被 `append` 改到一半的屏幕状态。
 
+## 文本选区
+
+长按定锚 → 拖动扩展 → 浮动条（复制/全选/取消），边界与取舍见 roadmap.md 第一节，
+这里只记实现上不显然的三件事：
+
+- **锚点是全局行号**（= `evictedRows` + scrollback 内行数 + 屏幕行），不是屏幕行。
+  `pushScrollback` 与 `clearScreen` 都推进 `evictedRows`，全局行号空间只增不减，
+  新输出把历史挤出 scrollback 时选区不漂移、被逐出部分自动裁掉。
+  视口行 → 全局行的换算：`global = evictedRows + scrollbackCount + row − scrollOffset`，
+  取文本（`getSelectionText`）与画高亮共用这个公式（同持 emulator 锁，无撕裂）。
+- **`TerminalEmulator` 保持纯 Java**：`getSelectionText` 做软换行拼行、行尾填充
+  剥除（复用 `isTrailingPadding`）、宽字符尾格收拢，EmuTest 36→46 用例覆盖。
+- **手势优先级链**（`onTouchEvent`，自上而下）：浮动条命中 → 回到底部胶囊 →
+  捏合 → 鼠标上报（Shift 直通例外）→ 选区扩展/本地滚动。选区在鼠标上报之后，
+  维持「程序优先」；单击在选区存在时清选区不弹键盘，选中态下任何写 PTY 的
+  输入弃选区（xterm key press discards selection）。
+
 ## 输入
 
 `EditorInfo.inputType` 用 `TYPE_NULL`——安卓终端模拟器的标准做法（Termux 同款），
