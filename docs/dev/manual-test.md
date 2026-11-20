@@ -302,10 +302,13 @@ printf '\033]52;c;'$(printf hello52 | base64)'\007'
 
 ---
 
-## G. 外接键盘键位（AI keytest 注入实测，2026-11-20，M2010J19SC）
+## G. 外接键盘键位（AI 实测，2026-11-20，M2010J19SC）
 
-`--es keytest "..."` 走 `dispatchKeyEvent`，与真实按键同一路径（无实体键盘可回归）。
+`--es keytest "..."` 走 `dispatchKeyEvent`，用于回归应用侧的键位翻译（无实体键盘可回归）。
 onNewIntent 热交付也已生效（本次顺手补的：原先只在冷启动触发）。
+**但注入不能当作硬件键的替身**：`dispatchKeyEvent`/`input keyevent` 的事件来自虚拟键盘
+（`deviceId=-1`），输入法对它的接管判断与真实蓝牙键盘不同，涉及输入法行为的项目
+（组词、候选、选词上屏）必须用 `tools/hardkey.c` 的 uinput 真实设备路径，见 G2 与 G3。
 
 ### G1 已实测 ✅
 - `ctrl+space` → `cat -v` 下见 `^@`（0x00；屏幕双显是 tty 规范模式的
@@ -318,19 +321,85 @@ onNewIntent 热交付也已生效（本次顺手补的：原先只在冷启动�
 - 长按拖选 → 在选区下方长按拖动 = 下端点下移（扩大）；顶部附近长按拖动 =
   上端点收进（缩小）。见 H 节。
 
-### G2 外接键盘中文输入（AI 实机验证：硬键盘不组词，2026-11-20）
-- 搜狗小米版 + 蓝牙键盘：硬键盘敲 `nihao` → 终端直出 5 个字母（PTY 日志
-  `out#3..7: n/i/h/a/o` 逐字节确认），无候选栏、无 composing；切 Shift 中英态、
-  强制软键盘视图（`show_ime_with_hard_keyboard=1`）均无效；
-- 决定性对照：**系统设置搜索框（普通 EditText）**同样硬键盘敲 `nihao`
-  → 也是直出字母不组词。证明是输入法对硬件键的固有行为，与应用 EditorInfo
-  无关，应用侧无解（详见 internals 平台语义修正）；
-- 软键盘触摸输入正常：点软键盘输入拼音 → 选词 → `commitText` → PTY（`你`
-  上屏、日志 `out#6: 你`），系统键盘输入没问题。
+### G2 外接键盘中文输入（AI 实机复测，2026-11-20 晚，改用真实设备事件）
+**本节早先「输入法对硬件键天生不组词、应用侧无解」的结论已作废**：那条对照实验
+用的是 `adb shell input keyevent`，事件来自虚拟键盘（`deviceId=-1`），搜狗对它的
+处理与真实蓝牙键盘不同，因此「搜索框也不组词」是假对照。真实按键要用
+`tools/hardkey.c`（uinput 造 `bustype=BLUETOOTH` 设备，走 InputReader 真实设备路径）：
 
-### G3 仍需真实键盘的用户复核项
-- 其它输入法（百度/Gboard）的实体键盘行为是否与搜狗一致——若某输入法支持
-  硬件键组词，本应用不需要改代码即可受益（`shouldBypassIme` 已让字母先给 IME）；
+```bash
+$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android21-clang \
+    -O2 -Wall -o .shot/hardkey tools/hardkey.c
+adb push .shot/hardkey /data/local/tmp/ && adb shell chmod 755 /data/local/tmp/hardkey
+adb shell /data/local/tmp/hardkey --settle 800 --gap 55 n i h a o space   # 组合键写 ctrl c
+adb shell am start -n dev.dualterm.debug/dev.dualterm.MainActivity --ei chunklog 400  # 逐字节取证
+adb shell dumpsys input_method | grep -iE "haveComposingNative|mInputViewStarted"
+```
+
+实测矩阵（搜狗小米版 + 工装真实按键，同机同输入法）：
+
+| 输入区 `inputType` | 硬键盘 `nihao` | `Enter` | 备注 |
+|---|---|---|---|
+| `TYPE_NULL`（出厂） | 直发 5 个字母，`haveComposingNative:false` | 执行 | 回车后报 `nihao: not found` |
+| `TYPE_NULL` + `show_ime_with_hard_keyboard=1` | 同上，仍不组词 | 执行 | `mInputViewStarted=true` 也救不了，症结在「非文本框」不在视图 |
+| `TYPE_CLASS_TEXT`（临时改一行验证） | **组词**，空格选词 → PTY 逐字节 `out#12: 你好` | **被输入法吞掉，命令不执行** | 候选栏不可见时残留拼音会串味：上条命令没选词的 `ls` 下次空格时以「老师」冒出来 |
+| `TYPE_CLASS_TEXT` + `KEYCODE_ENTER` 进 `shouldBypassIme` | 组词 + 空格上屏照常 | 执行 | 未选词的拼音仍滞留，需要按 composing 状态决定让不让回车 |
+| 对照：系统设置搜索框（本就是 `TYPE_CLASS_TEXT`） | 组词，候选栏「你好/你号/倪好」 | — | 证明硬键盘组词能力在输入法侧一直存在 |
+
+- 出厂版可用通路（已实测）：`show_ime_with_hard_keyboard=1` → 终端底部出现输入法条 →
+  点 ⌄ 展开软键盘 → 硬键盘敲命令、软键盘点拼音 → 选词上屏，PTY 逐字节收到
+  `out#39/40: 欧格/佐尼`；
+- 软键盘触摸输入本身不受影响：拼音 → 选词 → `commitText` → PTY。
+- **上表是「直接把那一行改成 `TYPE_CLASS_TEXT`」的对照实验，不代表出厂行为**：
+  接管落地后回车的归属改成输入法仲裁（空闲退回 `\r`、挂拼音时把拼音原样上屏），
+  逐条实测见 G3。
+
+### G3 输入法接管落地后的实机验证（AI 实测，2026-11-20 晚，搜狗 + uinput 工装）
+
+代码从 `TYPE_NULL` 改成「外接键盘 + 输入法界面可见 → `TYPE_CLASS_TEXT`」之后，
+用 `tools/ime-check.sh` 逐条复测（它会 force-stop、拉起 `cat`、点屏把输入法叫出来，
+确认 `mInputShown=true` 再注入序列）。下表取证跑在**临时插桩的构建**上（`pty.write` /
+`ime.commit` / `takeover.probe` 三条诊断日志），出厂前这些日志已全删；出厂包的证据通道
+是 `--ei chunklog 400` 的 `out#N`（PTY 实际收到的输出块），`ime-check.sh` 现在就走这条，
+最后两行是在出厂包上重跑的。
+
+```bash
+# 编译工装（组合键用 # token，停顿用 :毫秒；--stdin 让设备常驻，否则每次注入
+# 重建键盘会把输入法会话一起重建）
+$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android21-clang \
+    -O2 -Wall -o .shot/hardkey tools/hardkey.c
+$ADB push .shot/hardkey /data/local/tmp/ && $ADB shell chmod 755 /data/local/tmp/hardkey
+bash tools/ime-check.sh 'enter' 'n i h a o :800 enter' 'space' 'n i h a o :800 esc :800 space'
+```
+
+| 场景 | 注入 | 实测 |
+|---|---|---|
+| 接管态空闲按回车 | `enter` | `pty.write [\r]`——输入法不消费、经 `sendKeyEvent` 退回，命令照常执行 |
+| **挂着拼音按回车** | `n i h a o` `enter` | `ime.commit [nihao]` → `pty.write [nihao]`，**无 `\r`**：拼音原样上屏、不带 CR 把命令执行掉（旧行为的串味问题根除） |
+| 接管态空闲按空格 | `space` | `pty.write [ ]` 直发 |
+| 挂着拼音按退格 | `n i h a o backspace space` | 上屏「你哈」——退格删的是拼音尾字母而非命令行字符 |
+| 挂着拼音按 Esc | `n i h a o esc space` | `pty.write [\e]` 之后 `ime.commit [你好]`：ESC 退给应用送达 PTY，但组词不取消（vim 用法上的坑，见 usage「中文等输入方案」） |
+| 接管态空闲的终端语义键 | `tab up down left right home end pgup pgdn ins del esc enter` | `\t` `\e[A` `\e[B` `\e[D` `\e[C` `\e[H` `\e[F` `\e[5~` `\e[6~` `\e[2~` `\e[3~` `\e` `\r` 逐条照发，无一被吞 |
+| 接管态的修饰组合 | `ctrl c` `ctrl d` | 两个控制字节都写进 PTY（日志里显示为空串即 0x03/0x04），组词期间也能中断 |
+| 双击 Shift 切英文 | `shift :100 shift` 后接 `n i h a o space` | `takeover.probe … insetsShown=false` → 字母逐条 `pty.write [n][i][h][a][o]` 直发 |
+| 再双击切回中文 | `shift :100 shift` 后接 `z h o n g space` | `ime.commit [中]` → `pty.write [中]` |
+| 连打大写不误切 | `shift h :60 shift a space enter` | 上屏「哈」+ `pty.write [\r]`——中间插过字母，双击判定不成立 |
+| 间隔过长不误切 | `shift :400 shift` 后接 `n i h a o space` | 仍组词出「你好」——两次按下相隔超出 500ms 窗口 |
+| 「始终」档不受窗口门槛限制 | prefs `hw_ime=1`、不点屏 | `n i h a o space` → `pty.write [你好]`，随后 `enter` → `pty.write [\r]` |
+| 「从不」档字母直发 | prefs `hw_ime=2` | `pty.write [n][i][h][a][o]` 逐条直发；双击 Shift 不生效（不越过用户策略） |
+| 中文端到端 | 切英文打 `cat` 回车 → 切回中文 → `nihao` `zhong` 空格 | 屏上 `你好中`（tty echo + cat 双显），日志已全删的出厂包上验证 |
+| 拔键盘回归 | 工装进程退出（uinput 设备销毁） | 辅助键盘重新出现、软键盘触摸输入组词照常 |
+| **出厂包重跑：组词上屏** | `ime-check.sh 'n i h a o :800 space'` | `out#4: 你好`——`ime-check.sh` 现只走 `out#` 这一条证据通道 |
+| **出厂包重跑：双击切英文** | 同上一条 + `shift :100 shift` 后 `e c h o space h i enter` | 字母逐块 `out#6`…`out#11` 直发、`echo` 被执行（行首还挂着上条未回车的「你好」，故报 `你好echo: not found`） |
+
+### G4 仍需真实键盘的用户复核项
+- 其它输入法（百度/Gboard）的实体键盘行为是否与搜狗一致——尤其**是否老实上报
+  `setComposingText`**：Gboard 报了就会额外走 `imeComposing` 让路分支，搜狗全程不报
+  也不影响（仲裁已不依赖它），但「回车交给输入法」在别的输入法上是否退得干净要实测；
+- 候选栏画在输入法自己的窗口里（不占 IME inset）的输入法，自动档可能判成「不可见」
+  → 不接管，需要用户选「始终」；
+- 菜单「设置 → 外接键盘中文输入」三档切换后即时生效（`restartInput` 是否把所有
+  输入法都拉回新语义）；
 - 搜狗自带的硬键盘输入方案（如硬键盘中英切换、剪贴板粘贴）是否能满足实际打字；
 - 菜单「屏幕内容」→「切换输入法…」弹系统选择器、选中另一个已启用的 IME 后
   输入立刻跟随；「输入法设置…」跳系统启用页；

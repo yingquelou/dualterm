@@ -123,27 +123,31 @@ vim `"+y`、tmux copy-mode 靠它把文本写进系统剪贴板。实现分三�
 
 ## 输入
 
-`EditorInfo.inputType` 用 `TYPE_NULL`——安卓终端模拟器的标准做法（Termux 同款），
-告诉输入法「这里不是普通文本框」，压掉联想与自动纠错。中文输入不受影响：拼音组词
-仍在输入法内部，选词上屏走 `commitText`。
+`EditorInfo.inputType` 默认用 `TYPE_NULL`——安卓终端模拟器的标准做法（Termux 同款），
+告诉输入法「这里不是普通文本框」，压掉联想与自动纠错。软键盘触摸输入的中文组词
+不受影响（组词仍在输入法内部，选词上屏走 `commitText`）；代价是输入法不接管外接
+硬件键盘的字母，硬键盘只能打拉丁文。**接外接全尺寸键盘且输入法界面可见时，
+`inputType` 临时切成 `TYPE_CLASS_TEXT` 让输入法接管组词**，判定与仲裁见下方
+「外接键盘的输入法接管」；其余情形仍是 `TYPE_NULL`。
 
 `InputConnection` 用 `BaseInputConnection(this, true)`（**fullEditor = true**），
-只覆写四处，其余交给基类：
+只覆写六处，其余交给基类：
 
 | 方法 | 处理 |
 |---|---|
-| `commitText` | 先 `super`（把 composing 落成已提交文本），再把内部 `Editable` 的全文发往 PTY 并清空 |
+| `commitText` | 先 `super`（把 composing 落成已提交文本），**只把这次 `text` 发往 PTY** 再清空 `Editable` |
 | `finishComposingText` | 先 `super`，IME 强制收尾（切焦点、按实体键）时把残留内容照常提交，再清空 |
+| `setComposingText` / `setComposingRegion` | 不改文本流，只把「输入法挂着组词」记到 `imeComposing`，供抢键判定用 |
 | `deleteSurroundingText` | 按 `leftLength` 逐个发 DEL 键事件——三星等键盘开启自动纠错时会一次报多个字符的删除 |
 | `sendKeyEvent` | `ACTION_DOWN` 时先走 `handleKeyCode`（方向键/功能键翻译），未认领才交回基类 |
 
-`setComposingText` **不覆写**：composing 文本由基类默认实现落进内部 `Editable` 并维护
-composing span，输入法回读状态自洽，待选区才能正常收尾。
+`commitText` 只发本次提交的内容、不发 `Editable` 全文：全文发法在输入法把 composing
+还挂在 `Editable` 上时会把拼音一起漏进命令行（实测「你好你好」）。
 
-这里有一个踩过的坑：早先按「预编辑串不进 PTY」的思路用 `fullEditor=false` 并吞掉
-`setComposingText` / `finishComposingText`，结果是输入法的 composing 永远「落不了地」——
-表现为键入全程无响应、点选待选区也不消失。终端只需要「最终内容送达 PTY」，中间态由
-输入法自己保管即可，不必在 InputConnection 层再拦一道。
+`setComposingText` 记状态而不拦文本落地，是因为早先按「预编辑串不进 PTY」的思路用
+`fullEditor=false` 并吞掉 `setComposingText` / `finishComposingText`，结果是输入法的
+composing 永远「落不了地」——表现为键入全程无响应、点选待选区也不消失。终端只需要
+「最终内容送达 PTY」，中间态由输入法自己保管即可。
 
 **逐字还是 composing，由输入法配置决定，与机型无关**：此前实测曾误判为
 Android 11/12 的系统差异（同一版搜狗在两台设备上行为不同）——后经核对，
@@ -205,20 +209,77 @@ Android 11/12 的系统差异（同一版搜狗在两台设备上行为不同）
 - 中文组词走 IME 通路：软键盘触摸输入时字母键不经 PreIme，输入法组词后
   `commitText` → `sendCommitted`（`\n`→`\r`）→ PTY，与软键盘同一条路径，
   实机逐字节验证通过（`out#6: 你`）。
-- **外接硬件键盘的中文输入（2026-11-20 实测，与早期假设相反）**：硬键盘
-  字母 KeyEvent 直发 PTY（`shouldBypassIme` 对字母返回 false，IME 有先手但
-  不接管），搜狗小米版不组词——即使强制软键盘视图显示、即使切 Shift 中英态
-  依旧；决定性对照：系统设置搜索框（普通 EditText，非 TYPE_NULL）用同样的
-  硬键盘 keyevent 敲 `nihao` 也是直出字母、不组词。结论：**这是输入法对硬件
-  键盘字母的固有行为，与应用 EditorInfo 无关，应用侧无法适配**。文档不再
-  声称「外接键盘字母交给输入法组词」。可行方案：用户改用软键盘触摸输入、
-  输入法自带的硬键盘方案或剪贴板粘贴。
+- **外接硬件键盘的中文输入（2026-11-20 用真实设备事件重测，先前两条结论都作废）**：
+  硬键盘字母会不会进输入法组词，决定因素是本视图的 `EditorInfo.inputType`，
+  不是「输入法不理会硬键盘」。同一台机、同一个搜狗、同一套按键：
+  `TYPE_NULL`（出厂）下输入法拿得到先手却不接管，`haveComposingNative:false`，
+  字母逐条直发 PTY——`nihao` 就是 5 个字母，回车后 `/bin/sh: nihao: not found`；
+  把这一行改成 `TYPE_CLASS_TEXT` 后立刻组词，空格选词 → `commitText` → PTY
+  逐字节回显 `out#12: 你好`。`show_ime_with_hard_keyboard=1`（强制显示软键盘视图）
+  救不了 `TYPE_NULL`：`mInputViewStarted=true` 依旧直发字母，所以症结在
+  「非文本框」而非「视图不可见」。对照实验：系统设置搜索框（本来就是
+  `TYPE_CLASS_TEXT`）用同一工装敲 `nihao` 出「你好/你号/倪好」候选栏。
+- **两处代价的落地解法（2026-11-20 实机复测）**：
+  1. 回车不再由应用抢判。原以为「有 composing 才让路」可行，实测搜狗对硬键盘组词
+     **全程不调 `setComposingText`**（内部 `Editable` 一直是空），应用侧无从得知组词
+     状态，这条规则在搜狗上等于「永远不让路」——于是命令带着 CR 执行了、拼音还挂在
+     输入法里，下一行凭空冒出词。改成接管态把回车/空格/方向键等终端语义键**全数交给
+     输入法**：空闲时输入法用 `InputConnection.sendKeyEvent` 把键原样退回来（实测
+     `\r`、`\t`、`\e[A`、`\e[H`、`\e[5~`、`\e[2~`、`\e[3~`、`\e` 一一照发），挂着拼音时
+     由它自己处置——实测回车把 `nihao` 原样上屏且**不再伴随 `\r`**（命令不会被半截拼音
+     带着执行），退格删的是拼音尾字母（`nihao`+退格+空格上屏「你哈」），只有 `Esc`
+     既不消费也不取消组词（退回来送达 PTY，随后空格照常选词）。残留拼音不再串到下一行。
+  2. 盲打风险由「输入法窗口可见」这个硬门槛挡住：窗口没弹出来就不接管，用户不会在
+     看不见候选栏的情况下挂着组词。`imeComposing` 仍保留并参与判定，给老实上报
+     composing 的输入法（Gboard 等）用；搜狗不报也不影响，因为仲裁不再依赖它。
+- **验证方法论（踩过的坑，别再犯）**：`adb shell input keyevent` 的事件来自虚拟键盘
+  （`deviceId=-1`），搜狗对它的处理与真实蓝牙键盘不同——用它敲系统设置搜索框也不
+  组词，据此得出的「别的应用同样不组词」是假对照，前一条结论就是这么错出来的。
+  要复现真实按键用 `tools/hardkey.c`：它经 `/dev/uinput` 造一个 `bustype=BLUETOOTH`
+  的键盘设备，事件走 InputReader 的真实设备路径，与手敲同一条链路（编译与用法在
+  该文件头注释；`ctrl c` 这类组合键会把修饰键挂到下一个键上）。取证用
+  `am start --ei chunklog 400` 打开 PTY 输出块日志，配合
+  `dumpsys input_method` 的 `haveComposingNative` / `mInputViewStarted`。
 - 不做：NumLock 关闭的小键盘导航（Android 无此语义转换，模拟收益低）、
   Meta→ESC（系统消费严重、上报不可靠，Meta 语义由 Alt 承担）、F13–F24 /
   Scroll Lock / Pause / SysRq（无标准 keycode 或无消费者）、键盘 Shift+方向
   选区（roadmap 已定不做）。
-- 调试钩子：`--es keytest "ctrl+shift+a"` 经 `dispatchKeyEvent` 走与真实按键
-  同一条路径，onNewIntent 热交付同样生效，无实体键盘也能回归键位映射。
+- 调试钩子：`--es keytest "ctrl+shift+a"` 经 `dispatchKeyEvent` 走应用侧键位翻译的
+  同一条路径，onNewIntent 热交付同样生效，无实体键盘也能回归键位映射；但它是虚拟
+  键盘（`deviceId=-1`）事件，输入法不接管，验证组词/候选必须改用 `tools/hardkey.c`。
+
+### 外接键盘的输入法接管
+
+`TerminalView` 里四个字段决定这条链路：`externalKbd`（活动层探测到外接全尺寸键盘）、
+`imeTakeoverMode`（策略，`hw_ime` 偏好项，自动/始终/从不）、`imeTakeover`（本次会话实际
+是否接管，写进 `EditorInfo.inputType`）、`imeComposing`（输入法报过组词）。
+
+`computeTakeover()` 的判定顺序：没外接键盘或策略「从不」→ 不接管；策略「始终」→ 接管；
+自动档要求 `WindowInsets.isVisible(Type.ime())`，API 30 以下取不到 inset，退化成不接管
+（保持历史行为）。状态一变必须 `InputMethodManager.restartInput(this)`——输入法按创建
+会话时拿到的 `inputType` 决定硬键盘字母是自己组词还是回退给应用，不重取就永远停在旧语义。
+
+判定挂在四处：`onSizeChanged`（`adjustResize` 下输入法窗口的出现/消失就是本视图的高度
+变化，这是最省事的可见性回调）、`setExternalKeyboard`、`setImeTakeoverMode`、
+`onCreateInputConnection`。
+
+叫出输入法窗口不能用 `SHOW_IMPLICIT`：有外接键盘时系统判定「用户没主动要键盘」，
+实测搜狗只回 `RESULT_NOT_SHOWN`，窗口永远不出来，自动档因此永远不成立——`externalKbd`
+时改用 `SHOW_FORCED`。
+
+**语言切换（双击 Shift）**：观察点放在 `onKeyPreIme`，这是接管与否两种模式下修饰键都一定
+到得了的一层。500ms 内两下 Shift、且中间没敲过别的键才算双击（连打大写 `A` `B` 不误切）。
+判定成双击后**整对吞掉第二次 Shift 的按下与松开**：只吞按下、把松开漏给输入法，输入法会把
+它当成一次没有配对的点击自己切一遍中英，实测回来时组词失效、拼音原样上屏。切换动作本身
+就是开关输入法窗口，不另立状态，也不越过用户在菜单里定的策略——「始终」「从不」两档下
+这个键不生效。
+
+组词期间输入法收起（`hideIme`）必须清掉 `imeComposing`，否则让路判定一直成立，
+表现为回车/Esc/方向键全体失灵。
+
+验证工装：`tools/hardkey.c`（uinput 真实设备路径，`--stdin` 让设备常驻，否则每次注入
+重建键盘会把输入法会话一起重建）与 `tools/ime-check.sh`（拉起接管态后逐条注入序列）。
+`#` token 发真组合键（`ctrl shift #`），`:毫秒` 停顿会把挂着的修饰键拆成独立单击。
 
 ## 全屏程序依赖的能力
 
@@ -338,8 +399,16 @@ adb logcat -s DualTerm
 adb shell 'am start -n dev.dualterm/.MainActivity --ez console true --es cmd "ps -a"'
 
 # 注入一次带修饰键的按键（手边没有蓝牙键盘时回归键映射）
-# 走的是 TerminalView.dispatchKeyEvent → onKeyDown，与真实按键同一条路径
+# 走 TerminalView.dispatchKeyEvent → onKeyDown，应用侧键位翻译与真实按键同一条路径；
+# 但事件来自虚拟键盘（deviceId=-1），输入法对它的接管判断不同，涉及组词/候选的验证不能用它
 adb shell 'am start -n dev.dualterm/.MainActivity --es mode container --es keytest "ctrl+c"'
+
+# 造一个真实的外接键盘设备（uinput，bustype=BLUETOOTH），事件走 InputReader 真实设备路径，
+# 与手敲蓝牙键盘同链路——输入法组词、候选、选词上屏只能用它验证
+$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android21-clang \
+    -O2 -Wall -o .shot/hardkey tools/hardkey.c
+adb push .shot/hardkey /data/local/tmp/ && adb shell chmod 755 /data/local/tmp/hardkey
+adb shell /data/local/tmp/hardkey --settle 800 --gap 55 n i h a o space
 ```
 
 `ConsoleActivity` 在 release 里 `exported=false`，只能经 `MainActivity` 转发；debug 变体
