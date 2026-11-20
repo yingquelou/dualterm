@@ -85,6 +85,11 @@ app/src/main/
   取文本（`getSelectionText`）与画高亮共用这个公式（同持 emulator 锁，无撕裂）。
 - **`TerminalEmulator` 保持纯 Java**：`getSelectionText` 做软换行拼行、行尾填充
   剥除（复用 `isTrailingPadding`）、宽字符尾格收拢，EmuTest 36→46 用例覆盖。
+- **端点增减**（xterm extend-selection）：`startSelectionAt` 在已有选区（`selActive`）
+  时把锚移到离触点更远的选区端点（全局行距为主、同行比列），拖动即挪最近的端点——
+  扩大与缩小是同一手势。硬件键盘 Shift+按下同走此入口（鼠标上报模式的 shift override
+  与普通模式共用分支）。粘贴落地（`doPaste`）补齐「写 PTY 弃选区」，原先只有
+  `sendText` 有这条规则。
 - **手势优先级链**（`onTouchEvent`，自上而下）：浮动条命中 → 回到底部胶囊 →
   捏合 → 鼠标上报（Shift 直通例外）→ 选区扩展/本地滚动。选区在鼠标上报之后，
   维持「程序优先」；单击在选区存在时清选区不弹键盘，选中态下任何写 PTY 的

@@ -536,6 +536,10 @@ public class TerminalView extends View {
             }
         });
         scrollOffset = 0;
+        // xterm：key press discards selection——粘贴同属写 PTY 的输入，弃选区
+        if (selActive || selecting) {
+            clearSelection();
+        }
         invalidate();
     }
 
@@ -761,13 +765,40 @@ public class TerminalView extends View {
 
     private void startSelectionAt(float x, float y) {
         int[] cell = cellAt(x, y);
-        selAnchorRow = selMoveRow = cell[0];
-        selAnchorCol = selMoveCol = cell[1];
+        if (selActive) {
+            // xterm extend-selection 语义：已有选区时长按 = 挪离触点最近的那个
+            // 端点（锚固定在较远端）。往选区外拖是扩，往里拖是缩——增减同一手势。
+            anchorAtEndpointFartherFrom(cell[0], cell[1]);
+        } else {
+            selAnchorRow = cell[0];
+            selAnchorCol = cell[1];
+        }
+        selMoveRow = cell[0];
+        selMoveCol = cell[1];
         selecting = true;
         selActive = false;
         selBarVisible = false;
         normalizeSelection();
         invalidate();
+    }
+
+    /** 把锚移到离触点更远的选区端点：全局行距为主，同行再比列。 */
+    private void anchorAtEndpointFartherFrom(int row, int col) {
+        long dStart = distanceTo(row, col, selStartRow, selStartCol);
+        long dEnd = distanceTo(row, col, selEndRow, selEndCol);
+        if (dStart >= dEnd) {
+            selAnchorRow = selStartRow;
+            selAnchorCol = selStartCol;
+        } else {
+            selAnchorRow = selEndRow;
+            selAnchorCol = selEndCol;
+        }
+    }
+
+    private static long distanceTo(int row, int col, int endRow, int endCol) {
+        long dr = Math.abs((long) row - endRow);
+        long dc = Math.abs((long) col - endCol);
+        return dr * 100000L + dc;
     }
 
     private void extendSelectionTo(float x, float y) {
@@ -1266,6 +1297,15 @@ public class TerminalView extends View {
                 longPressFired = false;
                 selTouchX = event.getX();
                 selTouchY = event.getY();
+                // 硬件键盘 Shift+按下 → 选区手势（xterm shift override 同款，
+                // 与鼠标上报模式的分支一致）：有选区挪最近端点（增减），没有
+                // 则从触点起一个新选区
+                if ((event.getMetaState() & KeyEvent.META_SHIFT_MASK) != 0 && !isDead()) {
+                    removeCallbacks(longPressRunnable);
+                    longPressFired = true;
+                    startSelectionAt(selTouchX, selTouchY);
+                    return true;
+                }
                 // 鼠标上报模式下长按归程序（程序优先），不转选区
                 longPressForSelect = !tracking && !isDead();
                 removeCallbacks(longPressRunnable);
