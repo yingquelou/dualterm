@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -1496,8 +1497,9 @@ public class MainActivity extends Activity
                 new String[]{"重启当前会话", "退出应用（结束会话）"},
                 new int[]{1, 17}));
         groups.add(new MenuGroup("屏幕内容",
-                new String[]{"复制全部输出", "复制当前屏", "粘贴", "清屏"},
-                new int[]{2, 18, 3, 4}));
+                new String[]{"复制全部输出", "复制当前屏", "粘贴", "清屏",
+                        "切换输入法…", "输入法设置…"},
+                new int[]{2, 18, 3, 4, 24, 25}));
         groups.add(new MenuGroup("容器",
                 new String[]{
                         "容器管理（" + Containers.items(this).size() + " 个容器 / "
@@ -1689,6 +1691,18 @@ public class MainActivity extends Activity
                     terminal.getSession().getEmulator().clearScreen();
                     terminal.invalidate();
                 }
+                return true;
+            case 24:
+                // 普通 app 无法静默切换输入法（setInputMethod 等是系统 API，
+                // Android 14+ 明确阻断非系统应用）；唯一合法路径 = 系统选择器，
+                // 由用户在弹窗里确认。终端场景实用：搜狗 ↔ 无联想输入法来回切。
+                ((android.view.inputmethod.InputMethodManager) getSystemService(
+                        Context.INPUT_METHOD_SERVICE)).showInputMethodPicker();
+                return true;
+            case 25:
+                // 跳系统「管理输入法」启用页——只有启用了 ≥2 个 IME，
+                // 选择器里才有东西可切。
+                startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS));
                 return true;
             case 5:
                 changeFontSize(1);

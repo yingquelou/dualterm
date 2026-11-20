@@ -185,9 +185,20 @@ Android 11/12 的系统差异（同一版搜狗在两台设备上行为不同）
 | `Ctrl+Shift+C` | 复制 | 有选区复制选区，无选区退化复制当前屏 |
 
 **输入方案切换的让路**（`shouldBypassIme`）：`Ctrl+空格` 与「只按修饰键」不在 PreIme
-抢，先给输入法——这是桌面输入法切换中英文的标准键位（Windows/macOS/Fcitx 的
-Ctrl+Space、搜狗 PC 键位的 Shift）。输入法不消费时落到 `onKeyDown`：`Ctrl+空格`
-照发 `0x00`（readline set-mark），修饰键被 `isModifierKey` 静默吃掉，终端语义不变。
+抢，先给输入法。输入法不消费时落到 `onKeyDown`：`Ctrl+空格` 照发 `0x00`
+（readline set-mark），修饰键被 `isModifierKey` 静默吃掉，终端语义不变。
+
+平台语义修正（2026-11 实测评估）：`Ctrl+空格` 在安卓上是「物理键盘**字符布局**切换」
+的系统快捷键（framework 层拦截，仅当该键盘配了 ≥2 个布局），切的是字符映射而非
+输入法的中英模式；搜狗等国产输入法实体键盘惯例是 Shift 单击。让路仍是对的
+（把钥匙交给 IME），但对「打中文」真正可用的键位由 IME 决定。
+
+**切换输入法的菜单入口**（屏幕内容组）：安卓不允许普通应用静默切换 IME——
+`setInputMethod`/`switchToNextInputMethod` 需要系统权限或 imeToken，Android 14+
+明确阻断非系统应用，hidden-API 反射也被运行时拦截；唯一合法路径是
+`showInputMethodPicker()`（系统弹窗，用户确认）。菜单「切换输入法…」调它，
+「输入法设置…」跳 `ACTION_INPUT_METHOD_SETTINGS`（选择器只列已启用的 IME）。
+注入 `KEYCODE_LANGUAGE_SWITCH` 也不可行（`injectInputEvent` 是系统 API）。
 
 **非英文输入的取舍**：
 
