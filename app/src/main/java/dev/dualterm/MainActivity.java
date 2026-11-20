@@ -1405,12 +1405,69 @@ public class MainActivity extends Activity
         if (hw != hardKeyboard) {
             hardKeyboard = hw;
             if (hw && uiReady) {
-                toast("已连接物理键盘：隐藏屏幕键条，Esc/Tab/方向键直接用键盘");
+                toast("已连接物理键盘：屏幕键条已收起，Esc/Tab/方向键直接用键盘");
             }
+        }
+        if (terminal != null) {
+            // 插拔外接键盘会改变「输入法要不要接管硬键盘字母」的判定
+            terminal.setImeTakeoverMode(takeoverMode());
+            terminal.setExternalKeyboard(hardKeyboard);
         }
         // 会话结束时键条本来就该让位给结束条，键盘插拔也不能把它顶回来
         updateChrome();
         updateStatus(null);
+    }
+
+    /** 菜单「外接键盘中文输入」的三态设置，默认自动。 */
+    private int takeoverMode() {
+        int mode = prefs.getInt("hw_ime", 0);
+        return mode == 1 || mode == 2 ? mode : 0;
+    }
+
+    private String takeoverLabel() {
+        switch (takeoverMode()) {
+            case 1:
+                return "始终交给输入法";
+            case 2:
+                return "从不（字母逐键直发）";
+            default:
+                return terminal != null && terminal.isImeTakeover()
+                        ? "自动：已接管" : "自动：未接管";
+        }
+    }
+
+    /**
+     * 外接键盘的中文输入策略。
+     *
+     * 「自动」跟输入法窗口的可见性走：系统「使用屏幕键盘」关着时候选栏不可见，
+     * 组词变成盲打，残留拼音会以错词或原始拼音漏进命令行（实测），所以那种情况下
+     * 保持字母直发。「始终」给候选画在自己窗口里的输入法、以及 API 30 以下用；
+     * 「从不」保留「硬键盘敲命令 + 软键盘点拼音」的混用通路。
+     */
+    private void showImeTakeoverDialog() {
+        final String[] labels = new String[]{
+                "自动（输入法界面可见时接管）",
+                "始终交给输入法（盲打风险自担）",
+                "从不（硬键盘字母逐键直发）",
+        };
+        int cur = takeoverMode();
+        new AlertDialog.Builder(this)
+                .setTitle("外接键盘中文输入")
+                .setMessage("外接键盘的字母交给输入法组词，还是在进应用前直接发给出终端。\n"
+                        + "选「自动」时还需要在系统「设置 → 语言与输入法 → 物理键盘」开启"
+                        + "「使用屏幕键盘」，让输入法界面显示出来，否则候选栏不可见、只能盲打。\n"
+                        + "「自动」下外接键盘双击 Shift 可在组词与字母直发之间切换。")
+                .setSingleChoiceItems(labels, cur, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        prefs.edit().putInt("hw_ime", which).apply();
+                        terminal.setImeTakeoverMode(which);
+                        dialog.dismiss();
+                        toast("外接键盘中文输入：" + takeoverLabel());
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private boolean detectHardKeyboard() {
@@ -1522,8 +1579,9 @@ public class MainActivity extends Activity
                         "辅助键盘：恢复默认键集",
                         "辅助键盘行数：" + maxRowsLabel(),
                         "终端字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp",
+                        "外接键盘中文输入：" + takeoverLabel(),
                 },
-                new int[]{7, 23, 13, 20, 21, 22}));
+                new int[]{7, 23, 13, 20, 21, 22, 26}));
         groups.add(new MenuGroup("帮助",
                 new String[]{"使用说明…", "关于"},
                 new int[]{19, 10}));
@@ -1725,6 +1783,9 @@ public class MainActivity extends Activity
                 return true;
             case 22:
                 showFontRangeDialog();
+                return true;
+            case 26:
+                showImeTakeoverDialog();
                 return true;
             case 8:
                 toggleRuntime();

@@ -131,6 +131,29 @@ public class TerminalView extends View {
     private boolean ctrlDown;
     private boolean altDown;
 
+    /** 外接全尺寸键盘（活动层探测后告知）——输入法接管硬键盘的前提。 */
+    private boolean externalKbd;
+    /** 接管中：硬键盘字母进输入法组词，回车等键在组词期间一并让路。 */
+    private boolean imeTakeover;
+    /** 输入法正在组词（composing 非空），由 InputConnection 的 composing 回调维护。 */
+    private boolean imeComposing;
+    /** 接管策略，见 {@link #setImeTakeoverMode}。 */
+    static final int TAKEOVER_AUTO = 0;
+    static final int TAKEOVER_ALWAYS = 1;
+    static final int TAKEOVER_NEVER = 2;
+    private int imeTakeoverMode = TAKEOVER_AUTO;
+
+    /** 双击 Shift 切中/英：两次 Shift 按下的最大间隔（毫秒）。 */
+    private static final long SHIFT_TOGGLE_MS = 500;
+    private long lastShiftDownMs;
+    /** 上次 Shift 之后没插过别的键——连打大写（A、B 各按一次 Shift）不算双击。 */
+    private boolean shiftChainClean;
+    /**
+     * 判定成双击的那一次 Shift 要整对（按下+松开）一起吞掉：只吞按下、把松开漏给输入法，
+     * 输入法会把它当成一次没有配对的点击自己切一遍中英，回来时就成了「nihao」直出。
+     */
+    private boolean swallowShiftUp;
+
     private FontSizeListener fontListener;
     private DeadInputListener deadListener;
     private long lastDeadNotice;
@@ -406,6 +429,105 @@ public class TerminalView extends View {
         hideIme();
     }
 
+    /** 活动层探测到外接全尺寸键盘插拔时调用。 */
+    public void setExternalKeyboard(boolean value) {
+        if (externalKbd == value) {
+            return;
+        }
+        externalKbd = value;
+        refreshTakeover();
+    }
+
+    /**
+     * 接管策略：
+     * <ul>
+     * <li>{@code AUTO}——自动，只在输入法界面真的可见时接管（默认）；</li>
+     * <li>{@code ALWAYS}——有外接键盘就交给输入法，用于输入法把候选画在自己的窗口里
+     * 或系统 API 低于 30 取不到 IME inset 的情形（盲打组词的风险由用户自担）；</li>
+     * <li>{@code NEVER}——硬键盘字母永远逐键直发 PTY，保留「硬键盘敲命令 +
+     * 软键盘点拼音」的混用通路。</li>
+     * </ul>
+     */
+    public void setImeTakeoverMode(int mode) {
+        if (imeTakeoverMode == mode) {
+            return;
+        }
+        imeTakeoverMode = mode;
+        refreshTakeover();
+    }
+
+    public int getImeTakeoverMode() {
+        return imeTakeoverMode;
+    }
+
+    /** 输入法此刻是否接管硬键盘（菜单提示与调试用）。 */
+    public boolean isImeTakeover() {
+        return imeTakeover;
+    }
+
+    /**
+     * 判定当前该不该把硬键盘交给输入法。
+     *
+     * 自动模式要求输入法窗口可见：候选栏不可见时组词是盲打——用户不知道自己挂着
+     * 拼音，之后它以错词或原始拼音漏进命令行（实测上条命令残留的 {@code ls} 会在
+     * 下次空格时以「老师」冒出来），比不组词更危险。系统「使用屏幕键盘」
+     * （{@code show_ime_with_hard_keyboard}）关着时输入法不出窗口，所以这个判定
+     * 等价于「用户明确要在外接键盘上用输入法」。API 30 以下没有 IME inset 可查，
+     * 自动模式退化成 NEVER（保持历史的直发行为）。
+     */
+    private boolean computeTakeover() {
+        if (!externalKbd || imeTakeoverMode == TAKEOVER_NEVER) {
+            return false;
+        }
+        if (imeTakeoverMode == TAKEOVER_ALWAYS) {
+            return true;
+        }
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            return false;
+        }
+        android.view.WindowInsets in = getRootWindowInsets();
+        return in != null && in.isVisible(android.view.WindowInsets.Type.ime());
+    }
+
+    /**
+     * 接管状态变了要让输入法重取 EditorInfo：它按创建会话时的 inputType 决定
+     * 硬键盘字母是自己组词还是回退给应用，不 restartInput 就永远停在旧语义上。
+     */
+    private void refreshTakeover() {
+        boolean next = computeTakeover();
+        if (next == imeTakeover) {
+            return;
+        }
+        imeTakeover = next;
+        imeComposing = false;
+        InputMethodManager imm = imm();
+        if (imm != null && hasFocus()) {
+            imm.restartInput(this);
+        }
+    }
+
+    /**
+     * 键盘侧的中/英切换（双击 Shift）。实测搜狗对硬键盘的 Shift、Ctrl+空格、
+     * Ctrl+Shift、Alt+Shift、Shift+空格全都不作中英切换，所以这个开关只能由本应用
+     * 来做；做法是开关输入法窗口——窗口可见就是自动模式的接管条件，于是切换不需要
+     * 另立状态，也不越过用户在菜单里定的策略（ALWAYS/NEVER 下本键不生效）。
+     *
+     * @return 是否消费了这次按键
+     */
+    private boolean toggleImeTakeover() {
+        if (!externalKbd || imeTakeoverMode != TAKEOVER_AUTO) {
+            return false;
+        }
+        if (imeTakeover) {
+            hideIme();
+            hint("英文：字母逐键直发");
+        } else {
+            showIme();
+            hint("中文：输入法接管键盘组词");
+        }
+        return true;
+    }
+
     private InputMethodManager imm() {
         return (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
     }
@@ -423,10 +545,17 @@ public class TerminalView extends View {
             return;
         }
         pendingImeShow = false;
-        imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT);
+        // 有外接键盘时 SHOW_IMPLICIT 会被判定为「用户没主动要键盘」而丢弃，
+        // 输入法界面出不来（实测搜狗只回 RESULT_NOT_SHOWN）；FORCED 才叫得动。
+        int flags = externalKbd ? InputMethodManager.SHOW_FORCED
+                : InputMethodManager.SHOW_IMPLICIT;
+        imm.showSoftInput(this, flags);
     }
 
     private void hideIme() {
+        // 输入法收起 = 组词到此为止；不清这个标志，抢键判定会一直让路，
+        // 表现为回车/ESC/方向键全体失灵。
+        imeComposing = false;
         InputMethodManager imm = imm();
         if (imm != null) {
             imm.hideSoftInputFromWindow(getWindowToken(), 0);
@@ -928,6 +1057,9 @@ public class TerminalView extends View {
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
         computeGrid(w, h);
+        // adjustResize 下输入法窗口的出现/消失就是本视图的高度变化，
+        // 借同一个时机复核接管判定（自动模式跟输入法可见性走）
+        refreshTakeover();
     }
 
     private void computeGrid(int width, int height) {
@@ -1532,10 +1664,17 @@ public class TerminalView extends View {
 
     @Override
     public InputConnection onCreateInputConnection(EditorInfo out) {
-        // TYPE_NULL 是安卓终端模拟器的标准做法（Termux 同款）：
-        // 告诉输入法「这里不是普通文本框」，压掉联想/自动纠错；
-        // 中文输入不受影响：拼音组词仍在输入法内部，选词上屏走 commitText。
-        out.inputType = InputType.TYPE_NULL;
+        // 两种形态：
+        // - 常规（含软键盘打中文）：TYPE_NULL，安卓终端模拟器的标准做法（Termux 同款），
+        //   告诉输入法「这里不是普通文本框」，压掉联想/自动纠错；中文输入不受影响——
+        //   拼音组词仍在输入法内部，选词上屏走 commitText。
+        // - 外接键盘 + 输入法界面可见（见 computeTakeover）：改成普通文本框语义，
+        //   输入法才会接管硬键盘字母组词；NO_SUGGESTIONS 尽量把联想压回去。
+        imeTakeover = computeTakeover();
+        imeComposing = false;
+        out.inputType = imeTakeover
+                ? InputType.TYPE_CLASS_TEXT
+                : InputType.TYPE_NULL;
         out.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
                 | EditorInfo.IME_FLAG_NO_FULLSCREEN;
         // fullEditor=true（Termux 同款）：composing 文本由 BaseInputConnection 默认实现
@@ -1543,20 +1682,36 @@ public class TerminalView extends View {
         // 之前 fullEditor=false + 吞掉 setComposingText/finishComposingText 是反例：
         // IME 的 composing 永远「落不了地」，表现为键入全程无响应、点选待选区也不消失。
         return new BaseInputConnection(this, true) {
+            /** 只记录「输入法正在组词」，文本落盘照旧交基类——抢键判定要用（见 shouldBypassIme）。 */
+            @Override
+            public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                imeComposing = text != null && text.length() > 0;
+                return super.setComposingText(text, newCursorPosition);
+            }
+
+            @Override
+            public boolean setComposingRegion(int start, int end) {
+                imeComposing = end > start;
+                return super.setComposingRegion(start, end);
+            }
+
             @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
+                imeComposing = false;
                 super.commitText(text, newCursorPosition);
                 if (session == null) {
                     return true;
                 }
-                // Editable 里此刻只有 IME 落下的内容（每次发送后清空），整体发给 PTY
-                sendCommitted(getEditable().toString());
+                // 只发输入法这次提交的内容：Editable 里可能还留着输入法挂着的
+                // composing 文本，整体发出会把拼音一起漏进命令行（实测「你好你好」）
+                sendCommitted(text == null ? null : text.toString());
                 getEditable().clear();
                 return true;
             }
 
             @Override
             public boolean finishComposingText() {
+                imeComposing = false;
                 super.finishComposingText();
                 if (session == null) {
                     return true;
@@ -1609,9 +1764,33 @@ public class TerminalView extends View {
      * 硬件键盘的关键一步。外接键盘（蓝牙/USB）的按键默认先交给输入法：中文输入法不认识的
      * 组合（比如 Ctrl+C）会把它吞掉或转成候选操作，根本到不了 onKeyDown。
      * 所以在 IME 之前把「终端语义键」抢下来。
+     *
+     * 双击 Shift 也在这层判：接管态下修饰键先过输入法，只有 PreIme 是两种模式下都一定
+     * 收得到的一次（{@link #toggleImeTakeover}）。
      */
     @Override
     public boolean onKeyPreIme(int keyCode, KeyEvent event) {
+        if (isShiftKey(keyCode)) {
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                if (swallowShiftUp) {
+                    swallowShiftUp = false;
+                    return true;
+                }
+            } else if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                boolean dbl = shiftChainClean
+                        && event.getEventTime() - lastShiftDownMs <= SHIFT_TOGGLE_MS;
+                lastShiftDownMs = event.getEventTime();
+                shiftChainClean = true;
+                if (dbl && toggleImeTakeover()) {
+                    lastShiftDownMs = 0;
+                    shiftChainClean = false;
+                    swallowShiftUp = true;
+                    return true;
+                }
+            }
+        } else if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            shiftChainClean = false;
+        }
         if (event.getAction() == KeyEvent.ACTION_DOWN && shouldBypassIme(event)) {
             if (handleKeyCode(event)) {
                 return true;
@@ -1637,7 +1816,19 @@ public class TerminalView extends View {
         if (event.isCtrlPressed() || event.isAltPressed()) {
             return true;
         }
+        // 接管态把「终端语义键」全数交给输入法：空闲时它用 sendKeyEvent 原样退回来
+        // （实测回车、空格、方向键都退得回来），挂着拼音时由它决定选词还是取消。
+        // 反过来抢在输入法前面发 CR 的旧做法实测会留下挂在输入法里的拼音——命令带着
+        // CR 执行了，下一行凭空冒出一个词。
+        if (imeTakeover) {
+            return false;
+        }
+        if (imeComposing) {
+            return false;
+        }
         switch (keyCode) {
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER:
             case KeyEvent.KEYCODE_ESCAPE:
             case KeyEvent.KEYCODE_TAB:
             case KeyEvent.KEYCODE_DPAD_UP:
@@ -1789,6 +1980,10 @@ public class TerminalView extends View {
         }
         sb.appendCodePoint(base);
         return sb.toString();
+    }
+
+    private static boolean isShiftKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_SHIFT_LEFT || keyCode == KeyEvent.KEYCODE_SHIFT_RIGHT;
     }
 
     private static boolean isModifierKey(int keyCode) {
