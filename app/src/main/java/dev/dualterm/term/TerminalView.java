@@ -580,9 +580,8 @@ public class TerminalView extends View {
     }
 
     /**
-     * 硬件键盘 Ctrl+Shift+C：复制当前屏（不含 scrollback）。
-     * 全部输出动辄几万行，真要复制某一屏时那个入口用不上；选区的完整支持
-     * （手柄 + 高亮 + 自动滚动）还没有，当前屏是最实用的粒度。
+     * 硬件键盘 Ctrl+Shift+C 无选区时的退化目标：复制当前屏（不含 scrollback）。
+     * 有选区时走 copySelection()，与 GNOME Terminal 语义一致。
      */
     private void copyScreenToClipboard() {
         if (session == null) {
@@ -604,6 +603,16 @@ public class TerminalView extends View {
 
     private void hint(String message) {
         android.widget.Toast.makeText(getContext(), message, android.widget.Toast.LENGTH_SHORT).show();
+    }
+
+    /** 视口整体平移 delta 行（负 = 看更早的内容），夹在 scrollback 范围内。 */
+    private void scrollbackByLines(int delta) {
+        if (session == null) {
+            return;
+        }
+        int max = session.getEmulator().getScrollbackCount();
+        scrollOffset = Math.max(0, Math.min(max, scrollOffset + delta));
+        invalidate();
     }
 
     /**
@@ -1572,10 +1581,23 @@ public class TerminalView extends View {
     }
 
     private boolean shouldBypassIme(KeyEvent event) {
+        int keyCode = event.getKeyCode();
+        // 输入方案切换键让输入法先手：
+        // - Ctrl+空格：Windows/macOS/Linux 都通的输入法切换桌面标准，中文用户靠它
+        //   在中/英文之间切；被 PreIme 抢走就永远切不了。
+        // - 只按修饰键（含 Alt+Shift 组合）：部分输入法（搜狗 PC 键位等）用修饰键
+        //   单独或组合切换中英文。
+        // 两类都不在 PreIme 抢——输入法不消费时落到 onKeyDown：Ctrl+空格照样发
+        // 0x00（readline set-mark），修饰键被 isModifierKey 静默吃掉，语义不变。
+        if (isModifierKey(keyCode)
+                || (event.isCtrlPressed() && !event.isAltPressed() && !event.isShiftPressed()
+                && keyCode == KeyEvent.KEYCODE_SPACE)) {
+            return false;
+        }
         if (event.isCtrlPressed() || event.isAltPressed()) {
             return true;
         }
-        switch (event.getKeyCode()) {
+        switch (keyCode) {
             case KeyEvent.KEYCODE_ESCAPE:
             case KeyEvent.KEYCODE_TAB:
             case KeyEvent.KEYCODE_DPAD_UP:
@@ -1638,7 +1660,35 @@ public class TerminalView extends View {
             return true;
         }
         if (ctrl && shift && keyCode == KeyEvent.KEYCODE_C) {
-            copyScreenToClipboard();
+            // 有选区复制选区（GNOME Terminal 语义），没有则退化为复制当前屏
+            if (selActive && !selectionEmpty()) {
+                copySelection();
+            } else {
+                copyScreenToClipboard();
+            }
+            return true;
+        }
+        // Ctrl+Shift+A 全选：GNOME Terminal 的标准键位，与浮动条「全选」同一入口。
+        // xterm 里 Ctrl+Shift+A 与 Ctrl+A 同为 0x01，终端没有任何程序依赖它的输入语义。
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_A) {
+            selectAllSelection();
+            return true;
+        }
+        // Shift+PgUp/PgDn 本地滚动一页：xterm 默认 translation（Shift <Prior> =
+        // scroll-back(1,page)）、GNOME Terminal / Windows Terminal 同款。滚动是终端
+        // 自己的视口操作，不发给程序；带 Ctrl/Alt 时仍按修饰序列发出去（CSI 5;<m>~），
+        // 那才是程序在等的东西。
+        if (shift && !ctrl && !alt
+                && (keyCode == KeyEvent.KEYCODE_PAGE_UP
+                || keyCode == KeyEvent.KEYCODE_PAGE_DOWN)) {
+            // scrollOffset 增大 = 看更早的内容（与触摸下滑、滚轮上滚同向）
+            scrollbackByLines(keyCode == KeyEvent.KEYCODE_PAGE_UP ? gridRows : -gridRows);
+            return true;
+        }
+        // Shift+Insert 粘贴：xterm 默认 translation（Shift <Insert> = insert-selection），
+        // 与 Ctrl+Shift+V 等价。Alt/Ctrl+Ins 仍发修饰序列（CSI 2;<m>~）。
+        if (shift && !ctrl && !alt && keyCode == KeyEvent.KEYCODE_INSERT) {
+            pasteFromClipboard();
             return true;
         }
 

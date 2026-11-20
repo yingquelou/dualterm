@@ -170,6 +170,32 @@ Android 11/12 的系统差异（同一版搜狗在两台设备上行为不同）
 | `Insert` / `Delete` | `ESC[2~` / `ESC[3~` | |
 | `Ctrl+Backspace` | `0x08` | 普通退格是 `0x7F` |
 
+新补的键位与让路（2026-11）：
+
+| 按键 | 发出/行为 | 备注 |
+|---|---|---|
+| `Shift+PgUp` / `Shift+PgDn` | 本地滚动一页 | xterm 默认 translation（Shift `<Prior>` = scroll-back(1,page)）。`scrollOffset` 增 = 看更早，与触摸下滑/滚轮上滚同向。带 Ctrl/Alt 仍发 `CSI 5;<m>~` |
+| `Shift+Insert` | 粘贴 | xterm insert-selection；走 `pasteText`（bracketed + 多行确认） |
+| `Ctrl+Shift+A` | 全选 | GNOME Terminal 键位，复用浮动条「全选」入口 |
+| `Ctrl+Shift+C` | 复制 | 有选区复制选区，无选区退化复制当前屏 |
+
+**输入方案切换的让路**（`shouldBypassIme`）：`Ctrl+空格` 与「只按修饰键」不在 PreIme
+抢，先给输入法——这是桌面输入法切换中英文的标准键位（Windows/macOS/Fcitx 的
+Ctrl+Space、搜狗 PC 键位的 Shift）。输入法不消费时落到 `onKeyDown`：`Ctrl+空格`
+照发 `0x00`（readline set-mark），修饰键被 `isModifierKey` 静默吃掉，终端语义不变。
+
+**非英文输入的取舍**：
+
+- 中文组词走 IME 通路：字母键不经 PreIme，输入法组词后 `commitText` →
+  `sendCommitted`（`\n`→`\r`）→ PTY，与软键盘同一条路径，应用侧无需适配；
+  其它语言布局（俄文、假名等）同理。
+- 不做：NumLock 关闭的小键盘导航（Android 无此语义转换，模拟收益低）、
+  Meta→ESC（系统消费严重、上报不可靠，Meta 语义由 Alt 承担）、F13–F24 /
+  Scroll Lock / Pause / SysRq（无标准 keycode 或无消费者）、键盘 Shift+方向
+  选区（roadmap 已定不做）。
+- 调试钩子：`--es keytest "ctrl+shift+a"` 经 `dispatchKeyEvent` 走与真实按键
+  同一条路径，onNewIntent 热交付同样生效，无实体键盘也能回归键位映射。
+
 ## 全屏程序依赖的能力
 
 vim 一类全屏程序需要下列终端能力，均已实现：

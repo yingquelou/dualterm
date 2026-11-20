@@ -431,6 +431,9 @@ public class MainActivity extends Activity
             if (intent != null && intent.getBooleanExtra("console", false)) {
                 maybeOpenConsole(intent);
             }
+            // 调试钩子（keytest）在热交付时也要生效：singleTask 下 am start 落到
+            // onNewIntent，不加这行只能冷启动触发
+            maybeKeyTest(intent);
             return;
         }
         pendingCommand = intent.getStringExtra("cmd");
