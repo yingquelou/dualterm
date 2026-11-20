@@ -202,9 +202,17 @@ Android 11/12 的系统差异（同一版搜狗在两台设备上行为不同）
 
 **非英文输入的取舍**：
 
-- 中文组词走 IME 通路：字母键不经 PreIme，输入法组词后 `commitText` →
-  `sendCommitted`（`\n`→`\r`）→ PTY，与软键盘同一条路径，应用侧无需适配；
-  其它语言布局（俄文、假名等）同理。
+- 中文组词走 IME 通路：软键盘触摸输入时字母键不经 PreIme，输入法组词后
+  `commitText` → `sendCommitted`（`\n`→`\r`）→ PTY，与软键盘同一条路径，
+  实机逐字节验证通过（`out#6: 你`）。
+- **外接硬件键盘的中文输入（2026-11-20 实测，与早期假设相反）**：硬键盘
+  字母 KeyEvent 直发 PTY（`shouldBypassIme` 对字母返回 false，IME 有先手但
+  不接管），搜狗小米版不组词——即使强制软键盘视图显示、即使切 Shift 中英态
+  依旧；决定性对照：系统设置搜索框（普通 EditText，非 TYPE_NULL）用同样的
+  硬键盘 keyevent 敲 `nihao` 也是直出字母、不组词。结论：**这是输入法对硬件
+  键盘字母的固有行为，与应用 EditorInfo 无关，应用侧无法适配**。文档不再
+  声称「外接键盘字母交给输入法组词」。可行方案：用户改用软键盘触摸输入、
+  输入法自带的硬键盘方案或剪贴板粘贴。
 - 不做：NumLock 关闭的小键盘导航（Android 无此语义转换，模拟收益低）、
   Meta→ESC（系统消费严重、上报不可靠，Meta 语义由 Alt 承担）、F13–F24 /
   Scroll Lock / Pause / SysRq（无标准 keycode 或无消费者）、键盘 Shift+方向

@@ -11,6 +11,7 @@ captures/
 # ---- 本机配置 ----
 local.properties
 .idea/
+.workbuddy/
 *.iml
 .DS_Store
 Thumbs.db
@@ -20,9 +21,12 @@ Thumbs.db
 *.bak
 *.orig
 *.rej
+.shot/
+
 
 # ---- 运行时二进制：由 scripts/fetch-runtime.ps1 生成，不入库 ----
 # （rootfs 打包 4MB、proot 一组 .so，按 ABI 生成，跟着版本走会让仓库迅速膨胀）
 app/src/main/assets/runtime/rootfs-*.pack
 app/src/main/jniLibs/
 SHA256SUMS
+.toolchain/
