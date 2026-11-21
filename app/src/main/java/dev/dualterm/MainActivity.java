@@ -1451,12 +1451,12 @@ public class MainActivity extends Activity
                 "从不（硬键盘字母逐键直发）",
         };
         int cur = takeoverMode();
+        // 说明文字不放 setMessage：实测（M2010J19SC，MIUI）它与 setSingleChoiceItems
+        // 共存时单选列表被压成 0 高（uiautomator 证实 message 与按钮间只剩 ~11px，
+        // 缩短 message 也复现），列表整个看不见、无法选档。取舍语义就写在选项文字里；
+        // 详细代价与判定条件在 usage.md / limitations.md。
         new AlertDialog.Builder(this)
                 .setTitle("外接键盘中文输入")
-                .setMessage("外接键盘的字母交给输入法组词，还是在进应用前直接发给出终端。\n"
-                        + "选「自动」时还需要在系统「设置 → 语言与输入法 → 物理键盘」开启"
-                        + "「使用屏幕键盘」，让输入法界面显示出来，否则候选栏不可见、只能盲打。\n"
-                        + "「自动」下外接键盘双击 Shift 可在组词与字母直发之间切换。")
                 .setSingleChoiceItems(labels, cur, new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
