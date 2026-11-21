@@ -1,32 +1,48 @@
-# ---- 构建产物 ----
-.gradle/
-build/
-captures/
-.externalNativeBuild/
-.cxx/
-*.apk
-*.aab
-*.hprof
+# Ignore by default
+.*
 
-# ---- 本机配置 ----
+# Gradle files
+build/
+
+# Local configuration file (sdk path, etc)
 local.properties
-.idea/
-.workbuddy/
-*.iml
 .DS_Store
 Thumbs.db
 
-# ---- 日志与临时文件 ----
+# Log/OS/temp Files
 *.log
 *.bak
 *.orig
 *.rej
-.shot/
 
+# Android Studio generated files and folders
+captures/
+*.aab
+*.apk
+output-metadata.json
+
+# IDE/toolchain
+*.iml
+misc.xml
+deploymentTargetDropDown.xml
+render.experimental.xml
+app/bin/
+
+# Keystore files
+*.jks
+*.keystore
+
+# Google Services (e.g. APIs or Fire`ba`se)
+google-services.json
+
+# Android Profiling
+*.hprof
 
 # ---- 运行时二进制：由 scripts/fetch-runtime.ps1 生成，不入库 ----
 # （rootfs 打包 4MB、proot 一组 .so，按 ABI 生成，跟着版本走会让仓库迅速膨胀）
 app/src/main/assets/runtime/rootfs-*.pack
 app/src/main/jniLibs/
+
+# github
 SHA256SUMS
-.toolchain/
+!.github/
