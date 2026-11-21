@@ -1554,9 +1554,14 @@ public class MainActivity extends Activity
                 new String[]{"重启当前会话", "退出应用（结束会话）"},
                 new int[]{1, 17}));
         groups.add(new MenuGroup("屏幕内容",
-                new String[]{"复制全部输出", "复制当前屏", "粘贴", "清屏",
-                        "切换输入法…", "输入法设置…"},
-                new int[]{2, 18, 3, 4, 24, 25}));
+                new String[]{"复制全部输出", "复制当前屏", "粘贴", "清屏"},
+                new int[]{2, 18, 3, 4}));
+        groups.add(new MenuGroup("键盘与输入法",
+                new String[]{"切换输入法…", "输入法设置…",
+                        "外接键盘中文输入：" + takeoverLabel(),
+                        "辅助键盘：恢复默认键集",
+                        "辅助键盘行数：" + maxRowsLabel()},
+                new int[]{24, 25, 26, 20, 21}));
         groups.add(new MenuGroup("容器",
                 new String[]{
                         "容器管理（" + Containers.items(this).size() + " 个容器 / "
@@ -1569,19 +1574,16 @@ public class MainActivity extends Activity
                 },
                 new int[]{14, 16, 15, 9, 12, 8}));
         groups.add(new MenuGroup("外观",
-                new String[]{fullscreen ? "退出全屏" : "全屏模式", "字号 +", "字号 -"},
-                new int[]{11, 5, 6}));
+                new String[]{fullscreen ? "退出全屏" : "全屏模式", "字号 +", "字号 -",
+                        "终端字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp"},
+                new int[]{11, 5, 6, 22}));
         groups.add(new MenuGroup("设置",
                 new String[]{
                         prefs.getBoolean("root", false) ? "Root Shell：开" : "Root Shell：关",
                         prefs.getBoolean("osc52", false) ? "程序写剪贴板：开" : "程序写剪贴板：关",
                         "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"),
-                        "辅助键盘：恢复默认键集",
-                        "辅助键盘行数：" + maxRowsLabel(),
-                        "终端字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp",
-                        "外接键盘中文输入：" + takeoverLabel(),
                 },
-                new int[]{7, 23, 13, 20, 21, 22, 26}));
+                new int[]{7, 23, 13}));
         groups.add(new MenuGroup("帮助",
                 new String[]{"使用说明…", "关于"},
                 new int[]{19, 10}));
@@ -1590,7 +1592,10 @@ public class MainActivity extends Activity
 
     /**
      * 菜单入口。横屏只有约 360dp 高，早年平铺的 19 项会超出屏幕，后半段
-     * （存储权限、帮助、关于、退出应用）既看不见也点不到。按职责收成 6 组。
+     * （存储权限、帮助、关于、退出应用）既看不见也点不到。按职责收成 7 组；
+     * 键盘/输入法五项曾分散在「屏幕内容」（切换输入法）与「设置」（外接键盘、
+     * 辅助键盘），同类跨两处不好找，收进独立的「键盘与输入法」组；
+     * 「终端字号范围」与外观组的字号 ± 同类，挪过去相邻。
      *
      * 用自绘面板而不是 PopupMenu：PopupMenu 的二级子菜单是级联窗口，顶部那行
      * 绿色组名只是标题摆设——点不动、也没法回到上一层。自绘后层级在同一窗口
