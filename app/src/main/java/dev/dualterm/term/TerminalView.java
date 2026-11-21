@@ -1801,16 +1801,8 @@ public class TerminalView extends View {
 
     private boolean shouldBypassIme(KeyEvent event) {
         int keyCode = event.getKeyCode();
-        // 输入方案切换键让输入法先手：
-        // - Ctrl+空格：Windows/macOS/Linux 都通的输入法切换桌面标准，中文用户靠它
-        //   在中/英文之间切；被 PreIme 抢走就永远切不了。
-        // - 只按修饰键（含 Alt+Shift 组合）：部分输入法（搜狗 PC 键位等）用修饰键
-        //   单独或组合切换中英文。
-        // 两类都不在 PreIme 抢——输入法不消费时落到 onKeyDown：Ctrl+空格照样发
-        // 0x00（readline set-mark），修饰键被 isModifierKey 静默吃掉，语义不变。
-        if (isModifierKey(keyCode)
-                || (event.isCtrlPressed() && !event.isAltPressed() && !event.isShiftPressed()
-                && keyCode == KeyEvent.KEYCODE_SPACE)) {
+        if (letsImeGoFirst(keyCode, event.isCtrlPressed(), event.isAltPressed(),
+                event.isShiftPressed())) {
             return false;
         }
         if (event.isCtrlPressed() || event.isAltPressed()) {
@@ -1826,6 +1818,32 @@ public class TerminalView extends View {
         if (imeComposing) {
             return false;
         }
+        return isTerminalSemanticKey(keyCode);
+    }
+
+    /**
+     * 输入方案切换键让输入法先手（纯函数，KbdTest 覆盖；KeyEvent 常量编译期内联，
+     * 桌面运行不需要 android 运行时）：
+     * <ul>
+     * <li>只按修饰键（含 Alt+Shift 组合）：部分输入法（搜狗 PC 键位等）用修饰键
+     * 单独或组合切换中英文；</li>
+     * <li>Ctrl+空格：Windows/macOS/Linux 都通的输入法切换桌面标准，中文用户靠它
+     * 在中/英文之间切；被 PreIme 抢走就永远切不了。</li>
+     * </ul>
+     * 两类都不在 PreIme 抢——输入法不消费时落到 onKeyDown：Ctrl+空格照样发
+     * 0x00（readline set-mark），修饰键被 {@link #isModifierKey} 静默吃掉，语义不变。
+     */
+    public static boolean letsImeGoFirst(int keyCode, boolean ctrl, boolean alt, boolean shift) {
+        return isModifierKey(keyCode)
+                || (ctrl && !alt && !shift && keyCode == KeyEvent.KEYCODE_SPACE);
+    }
+
+    /**
+     * 终端语义键表（纯函数，KbdTest 覆盖）：非接管态下由 PreIme 抢下来直接进 PTY
+     * 的键。字母、空格、退格不在表内——退格靠 IME 退回后的 onKeyDown 路径，
+     * 字母按当前输入方案处理。
+     */
+    public static boolean isTerminalSemanticKey(int keyCode) {
         switch (keyCode) {
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:

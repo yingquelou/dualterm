@@ -1,3 +1,4 @@
+import dev.dualterm.term.TerminalView;
 import dev.dualterm.ui.KbdLayout;
 import dev.dualterm.ui.StepMode;
 
@@ -9,7 +10,8 @@ import dev.dualterm.ui.StepMode;
  * 隐藏输入框上导致对话框卡死」就在 validate 分派上，此处逐模式锁定。
  *
  * SoftKeyboard 本体依赖 Context/View/Handler，留真机验证（与 RegistryTest
- * 同一限制）；本类只测枚举常量上的纯函数。
+ * 同一限制）；本类只测枚举常量上的纯函数。PreIme 抢键判定同样抽成纯函数
+ * （TerminalView.letsImeGoFirst / isTerminalSemanticKey）后在此覆盖。
  */
 public class KbdTest {
 
@@ -25,6 +27,7 @@ public class KbdTest {
         retCases();
         delayCases();
         rowsCases();
+        bypassCases();
 
         System.out.println();
         System.out.println("PASS " + pass + "  FAIL " + fail);
@@ -217,5 +220,73 @@ public class KbdTest {
         eq(KbdLayout.visibleCustomRows(4, 4), 4, "恰好等于上限：不滚");
         eq(KbdLayout.visibleCustomRows(2, 4), 2, "未到上限：取实际行数");
         eq(KbdLayout.visibleCustomRows(0, 4), 0, "无键：0 行");
+    }
+
+    // ---- PreIme 抢键判定纯函数（TerminalView，外接键盘输入法接管链路） ----
+
+    static void bypassCases() {
+        // 输入方案切换键让路：修饰键与 Ctrl+空格交输入法先手
+        ok(TerminalView.letsImeGoFirst(android.view.KeyEvent.KEYCODE_SHIFT_LEFT,
+                false, false, false), "让路：Shift 单按（修饰键）");
+        ok(TerminalView.letsImeGoFirst(android.view.KeyEvent.KEYCODE_CTRL_LEFT,
+                true, false, false), "让路：Ctrl 单按");
+        ok(TerminalView.letsImeGoFirst(android.view.KeyEvent.KEYCODE_ALT_LEFT,
+                false, true, false), "让路：Alt 单按");
+        ok(TerminalView.letsImeGoFirst(android.view.KeyEvent.KEYCODE_CAPS_LOCK,
+                false, false, false), "让路：CapsLock（修饰键）");
+        ok(TerminalView.letsImeGoFirst(android.view.KeyEvent.KEYCODE_SPACE,
+                true, false, false), "让路：Ctrl+空格（输入方案切换桌面标准）");
+        ok(!TerminalView.letsImeGoFirst(android.view.KeyEvent.KEYCODE_SPACE,
+                true, true, false), "不让路：Ctrl+Alt+空格（走 Ctrl/Alt 抢键）");
+        ok(!TerminalView.letsImeGoFirst(android.view.KeyEvent.KEYCODE_SPACE,
+                true, false, true), "不让路：Ctrl+Shift+空格");
+        ok(!TerminalView.letsImeGoFirst(android.view.KeyEvent.KEYCODE_A,
+                false, false, false), "不让路：普通字母");
+        ok(!TerminalView.letsImeGoFirst(android.view.KeyEvent.KEYCODE_ENTER,
+                false, false, false), "不让路：回车（按接管态/语义键分支处理）");
+
+        // 终端语义键表：非接管态由 PreIme 抢下来直接进 PTY
+        int[] semantic = {
+                android.view.KeyEvent.KEYCODE_ENTER,
+                android.view.KeyEvent.KEYCODE_NUMPAD_ENTER,
+                android.view.KeyEvent.KEYCODE_ESCAPE,
+                android.view.KeyEvent.KEYCODE_TAB,
+                android.view.KeyEvent.KEYCODE_DPAD_UP,
+                android.view.KeyEvent.KEYCODE_DPAD_DOWN,
+                android.view.KeyEvent.KEYCODE_DPAD_LEFT,
+                android.view.KeyEvent.KEYCODE_DPAD_RIGHT,
+                android.view.KeyEvent.KEYCODE_MOVE_HOME,
+                android.view.KeyEvent.KEYCODE_MOVE_END,
+                android.view.KeyEvent.KEYCODE_PAGE_UP,
+                android.view.KeyEvent.KEYCODE_PAGE_DOWN,
+                android.view.KeyEvent.KEYCODE_INSERT,
+                android.view.KeyEvent.KEYCODE_FORWARD_DEL,
+                android.view.KeyEvent.KEYCODE_F1,
+                android.view.KeyEvent.KEYCODE_F2,
+                android.view.KeyEvent.KEYCODE_F3,
+                android.view.KeyEvent.KEYCODE_F4,
+                android.view.KeyEvent.KEYCODE_F5,
+                android.view.KeyEvent.KEYCODE_F6,
+                android.view.KeyEvent.KEYCODE_F7,
+                android.view.KeyEvent.KEYCODE_F8,
+                android.view.KeyEvent.KEYCODE_F9,
+                android.view.KeyEvent.KEYCODE_F10,
+                android.view.KeyEvent.KEYCODE_F11,
+                android.view.KeyEvent.KEYCODE_F12,
+        };
+        for (int kc : semantic) {
+            ok(TerminalView.isTerminalSemanticKey(kc), "语义键命中：keycode=" + kc);
+        }
+        // 字母/空格走输入方案，退格靠 IME 退回后的 onKeyDown，修饰键在 handleKeyCode 吃掉
+        int[] nonSemantic = {
+                android.view.KeyEvent.KEYCODE_A,
+                android.view.KeyEvent.KEYCODE_SPACE,
+                android.view.KeyEvent.KEYCODE_DEL,
+                android.view.KeyEvent.KEYCODE_SHIFT_LEFT,
+                android.view.KeyEvent.KEYCODE_BACK,
+        };
+        for (int kc : nonSemantic) {
+            ok(!TerminalView.isTerminalSemanticKey(kc), "非语义键：keycode=" + kc);
+        }
     }
 }
