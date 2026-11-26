@@ -24,9 +24,20 @@ public final class TermSession {
 
     private final LaunchSpec spec;
     private final TerminalEmulator emulator;
-    private final Listener listener;
+    /** 可换：Activity 重建后由新实例接管旧会话，回调不能继续指向已销毁的界面。 */
+    private volatile Listener listener;
 
     private final byte[] buffer = new byte[8192];
+
+    /**
+     * 界面不可见时给读线程加节流（每块输出小睡一次）。
+     *
+     * 为什么需要：解析本身是 CPU 密集的，实测持续输出时整个进程吃满 1.4~1.6 个核，
+     * 且后台没有绘制来天然限速。小睡让 PTY 缓冲反压住子进程，把后台 CPU 压到可接受
+     * 的量级；代价是后台的重输出任务变慢——这正是「屏幕关着还为刷屏烧电」该有的取舍。
+     */
+    private volatile boolean throttled;
+    private static final int THROTTLE_SLEEP_MS = 12;
 
     /**
      * 终端应答（CPR/DA/颜色查询）先攒在这里，等 append() 退出、离开仿真器的锁之后再写回 PTY。
@@ -71,6 +82,22 @@ public final class TermSession {
 
     public LaunchSpec getSpec() {
         return spec;
+    }
+
+    /** Activity 重建时换用新的监听者；旧监听者的回调从这里起不再投递。 */
+    public void setListener(Listener value) {
+        this.listener = value;
+    }
+
+    /**
+     * 界面可见性 → 读线程节流。只在 UI 线程调用，读线程只读这个 volatile 标志。
+     */
+    public void setThrottled(boolean value) {
+        throttled = value;
+    }
+
+    public boolean isThrottled() {
+        return throttled;
     }
 
     public TerminalEmulator getEmulator() {
@@ -139,7 +166,13 @@ public final class TermSession {
                     }
                     android.util.Log.i("DualTerm", "out#" + loggedChunks + ": " + text.trim());
                 }
-                listener.onOutput(this);
+                Listener l = listener;
+                if (l != null) {
+                    l.onOutput(this);
+                }
+                if (throttled) {
+                    pause(THROTTLE_SLEEP_MS);
+                }
             }
         } finally {
             running = false;
@@ -148,6 +181,15 @@ public final class TermSession {
             if (f >= 0) {
                 NativePty.close(f);
             }
+        }
+    }
+
+    /** 节流小睡；被中断就当作停会话的信号，直接结束读循环。 */
+    private void pause(int millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
         }
     }
 

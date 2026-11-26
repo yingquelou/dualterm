@@ -39,18 +39,52 @@ public final class SessionService extends Service {
 
     private PowerManager.WakeLock wakeLock;
 
+    /**
+     * 上次同步的会话数（-1 = 服务没在跑）。只在主线程访问。
+     *
+     * 只在数量变化时才启动服务：重启会话会先摘旧 tab 再起新会话，count 会走
+     * 1 → 0 → 1 的瞬时序列；逐次照办就是 stopService/startForegroundService
+     * 来回抖，通知和唤醒锁跟着成对 REL/ACQ。所以「收摊」延后一拍，
+     * 期间只要有新会话就撤销。
+     */
+    private static int syncedCount = -1;
+    private static Context appContext;
+    private static boolean pendingStop;
+    private static final android.os.Handler MAIN =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private static final Runnable STOP_TASK = new Runnable() {
+        @Override
+        public void run() {
+            if (!pendingStop || appContext == null) {
+                return;
+            }
+            pendingStop = false;
+            syncedCount = -1;
+            appContext.stopService(new Intent(appContext, SessionService.class));
+        }
+    };
+
     /** 会话数变化时调一次：count <= 0 表示收摊。 */
     public static void sync(Context ctx, int count) {
         if (ctx == null) {
             return;
         }
+        appContext = ctx.getApplicationContext();
         if (count <= 0) {
-            ctx.stopService(new Intent(ctx, SessionService.class));
+            pendingStop = true;
+            MAIN.removeCallbacks(STOP_TASK);
+            MAIN.postDelayed(STOP_TASK, 800);
             return;
         }
-        Intent i = new Intent(ctx, SessionService.class);
+        pendingStop = false;
+        MAIN.removeCallbacks(STOP_TASK);
+        if (count == syncedCount) {
+            return;
+        }
+        syncedCount = count;
+        Intent i = new Intent(appContext, SessionService.class);
         i.putExtra(EXTRA_COUNT, count);
-        ctx.startForegroundService(i);
+        appContext.startForegroundService(i);
     }
 
     @Override
@@ -88,6 +122,8 @@ public final class SessionService extends Service {
             wakeLock.release();
         }
         wakeLock = null;
+        syncedCount = -1;
+        pendingStop = false;
         stopForeground(true);
         super.onDestroy();
     }

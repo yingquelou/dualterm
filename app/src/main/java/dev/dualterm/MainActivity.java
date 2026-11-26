@@ -133,6 +133,11 @@ public class MainActivity extends Activity
         final TermSession session;
         final String mode;       // MODE_LOCAL / MODE_CONTAINER
         final String container;  // 仅容器模式有意义
+        /**
+         * 阅读位置（视口顶部对应的全局行号，-1 = 未记录）。
+         * 会话是进程级资产，视口不能只活在 View 里：Activity 重建、切 tab 都要回到原段落。
+         */
+        int viewportAnchor = -1;
 
         Tab(TermSession session, String mode, String container) {
             this.session = session;
@@ -141,10 +146,17 @@ public class MainActivity extends Activity
         }
     }
 
-    /** tabId(=根进程 pid) → Tab。LinkedHashMap 保持创建顺序，会话列表按此排序。 */
-    private final java.util.LinkedHashMap<String, Tab> tabs = new java.util.LinkedHashMap<>();
+    /**
+     * tabId(=根进程 pid) → Tab。LinkedHashMap 保持创建顺序，会话列表按此排序。
+     *
+     * 进程级（static）：Activity 可能被系统销毁而进程还活着（改系统字体/语言、
+     * 开发者选项「不保留活动」、内存回收），会话此时仍在跑。表放在类上，下一个
+     * Activity 实例才能把旧 PTY 接管回来，否则它们就成了看不见也停不掉的孤儿。
+     * 只在主线程访问。
+     */
+    private static final java.util.LinkedHashMap<String, Tab> tabs = new java.util.LinkedHashMap<>();
     /** 当前贴在界面上的 tab id；null 表示没有激活的 tab（比如刚退出）。 */
-    private String activeTabId;
+    private static String activeTabId;
     /** 顶栏 chip 的「当前模式」：从激活 tab 派生；无激活 tab 时保持上次值。 */
     private String mode = MODE_LOCAL;
     /** 最近激活 tab 的身份。tab 退出后被「重启」按钮用来重建同类会话——
@@ -156,6 +168,11 @@ public class MainActivity extends Activity
     private String pendingCommand;
     /** 本轮启动是否已经做过一次「坏容器 → 换一个」的兜底，防止连环跳。 */
     private boolean fallbackTried;
+    /**
+     * 界面是否可见（onStart ~ onStop）。后台时关掉重绘、给会话读线程加节流：
+     * 持续刷屏的程序在屏幕关着时不该继续吃满 CPU 和电池。
+     */
+    private boolean activityVisible;
 
     private View topBar;
     private boolean fullscreen;
@@ -285,7 +302,12 @@ public class MainActivity extends Activity
             }
         }
         refreshInputMode();
-        switchMode(MODE_CONTAINER.equals(saved) ? MODE_CONTAINER : MODE_LOCAL, false);
+        adoptSessions();
+        if (forced != null) {
+            switchMode(MODE_CONTAINER.equals(forced) ? MODE_CONTAINER : MODE_LOCAL, false);
+        } else if (terminal.getSession() == null) {
+            switchMode(MODE_CONTAINER.equals(saved) ? MODE_CONTAINER : MODE_LOCAL, false);
+        }
         maybeOpenConsole(it);
         // 诊断用：--ei chunklog N 让会话把前 N 个输出块打进日志（默认 3），
         // 用来抓 vim 滚屏等场景下程序到底发了什么转义序列
@@ -643,6 +665,8 @@ public class MainActivity extends Activity
         int rows = Math.max(3, terminal.getGridRows());
         int cols = Math.max(20, terminal.getGridCols());
         TermSession session = new TermSession(spec, rows, cols, 3000, this);
+        // 后台起的会话（通知点回来之前/重建后）一开始就按节流跑
+        session.setThrottled(!activityVisible);
         try {
             session.start();
         } catch (Throwable t) {
@@ -728,6 +752,47 @@ public class MainActivity extends Activity
         Containers.setRunning(containerName, false);
     }
 
+    /**
+     * 接管进程里还活着的会话（Activity 被销毁过、进程没死的情形）。
+     * 没接管这一步，旧 PTY 会继续跑但界面上再也看不到、也停不掉。
+     */
+    private void adoptSessions() {
+        if (tabs.isEmpty()) {
+            return;
+        }
+        for (Tab t : tabs.values()) {
+            t.session.setListener(this);
+            t.session.setThrottled(!activityVisible);
+        }
+        Tab target = activeTabId == null ? null : tabs.get(activeTabId);
+        if (target == null) {
+            for (Tab t : tabs.values()) {
+                if (t.session.isRunning()) {
+                    target = t;
+                    break;
+                }
+            }
+        }
+        if (target != null) {
+            attachTab(target);
+        } else {
+            activeTabId = null;
+        }
+        updateKeepAlive();
+    }
+
+    /** 把当前视口的阅读位置存进所属 tab（切 tab / 进后台 / Activity 销毁前）。 */
+    private void saveViewportAnchor() {
+        TermSession current = terminal.getSession();
+        if (current == null) {
+            return;
+        }
+        Tab tab = tabs.get(tabIdOf(current));
+        if (tab != null) {
+            tab.viewportAnchor = terminal.getViewportAnchor();
+        }
+    }
+
     /** 贴一个 tab 到界面上，并把它记为「当前」。 */
     private void attachTab(Tab tab) {
         activeTabId = tabIdOf(tab.session);
@@ -754,7 +819,12 @@ public class MainActivity extends Activity
     }
 
     private void attach(TermSession session) {
+        saveViewportAnchor();
         terminal.setSession(session);
+        Tab tab = tabs.get(tabIdOf(session));
+        if (tab != null) {
+            terminal.setViewportAnchor(tab.viewportAnchor);
+        }
         terminal.requestFocus();
         session.resize(terminal.getGridRows(), terminal.getGridCols());
         // 切到一个已经退出的会话（比如刚才 crash 掉的那个）也要把结束条显示出来
@@ -834,7 +904,8 @@ public class MainActivity extends Activity
 
     @Override
     public void onOutput(TermSession session) {
-        if (terminal.getSession() == session) {
+        // 界面不可见时不必重绘：窗口本来就不合成，调用只会白排一次遍历
+        if (activityVisible && terminal.getSession() == session) {
             terminal.postInvalidateOnAnimation();
         }
         String cmd = pendingCommand;
@@ -3099,14 +3170,63 @@ public class MainActivity extends Activity
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        setSessionsVisible(true);
+    }
+
+    @Override
+    protected void onStop() {
+        saveViewportAnchor();
+        setSessionsVisible(false);
+        super.onStop();
+    }
+
+    /**
+     * 可见性变化：所有会话一起切读线程节流。
+     * 后台没有绘制来天然限速，不节流的话持续输出会一直吃满一到两个核。
+     */
+    private void setSessionsVisible(boolean visible) {
+        activityVisible = visible;
+        for (Tab t : tabs.values()) {
+            t.session.setThrottled(!visible);
+        }
+        if (visible) {
+            // 后台期间屏幕模型照常更新，回来补一帧把这段时间的输出画出来
+            terminal.postInvalidateOnAnimation();
+        }
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         // 后台期间插拔的键盘收不到回调，回到前台补一次
         refreshInputMode();
     }
 
+    /**
+     * 内存吃紧时收缩历史。每个会话的 scrollback 是最大的一块 Java 堆占用
+     * （3000 行 × 4 个数组 ≈ 2MB/会话），比任何视图都值得先放掉；
+     * 逐出计入全局行号，选区坐标不会错位。
+     */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            return;
+        }
+        int keep = level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND ? 300 : 600;
+        for (Tab t : tabs.values()) {
+            t.session.getEmulator().trimScrollback(keep);
+        }
+        if (activityVisible) {
+            terminal.postInvalidateOnAnimation();
+        }
+    }
+
     @Override
     protected void onDestroy() {
+        saveViewportAnchor();
         if (inputManager != null && inputDeviceListener != null) {
             inputManager.unregisterInputDeviceListener(inputDeviceListener);
             inputDeviceListener = null;
@@ -3117,8 +3237,16 @@ public class MainActivity extends Activity
                 t.session.stop();
             }
             tabs.clear();
+            activeTabId = null;
             Containers.clearRunning();
             SessionService.sync(getApplicationContext(), 0);
+        } else {
+            // 系统销毁 Activity 但进程还在（字体/语言变更、不保留活动、内存回收）：
+            // 会话继续跑，静态 tab 表留给下一个实例接管；监听者必须摘掉，
+            // 否则已销毁的界面会被会话一直引用着（泄漏整个 View 树）。
+            for (Tab t : tabs.values()) {
+                t.session.setListener(null);
+            }
         }
         super.onDestroy();
     }

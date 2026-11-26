@@ -12,6 +12,8 @@ import android.util.AttributeSet;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.VelocityTracker;
+import android.widget.Scroller;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -172,6 +174,23 @@ public class TerminalView extends View {
     private float lastY;
     private boolean dragging;
 
+    /**
+     * 惯性滑动：抬手速度交给 Scroller 逐帧推进 scrollOffset。
+     * Termux 同款做法——「丝滑」来自抬手后的减速，而不是像素级滚动（两边都是整行步进）。
+     */
+    private Scroller scroller;
+    private VelocityTracker velocityTracker;
+    /** fling 速度缩放：0.25 让一次快滑能走完大半屏历史，又不至于冲到顶（同 Termux）。 */
+    private static final float FLING_SCALE = 0.25f;
+    /** 低于这个速度不算 fling，避免轻点拖动后自己滑一段。 */
+    private static final float FLING_MIN_VELOCITY = 180f;
+
+    /**
+     * 上一帧的「全局总行数」（逐出行 + scrollback）。视口在历史里时，用它把新到达的
+     * 输出换算成 offset 增量，从而锚住用户正在看的内容——否则后台每来一行就顶走一行。
+     */
+    private long lastTotalLines = -1;
+
     /** 鼠标上报进行中（vim 里正在拖选/拖拽）。 */
     private boolean mouseDown;
     private int lastMouseCol = 1;
@@ -224,6 +243,7 @@ public class TerminalView extends View {
         setBackgroundColor(COLOR_BG);
         setFocusable(true);
         setFocusableInTouchMode(true);
+        scroller = new Scroller(getContext());
 
         scaleDetector = new ScaleGestureDetector(getContext(),
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -314,6 +334,9 @@ public class TerminalView extends View {
     public void setSession(TermSession value) {
         this.session = value;
         this.scrollOffset = 0;
+        // 换会话后总行数没有可比性，下一帧重新起算锚点
+        this.lastTotalLines = -1;
+        abortFling();
         clearSelection();
         if (value != null) {
             pushTextMetrics(value);
@@ -1087,6 +1110,66 @@ public class TerminalView extends View {
 
     /* -------------------- 绘制 -------------------- */
 
+    /**
+     * 视口顶部对应的全局行号；没有会话时返回 -1。
+     * 会话是进程级资产，阅读位置要跟着会话走（Activity 重建、切 tab 后能回到原段落）。
+     */
+    public int getViewportAnchor() {
+        TermSession s = session;
+        if (s == null) {
+            return -1;
+        }
+        TerminalEmulator emulator = s.getEmulator();
+        synchronized (emulator) {
+            long anchor = (long) emulator.getEvictedRows() + emulator.getScrollbackCount() - scrollOffset;
+            return (int) Math.max(0, Math.min(Integer.MAX_VALUE, anchor));
+        }
+    }
+
+    /** 恢复阅读位置；anchor &lt; 0 表示没有记录，回到最底部。 */
+    public void setViewportAnchor(int anchor) {
+        TermSession s = session;
+        if (s == null) {
+            return;
+        }
+        TerminalEmulator emulator = s.getEmulator();
+        synchronized (emulator) {
+            int count = emulator.getScrollbackCount();
+            long total = (long) emulator.getEvictedRows() + count;
+            if (anchor < 0) {
+                scrollOffset = 0;
+            } else {
+                scrollOffset = (int) Math.max(0, Math.min(count, total - anchor));
+            }
+            // 以当前总行数作为锚定基准，避免下一次绘制再补一次位移
+            lastTotalLines = total;
+        }
+        invalidate();
+    }
+
+    /**
+     * 输出到达时锚住内容：把 offset 按「总行数增量」同步推进。
+     *
+     * offset 是「离底部的行数」，新输出会让底部移动；不补偿的话，用户停在历史里时
+     * 内容每来一行就被顶走一行（实测后台 8 秒漂移 116 行）。offset == 0 表示跟随
+     * 底部，此时不做补偿。行被逐出/裁剪导致总数变小时同样反向补偿；锚点被裁掉则
+     * 自然落到保留区最早一行。
+     */
+    private void anchorToContent(int evicted, int scrollbackCount) {
+        long total = (long) evicted + scrollbackCount;
+        if (lastTotalLines >= 0 && total != lastTotalLines && scrollOffset > 0) {
+            long shifted = scrollOffset + (total - lastTotalLines);
+            scrollOffset = (int) Math.max(0, Math.min(scrollbackCount, shifted));
+        }
+        lastTotalLines = total;
+        if (scrollOffset > scrollbackCount) {
+            scrollOffset = scrollbackCount;
+        }
+        if (scrollOffset < 0) {
+            scrollOffset = 0;
+        }
+    }
+
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
@@ -1095,14 +1178,6 @@ public class TerminalView extends View {
             return;
         }
         TerminalEmulator emulator = session.getEmulator();
-        int scrollbackCount = emulator.getScrollbackCount();
-        if (scrollOffset > scrollbackCount) {
-            scrollOffset = scrollbackCount;
-        }
-        if (scrollOffset < 0) {
-            scrollOffset = 0;
-        }
-
         textPaint.setTextSize(sp(textSizeSp));
         textPaint.setTypeface(Typeface.MONOSPACE);
 
@@ -1112,6 +1187,8 @@ public class TerminalView extends View {
         // 注意 getLine/getScrollbackLine 是 synchronized 方法，监视器可重入，无死锁面。
         synchronized (emulator) {
             int evicted = emulator.getEvictedRows();
+            int scrollbackCount = emulator.getScrollbackCount();
+            anchorToContent(evicted, scrollbackCount);
             for (int row = 0; row < gridRows; row++) {
                 int virtualRow = row - scrollOffset;
                 TerminalEmulator.Line line;
@@ -1238,6 +1315,30 @@ public class TerminalView extends View {
         textPaint.setColor(COLOR_FG);
     }
 
+    /**
+     * drawText 用的复用字符缓冲。
+     *
+     * 一帧最多几十行 × 每行几段，原来每段都 new StringBuilder + toString()，
+     * 持续输出时每秒上千次短命 String，GC 常客。改走 Canvas.drawText(char[], …) 后
+     * 这一路完全不分配（宽字符/组合字符那条支路同理）。
+     */
+    private char[] drawBuf = new char[256];
+
+    private void ensureDrawBuf(int need) {
+        if (drawBuf.length >= need) {
+            return;
+        }
+        int size = drawBuf.length;
+        while (size < need) {
+            size <<= 1;
+        }
+        drawBuf = new char[size];
+    }
+
+    private static int extrasLen(String extra) {
+        return extra == null ? 0 : extra.length();
+    }
+
     private void drawLine(Canvas canvas, TerminalEmulator.Line line, int row) {
         float top = padY + row * cellHeight;
         float baseline = top - ascent;
@@ -1291,26 +1392,29 @@ public class TerminalView extends View {
                 }
                 String extra = line.extraAt(i);
                 if (TerminalEmulator.charWidth(cp) == 2 || extra != null) {
-                    StringBuilder one = new StringBuilder(4);
-                    one.appendCodePoint(cp);
+                    ensureDrawBuf(extrasLen(extra) + 2);
+                    int n = Character.toChars(cp, drawBuf, 0);
                     if (extra != null) {
-                        one.append(extra);
+                        extra.getChars(0, extra.length(), drawBuf, n);
+                        n += extra.length();
                     }
-                    canvas.drawText(one.toString(), padX + i * cellWidth, baseline, textPaint);
+                    canvas.drawText(drawBuf, 0, n, padX + i * cellWidth, baseline, textPaint);
                     i++;
                     continue;
                 }
                 int runStart = i;
-                StringBuilder sb = new StringBuilder(end - i);
+                // 每格最多展开成 2 个 char（CJK 以外的补充平面字符走上面的分支，这里只可能是 BMP）
+                ensureDrawBuf((end - i) * 2);
+                int n = 0;
                 while (i < end) {
                     int c2 = line.text[i];
                     if (c2 == 0 || TerminalEmulator.charWidth(c2) == 2 || line.extraAt(i) != null) {
                         break;
                     }
-                    sb.appendCodePoint(c2);
+                    n += Character.toChars(c2, drawBuf, n);
                     i++;
                 }
-                canvas.drawText(sb.toString(), padX + runStart * cellWidth, baseline, textPaint);
+                canvas.drawText(drawBuf, 0, n, padX + runStart * cellWidth, baseline, textPaint);
             }
         }
     }
@@ -1394,6 +1498,12 @@ public class TerminalView extends View {
         // 鼠标事件吞掉，字号永远调不了（实测复现）。双指纯上下滑跨度
         // 不变，不会误触发缩放，滚轮模式照常工作。
         scaleDetector.onTouchEvent(event);
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            abortFling();
+            startVelocityTracking(event);
+        } else if (velocityTracker != null) {
+            velocityTracker.addMovement(event);
+        }
         if (scaling) {
             removeCallbacks(longPressRunnable);
             dragging = true;
@@ -1487,13 +1597,18 @@ public class TerminalView extends View {
                     invalidate();
                     return true;
                 }
+                if (dragging) {
+                    // 拖动结束 → 按手势速度惯性滑一段；点按（未拖动）仍走原来的点击路径
+                    startFling();
+                    return true;
+                }
+                recycleVelocityTracker();
                 if (!dragging && !longPressFired) {
                     if (selActive) {
                         // xterm 惯例：单击清除选区（这一下不弹键盘）
                         clearSelection();
                         return true;
-                    }
-                    if (isDead()) {
+                    }                    if (isDead()) {
                         // 键盘弹出来也没处输入，直接引导去重启
                         notifyDead();
                     } else if (tapListener != null) {
@@ -1506,12 +1621,88 @@ public class TerminalView extends View {
             case MotionEvent.ACTION_CANCEL:
                 removeCallbacks(longPressRunnable);
                 removeCallbacks(edgeScrollRunnable);
+                abortFling();
+                recycleVelocityTracker();
                 selecting = false;
                 return true;
             default:
                 return super.onTouchEvent(event);
         }
     }
+
+    /* -------------------- 惯性滑动 -------------------- */
+
+    /** 速度上限（px/s）：再快也不让一次 fling 直接冲到历史顶端。 */
+    private static final float MAX_FLING_VELOCITY = 8000f;
+
+    private void startVelocityTracking(MotionEvent event) {
+        if (velocityTracker == null) {
+            velocityTracker = VelocityTracker.obtain();
+        } else {
+            velocityTracker.clear();
+        }
+        velocityTracker.addMovement(event);
+    }
+
+    private void recycleVelocityTracker() {
+        if (velocityTracker != null) {
+            velocityTracker.recycle();
+            velocityTracker = null;
+        }
+    }
+
+    /**
+     * 抬手：按手势速度启动惯性滑动，上限是当前 scrollback 行数。
+     * 手指下滑（dy &gt; 0）= offset 增大 = 看更早的内容，与 Scroller 的 y 增长同向。
+     */
+    private void startFling() {
+        if (velocityTracker == null || session == null) {
+            recycleVelocityTracker();
+            return;
+        }
+        velocityTracker.computeCurrentVelocity(1000, MAX_FLING_VELOCITY);
+        float vy = velocityTracker.getYVelocity();
+        recycleVelocityTracker();
+        if (Math.abs(vy) < FLING_MIN_VELOCITY) {
+            return;
+        }
+        int max = session.getEmulator().getScrollbackCount();
+        if (max <= 0) {
+            return;
+        }
+        scroller.fling(0, scrollOffset, 0, (int) (vy * FLING_SCALE), 0, 0, 0, max);
+        post(flingRunnable);
+    }
+
+    private void abortFling() {
+        if (scroller != null && !scroller.isFinished()) {
+            scroller.abortAnimation();
+        }
+        removeCallbacks(flingRunnable);
+    }
+
+    private final Runnable flingRunnable = new Runnable() {
+        @Override
+        public void run() {
+            TermSession s = session;
+            if (s == null) {
+                return;
+            }
+            if (!scroller.computeScrollOffset()) {
+                return;
+            }
+            // 历史行数会在惯性期间变化（新输出把旧行挤出），每帧重新夹紧
+            int max = s.getEmulator().getScrollbackCount();
+            int next = Math.max(0, Math.min(max, scroller.getCurrY()));
+            if (next != scrollOffset) {
+                scrollOffset = next;
+                invalidate();
+            }
+            if (!scroller.isFinished()) {
+                post(this);
+            }
+        }
+    };
 
     /**
      * 鼠标 / 触控板。Android 把滚轮做成 ACTION_SCROLL 走这里而不是触摸事件——

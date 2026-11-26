@@ -1,5 +1,6 @@
 package dev.dualterm.term;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 
 /**
@@ -116,6 +117,8 @@ public final class TerminalEmulator {
             if (extra != null) {
                 java.util.Arrays.fill(extra, null);
             }
+            // 复用池里的行要清掉上一轮的软换行标记，否则 resize reflow 会把无关两行拼在一起
+            wrapped = false;
         }
     }
 
@@ -161,8 +164,19 @@ public final class TerminalEmulator {
     private Line[] lines;
     private boolean altActive;
     private final ArrayList<Line> scrollback = new ArrayList<>();
+    /**
+     * scrollback 的逻辑头：下标小于它的元素已经逐出（置 null），只是还没压缩掉。
+     * 逐出只推进它，是 O(1)；攒到 {@link #SCROLLBACK_COMPACT_THRESHOLD} 再整体搬一次。
+     */
+    private int sbHead;
     /** scrollback 逐出的累计行数。选区锚点用它换算成稳定的全局行号。 */
     private int evictedRows;
+    /**
+     * 被逐出的行对象回收池：稳态滚屏是「进一条、出一条」，复用后不再每行新分配 4 个数组。
+     */
+    private final ArrayDeque<Line> linePool = new ArrayDeque<>();
+    /** 已逐出的头部攒到这么多行才整体压缩一次，避免每行一次 O(n) 搬移。 */
+    private static final int SCROLLBACK_COMPACT_THRESHOLD = 1024;
 
     private int cursorRow;
     private int cursorCol;
@@ -287,6 +301,8 @@ public final class TerminalEmulator {
         altActive = false;
         lines = mainLines;
         scrollback.clear();
+        sbHead = 0;
+        linePool.clear();
         cursorRow = 0;
         cursorCol = 0;
         cursorVisible = true;
@@ -363,7 +379,7 @@ public final class TerminalEmulator {
      * 变宽时把续行拼回来。重排后光标落在其所在内容行的新位置上。
      */
     private void reflowMain(int newCols) {
-        int sbCount = scrollback.size();
+        int sbCount = sbSize();
         int total = sbCount + rows;
         int cursorInput = sbCount + cursorRow;
         int cursorOutAbs = -1;
@@ -372,7 +388,7 @@ public final class TerminalEmulator {
         // 从末尾往前裁到最后一个有内容的行，但不越过光标（用户可能就停在空行上）。
         int lastIdx = total - 1;
         while (lastIdx > 0 && lastIdx != cursorInput) {
-            Line tail = lastIdx < sbCount ? scrollback.get(lastIdx) : mainLines[lastIdx - sbCount];
+            Line tail = lastIdx < sbCount ? sbGet(lastIdx) : mainLines[lastIdx - sbCount];
             if (!isBlankLine(tail)) {
                 break;
             }
@@ -392,7 +408,7 @@ public final class TerminalEmulator {
         int cursorCellInRun = 0;
 
         for (int i = 0; i <= lastIdx; i++) {
-            Line li = i < sbCount ? scrollback.get(i) : mainLines[i - sbCount];
+            Line li = i < sbCount ? sbGet(i) : mainLines[i - sbCount];
             if (accLen == 0) {
                 runHasCursor = false;
             }
@@ -487,12 +503,14 @@ public final class TerminalEmulator {
             screenStart = Math.max(0, cursorOutAbs - rows + 1);
         }
         scrollback.clear();
+        sbHead = 0;
         if (maxScrollback > 0) {
             for (int i = 0; i < screenStart; i++) {
                 scrollback.add(out.get(i));
             }
-            while (scrollback.size() > maxScrollback) {
-                scrollback.remove(0);
+            // 这里不回收行对象（out 里的行还要拿去做屏幕），只做一次整体裁剪
+            if (scrollback.size() > maxScrollback) {
+                scrollback.subList(0, scrollback.size() - maxScrollback).clear();
             }
         }
         int screenCount = Math.min(n - screenStart, rows);
@@ -628,19 +646,19 @@ public final class TerminalEmulator {
     }
 
     public synchronized int getScrollbackCount() {
-        return scrollback.size();
+        return sbSize();
     }
 
     public synchronized Line getScrollbackLine(int index) {
-        if (index < 0 || index >= scrollback.size()) {
+        if (index < 0 || index >= sbSize()) {
             return null;
         }
-        return scrollback.get(index);
+        return sbGet(index);
     }
 
     /** 绝对行总数 = scrollback + 当前屏。 */
     public synchronized int getTotalLineCount() {
-        return scrollback.size() + rows;
+        return sbSize() + rows;
     }
 
     /** scrollback 逐出的累计行数（clearScreen 的清空也计入）。 */
@@ -655,10 +673,11 @@ public final class TerminalEmulator {
      */
     public synchronized Line getGlobalLine(int global) {
         int abs = global - evictedRows;
-        if (abs < 0 || abs >= scrollback.size() + rows) {
+        int sbCount = sbSize();
+        if (abs < 0 || abs >= sbCount + rows) {
             return null;
         }
-        return abs < scrollback.size() ? scrollback.get(abs) : lines[abs - scrollback.size()];
+        return abs < sbCount ? sbGet(abs) : lines[abs - sbCount];
     }
 
     /**
@@ -793,9 +812,10 @@ public final class TerminalEmulator {
     public synchronized String getText() {
         // 尾部空行只是屏幕比内容高时补的白，复制出去是一串没意义的换行——
         // 裁到最后一个有内容的行为止（用户敲的空回车在中间，不受影响）
-        int end = scrollback.size() + rows - 1;
+        int sbCount = sbSize();
+        int end = sbCount + rows - 1;
         while (end >= 0) {
-            Line li = end < scrollback.size() ? scrollback.get(end) : lines[end - scrollback.size()];
+            Line li = end < sbCount ? sbGet(end) : lines[end - sbCount];
             if (!isBlankLine(li)) {
                 break;
             }
@@ -803,7 +823,7 @@ public final class TerminalEmulator {
         }
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i <= end; i++) {
-            appendLineText(sb, i < scrollback.size() ? scrollback.get(i) : lines[i - scrollback.size()]);
+            appendLineText(sb, i < sbCount ? sbGet(i) : lines[i - sbCount]);
         }
         return sb.toString();
     }
@@ -846,13 +866,12 @@ public final class TerminalEmulator {
     }
 
     public synchronized void clearScreen() {
+        // 先回收 scrollback（这些行接着会被 blankLine 复用）：清掉的历史同样计入逐出，
+        // 全局行号只增不减，旧的选区坐标不会撞上清屏之后的新内容
+        trimScrollback(0);
         for (int r = 0; r < rows; r++) {
             blankLine(r);
         }
-        // 清掉的历史行同样计入逐出：全局行号只增不减，旧的选区坐标
-        // 不会撞上清屏之后的新内容
-        evictedRows += scrollback.size();
-        scrollback.clear();
         cursorRow = 0;
         cursorCol = 0;
         scrollTop = 0;
@@ -2100,7 +2119,10 @@ public final class TerminalEmulator {
     }
 
     private Line newLine() {
-        Line line = new Line(cols);
+        Line line = linePool.pollFirst();
+        if (line == null || line.text.length != cols) {
+            line = new Line(cols);
+        }
         line.blank(cols, defaultFg, defaultBg);
         return line;
     }
@@ -2113,10 +2135,52 @@ public final class TerminalEmulator {
             return;
         }
         scrollback.add(line);
-        while (scrollback.size() > maxScrollback) {
-            scrollback.remove(0);
+        // 逐出只推进逻辑头（O(1)）：原来每行一次 remove(0) 要搬 3000 个引用，
+        // 持续输出 20 万行时光 memmove 就是几个 GB。
+        while (sbSize() > maxScrollback) {
+            recycle(scrollback.set(sbHead, null));
+            sbHead++;
             evictedRows++;
         }
+        if (sbHead >= SCROLLBACK_COMPACT_THRESHOLD) {
+            scrollback.subList(0, sbHead).clear();
+            sbHead = 0;
+        }
+    }
+
+    /** scrollback 逻辑条数（前 sbHead 条已逐出）。 */
+    private int sbSize() {
+        return scrollback.size() - sbHead;
+    }
+
+    private Line sbGet(int index) {
+        return scrollback.get(sbHead + index);
+    }
+
+    /** 逐出的行进回收池，供 {@link #newLine()} 复用；池最多留 maxScrollback 条。 */
+    private void recycle(Line line) {
+        if (line != null && line.text.length == cols && linePool.size() < maxScrollback) {
+            linePool.addLast(line);
+        }
+    }
+
+    /**
+     * 收缩历史到 keep 行（内存吃紧时由 Activity 调用，只减不增）。
+     * evictedRows 同步推进，因此按全局行号记账的选区范围仍然对齐。
+     */
+    public synchronized void trimScrollback(int keep) {
+        int target = Math.max(0, Math.min(keep, maxScrollback));
+        int over = sbSize() - target;
+        if (over <= 0) {
+            return;
+        }
+        for (int i = 0; i < over; i++) {
+            recycle(sbGet(i));
+        }
+        // 连同已经逐出的头一起压缩，一次搬移
+        scrollback.subList(0, sbHead + over).clear();
+        sbHead = 0;
+        evictedRows += over;
     }
 
     /**
@@ -2179,6 +2243,7 @@ public final class TerminalEmulator {
             }
             if (mode == 3) {
                 scrollback.clear();
+                sbHead = 0;
             }
         }
     }
