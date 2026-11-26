@@ -10,7 +10,7 @@ app/src/main/
 ├── jniLibs/<abi>/                ← 脚本生成：libproot.so / libproot_loader.so / 依赖库
 ├── assets/runtime/               ← 脚本生成（仅 WITH_ROOTFS=1 的离线调试）：rootfs-<abi>.pack，默认不进包
 ├── java/dev/dualterm/
-│   ├── MainActivity.java         ← 应用入口：模式 chip、自适应键条、输入设备监听、菜单
+│   ├── MainActivity.java         ← 应用入口：模式 chip、输入设备监听、菜单、会话/容器对话框
 │   ├── term/                     ← 终端内核（不依赖容器，可单独复用）
 │   │   ├── NativePty.java        ← JNI 声明：forkExec / read / write / setWindowSize / signal
 │   │   ├── TermSession.java      ← PTY 会话：读线程 + 1 号线程 waitPid 回收
@@ -33,6 +33,10 @@ app/src/main/
 │   │   └── DockerCli.java        ← 控制台背后的命令实现：ps/images/run/rm/rmi/pull…
 │   ├── ui/
 │   │   ├── ConsoleActivity.java  ← 容器管理控制台界面（docker 语法的子集）
+│   │   ├── ContainerDialogs.java ← 容器/镜像/绑定目录对话框：装配与后台编排，行为经 Host 回到 Activity
+│   │   ├── KeyBar.java           ← 顶部键条：常用键 + ⌨/⛶，行为经 Host 回到 Activity
+│   │   ├── MenuSheet.java        ← 应用菜单面板：分组层级、按锚点选弹出方向、返回键逐层退
+│   │   ├── SessionPicker.java    ← 模式 chip 下拉：会话列表 + 新建/管理入口，标签与切换由宿主提供
 │   │   ├── SoftKeyboard.java     ← 辅助键盘：固定区（编辑键/F 键）+ 可自定义区（步骤序列键）
 │   │   ├── StepMode.java         ← 自定义键的单步模式枚举（校验/规范化/字节变换/自动标签集中在此）
 │   │   └── KbdLayout.java        ← 键区行数算术（超出上限时自定义区滚动的可见行数）

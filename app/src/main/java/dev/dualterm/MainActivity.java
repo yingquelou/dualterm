@@ -11,7 +11,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.InputType;
-import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -21,18 +20,14 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
-import dev.dualterm.container.ContainerBootstrap;
 import dev.dualterm.container.ContainerRuntime;
 import dev.dualterm.container.Containers;
-import dev.dualterm.container.ImageImporter;
 import dev.dualterm.container.Volumes;
 import dev.dualterm.term.LaunchSpec;
 import dev.dualterm.term.SessionService;
@@ -40,6 +35,10 @@ import dev.dualterm.term.Shells;
 import dev.dualterm.term.TermSession;
 import dev.dualterm.term.TerminalView;
 import dev.dualterm.ui.ConsoleActivity;
+import dev.dualterm.ui.ContainerDialogs;
+import dev.dualterm.ui.KeyBar;
+import dev.dualterm.ui.MenuSheet;
+import dev.dualterm.ui.SessionPicker;
 import dev.dualterm.ui.SoftKeyboard;
 
 /**
@@ -50,7 +49,8 @@ import dev.dualterm.ui.SoftKeyboard;
 public class MainActivity extends Activity
         implements TermSession.Listener,
         TerminalView.GridListener,
-        TerminalView.ModifierWatcher {
+        TerminalView.ModifierWatcher,
+        ContainerDialogs.Host {
 
     private static final String PREF = "dualterm";
     private static final String MODE_LOCAL = "local";
@@ -58,8 +58,6 @@ public class MainActivity extends Activity
 
     private static final int COLOR_TEXT = 0xFFE6E6E6;
     private static final int COLOR_ACCENT = 0xFF7CE38B;
-
-    private static final int REQ_IMPORT_TAR = 3301;
 
     /** 菜单「帮助」指向的在线文档；改文档路径时同步这里。 */
     private static final String HELP_URL =
@@ -89,19 +87,23 @@ public class MainActivity extends Activity
     private TerminalView terminal;
     private TextView status;
     private TextView btnMode;
-    private Button btnKeyboard;
-    private Button btnFullscreen;
     private Button btnMenu;
     private View keyBar;
     private LinearLayout keyRow;
     private View overlay;
     private TextView overlayText;
 
-    private Button ctrlKey;
-    private Button altKey;
+    /** 顶部键条（dev.dualterm.ui.KeyBar）：键位与样式已从本类拆出。 */
+    private KeyBar keyBarUi;
 
     /** 自绘软键盘（dev.dualterm.ui.SoftKeyboard）：从本类拆出的构建与键语义。 */
     private SoftKeyboard softKbd;
+
+    /** 容器 / 镜像 / 绑定目录对话框（dev.dualterm.ui.ContainerDialogs）。 */
+    private ContainerDialogs containerDialogs;
+
+    /** 应用菜单面板（dev.dualterm.ui.MenuSheet）：层级切换与弹出方向已拆出。 */
+    private MenuSheet menuSheet;
 
     /** 会话结束条：和键条互斥，占同一块屏幕位置。 */
     private View exitBar;
@@ -230,6 +232,13 @@ public class MainActivity extends Activity
 
         buildKeyBar();
         buildSoftKeyboard();
+        containerDialogs = new ContainerDialogs(this);
+        menuSheet = new MenuSheet(this, new MenuSheet.Host() {
+            @Override
+            public void onMenuAction(int id) {
+                onMenuClick(id);
+            }
+        });
         installInputDeviceWatcher();
         installImeWatcher();
 
@@ -521,13 +530,13 @@ public class MainActivity extends Activity
                 .setNeutralButton("导入 tar 镜像", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
-                        pickArchiveForImport();
+                        containerDialogs.pickArchiveForImport();
                     }
                 })
                 .setPositiveButton("拉取镜像", new android.content.DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(android.content.DialogInterface dialog, int which) {
-                        showPullDialog();
+                        containerDialogs.showPullDialog();
                     }
                 })
                 .show();
@@ -585,7 +594,8 @@ public class MainActivity extends Activity
         }
     }
 
-    private void startContainer(String containerName) {
+    @Override
+    public void startContainer(String containerName) {
         showOverlay("准备容器 " + containerName + " …");
         final String preferred = prefs.getString("runtime", "proot");
         final Context appContext = getApplicationContext();
@@ -1026,24 +1036,17 @@ public class MainActivity extends Activity
     }
 
     private void updateModifierButtons() {
-        applyModifierLook(ctrlKey, terminal.isCtrlDown());
-        applyModifierLook(altKey, terminal.isAltDown());
-    }
-
-    /** 粘滞修饰键锁上时整键反白：触屏上没有 LEDs，只能靠颜色告诉用户「Ctrl 还按着」。 */
-    private void applyModifierLook(Button key, boolean on) {
-        if (key == null) {
-            return;
+        if (keyBarUi != null) {
+            keyBarUi.refreshModifiers(terminal);
         }
-        key.setBackgroundResource(on ? R.drawable.key_bg_on : R.drawable.key_bg);
-        key.setTextColor(on ? 0xFF101014 : COLOR_TEXT);
     }
 
     /**
      * 状态并进顶栏一行（以前是独立的一整行，只为了显示 pid 和行列数）。
      * 全屏时顶栏是收起的，这时额外消息改用 Toast，否则「进程已退出」没人看得见。
      */
-    private void updateStatus(String extra) {
+    @Override
+    public void updateStatus(String extra) {
         TermSession session = terminal.getSession();
         StringBuilder sb = new StringBuilder();
         if (session != null) {
@@ -1086,7 +1089,8 @@ public class MainActivity extends Activity
         overlay.setVisibility(View.GONE);
     }
 
-    private void showError(String title, String message) {
+    @Override
+    public void showError(String title, String message) {
         new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(message == null ? "未知错误" : message)
@@ -1102,163 +1106,51 @@ public class MainActivity extends Activity
         return (msg == null || msg.isEmpty()) ? t.toString() : msg;
     }
 
-    private void toast(String message) {
+    @Override
+    public void toast(String message) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
     }
 
     /* -------------------- 功能键条 -------------------- */
 
-    private static final int KEY_MOD_CTRL = 0;
-    private static final int KEY_MOD_ALT = 1;
-    private static final int KEY_RAW = 2;
-    private static final int KEY_CURSOR = 3;
-
     /**
-     * 键条 = 一屏放得下的常用键。更多键（编辑键/F 键）并入自制键盘的固定区，
-     * 由 ⌨ 统一开合——以前「⋯」面板独立展开是两套入口两套状态，现在只剩一套。
+     * 键条装配下沉到 ui/KeyBar：键位、样式、图标键行为都在那边；宿主只提供
+     * 终端 / 辅助键盘 / IME / 全屏 / 菜单这些行为入口。编辑键与 F 键在自制键盘。
      */
     private void buildKeyBar() {
-        Object[][] primary = {
-                {"CTRL", KEY_MOD_CTRL, null},
-                {"ALT", KEY_MOD_ALT, null},
-                {"ESC", KEY_RAW, "\u001b"},
-                {"TAB", KEY_RAW, "\t"},
-                {"^C", KEY_RAW, "\u0003"},
-                {"←", KEY_CURSOR, "D"},
-                {"↑", KEY_CURSOR, "A"},
-                {"↓", KEY_CURSOR, "B"},
-                {"→", KEY_CURSOR, "C"},
-        };
-        // 关闭 baseline 对齐：行内混着 11sp 文字键（CTRL/ALT…）和 15sp 图标键
-        // （⌨/⛶），LinearLayout 默认按文字基线对齐会把小字键块整体下推约 2dp，
-        // 底部伸进下一行被盖住——表现为「部分键下圆角残缺」。按键行要的是
-        // 顶边对齐，键内文字各自居中。
-        keyRow.setBaselineAligned(false);
-        for (Object[] spec : primary) {
-            Button b = makeKeyButton((String) spec[0]);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1f);
-            lp.setMargins(dp(2), 0, dp(2), 0);
-            b.setLayoutParams(lp);
-            attachKeyAction(b, (String) spec[0], (Integer) spec[1], (String) spec[2]);
-            keyRow.addView(b);
-        }
-        // 键盘开关 + 全屏开关。以前在顶栏各占 40dp 常驻（状态行被挤掉十几列），
-        // 而它们本质上和 CTRL/ALT 一样是「操作终端」，归到这一行：既省顶栏宽度，
-        // 又让全屏有可见的退出入口（不再依赖长按终端）。
-        btnKeyboard = makeNarrowKey(getString(R.string.keyboard), 15);
-        // 功能键样式：⌨ 不发字符（开关自制键盘），绿描边与普通键区分
-        btnKeyboard.setBackgroundResource(R.drawable.key_bg_func);
-        btnKeyboard.setOnClickListener(new View.OnClickListener() {
+        keyBarUi = new KeyBar(keyBar, keyRow, new KeyBar.Host() {
             @Override
-            public void onClick(View v) {
-                boolean willShow = !softKbd.isVisible();
-                softKbd.toggle();
-                // 辅助键盘和系统键盘是一套组合：开辅助键时顺带把系统键盘叫出来，
-                // 一步就绪（关辅助键不动系统键盘，IME 有自己的收起手势/返回键）
-                if (willShow && !imeVisible) {
-                    imeFromTerminal = true;
-                    terminal.showKeyboard();
-                }
+            public TerminalView terminal() {
+                return terminal;
             }
-        });
-        // 长按「⌨」= 应用菜单（原「⋯」的职责随面板并入自制键盘移交过来）。
-        // 全屏下顶栏收起后 ⋮ 看不见，而键行一直在（触屏才有键行，菜单也只在
-        // 触屏上才需要）。单击是高频的键盘开关，长按给低频的管理动作，
-        // 两档手势都落在同一个可见控件上，不用教也不占宽度。
-        btnKeyboard.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View v) {
-                showMenu(v);
-                return true;   // 长按吃掉这次触摸，松开不再触发 click
-            }
-        });
-        keyRow.addView(btnKeyboard);
 
-        btnFullscreen = makeNarrowKey(K_FULLSCREEN, 15);
-        btnFullscreen.setContentDescription("全屏");
-        // 功能键样式：⛶ 不发字符（切全屏），与 ⌨ 同款绿描边
-        btnFullscreen.setBackgroundResource(R.drawable.key_bg_func);
-        btnFullscreen.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onClick(View v) {
+            public SoftKeyboard softKeyboard() {
+                return softKbd;
+            }
+
+            @Override
+            public boolean imeVisible() {
+                return imeVisible;
+            }
+
+            @Override
+            public void onKeyboardShown() {
+                imeFromTerminal = true;
+                terminal.showKeyboard();
+            }
+
+            @Override
+            public void onToggleFullscreen() {
                 applyFullscreen(!fullscreen);
             }
+
+            @Override
+            public void onMenu(View anchor) {
+                showMenu(anchor);
+            }
         });
-        keyRow.addView(btnFullscreen);
-
-        // 编辑键/F 键面板已并入自制键盘固定区（dev.dualterm.ui.SoftKeyboard）。
-    }
-
-    private static final String K_FULLSCREEN = "\u26f6";   // ⛶
-    private static final String K_FULLSCREEN_ON = "\u2715";  // ✕ 全屏时的退出提示
-
-    /**
-     * 功能键行右侧的窄键（固定宽度，不参与 weight 等分）。
-     * 键盘/全屏这类图标键只需要能点到，不该把 CTRL/ALT 这些文字键挤窄。
-     */
-    private Button makeNarrowKey(String label, int textSize) {
-        Button b = makeKeyButton(label);
-        b.setTextSize(textSize);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(38), dp(40));
-        lp.setMargins(dp(2), 0, dp(2), 0);   // 与左侧文字键保持同样的键间距
-        b.setLayoutParams(lp);
-        return b;
-    }
-
-    private Button makeKeyButton(String label) {
-        Button b = new Button(this);
-        b.setText(label);
-        b.setTextSize(11);
-        b.setAllCaps(false);
-        b.setGravity(Gravity.CENTER);
-        b.setTextColor(COLOR_TEXT);
-        b.setBackgroundResource(R.drawable.key_bg);
-        b.setMinWidth(0);
-        b.setMinimumWidth(0);
-        b.setMinHeight(0);
-        b.setMinimumHeight(0);
-        b.setPadding(0, 0, 0, 0);
-        b.setSingleLine(true);
-        return b;
-    }
-
-    private void attachKeyAction(Button b, String label, int kind, final String arg) {
-        switch (kind) {
-            case KEY_MOD_CTRL:
-                ctrlKey = b;
-                b.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        terminal.setCtrlDown(!terminal.isCtrlDown());
-                    }
-                });
-                break;
-            case KEY_MOD_ALT:
-                altKey = b;
-                b.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        terminal.setAltDown(!terminal.isAltDown());
-                    }
-                });
-                break;
-            case KEY_CURSOR:
-                b.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        terminal.sendCursor(arg.charAt(0));
-                    }
-                });
-                break;
-            default:
-                b.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        terminal.sendRaw(arg);
-                    }
-                });
-                break;
-        }
+        keyBarUi.build();
     }
 
     /* -------------------- 自绘软键盘（构建在 dev.dualterm.ui.SoftKeyboard） -------------------- */
@@ -1268,11 +1160,6 @@ public class MainActivity extends Activity
             @Override
             public TerminalView terminal() {
                 return terminal;
-            }
-
-            @Override
-            public Button makeKeyButton(String label) {
-                return MainActivity.this.makeKeyButton(label);
             }
 
             @Override
@@ -1311,7 +1198,9 @@ public class MainActivity extends Activity
 
             @Override
             public void onSoftKbdVisibilityChanged(boolean visible) {
-                btnKeyboard.setTextColor(visible ? COLOR_ACCENT : COLOR_TEXT);
+                if (keyBarUi != null) {
+                    keyBarUi.setKeyboardAccent(visible);
+                }
                 updateChrome();
                 // kbd 高度变了，终端那一份 weight 必须重算：只让 key_bar 重新测量
                 // 会留下「键盘多高、终端还是老高度」的错位（实测最后一行被挤到屏幕外）
@@ -1330,61 +1219,60 @@ public class MainActivity extends Activity
     /* -------------------- 模式选择 -------------------- */
 
     private void showModePicker() {
-        PopupMenu menu = new PopupMenu(this, btnMode);
-        android.view.Menu root = menu.getMenu();
-        int order = 0;
-        // 已有的标签页：● = 当前贴屏的，点击直接切换（不杀任何会话）
-        for (java.util.Map.Entry<String, Tab> e : tabs.entrySet()) {
-            Tab t = e.getValue();
-            String label = (MODE_LOCAL.equals(t.mode) ? "本地" : "容器 · " + t.container)
-                    + " · pid " + t.session.getPid()
-                    + (t.session.isRunning() ? "" : "（已退出）");
-            root.add(0, 100 + order, order++,
-                    e.getKey().equals(activeTabId) ? "● " + label : "   " + label);
-        }
-        root.add(0, 1, order++, "＋ 新建本地 Shell");
-        root.add(0, 2, order++, "＋ 新建容器会话（" + Containers.activeName(this) + "）");
-        root.add(0, 3, order++, "容器与镜像…");
-        menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
+        new SessionPicker(this, btnMode, new SessionPicker.Host() {
             @Override
-            public boolean onMenuItemClick(android.view.MenuItem item) {
-                int id = item.getItemId();
-                if (id >= 100) {
-                    // 会话列表项：按创建顺序找到对应 tab
-                    int idx = id - 100;
-                    int i = 0;
-                    for (Tab t : tabs.values()) {
-                        if (i++ == idx) {
-                            attachTab(t);
-                            return true;
-                        }
-                    }
-                    return true;
+            public java.util.List<String> sessionLabels() {
+                java.util.List<String> labels = new java.util.ArrayList<>();
+                // ● = 当前贴屏的，点击直接切换（不杀任何会话）
+                for (java.util.Map.Entry<String, Tab> e : tabs.entrySet()) {
+                    Tab t = e.getValue();
+                    String label = (MODE_LOCAL.equals(t.mode) ? "本地" : "容器 · " + t.container)
+                            + " · pid " + t.session.getPid()
+                            + (t.session.isRunning() ? "" : "（已退出）");
+                    labels.add(e.getKey().equals(activeTabId) ? "● " + label : "   " + label);
                 }
-                switch (id) {
-                    case 1:
-                        // 新建 = 直接起会话，已有本地 tab 不会被复用也不会被杀
-                        startLocal();
-                        return true;
-                    case 2:
-                        if (Containers.items(MainActivity.this).isEmpty()) {
-                            showNoContainerGuide();
-                        } else {
-                            mode = MODE_CONTAINER;
-                            prefs.edit().putString("mode", MODE_CONTAINER).apply();
-                            updateModeButtons();
-                            startContainer(Containers.activeName(MainActivity.this));
-                        }
-                        return true;
-                    case 3:
-                        showContainersDialog();
-                        return true;
-                    default:
-                        return false;
+                return labels;
+            }
+
+            @Override
+            public String newContainerLabel() {
+                return "＋ 新建容器会话（" + Containers.activeName(MainActivity.this) + "）";
+            }
+
+            @Override
+            public void onSwitchSession(int index) {
+                // 会话列表项：按创建顺序找到对应 tab
+                int i = 0;
+                for (Tab t : tabs.values()) {
+                    if (i++ == index) {
+                        attachTab(t);
+                        return;
+                    }
                 }
             }
-        });
-        menu.show();
+
+            @Override
+            public void onNewLocal() {
+                // 新建 = 直接起会话，已有本地 tab 不会被复用也不会被杀
+                startLocal();
+            }
+
+            @Override
+            public void onNewContainer() {
+                if (Containers.items(MainActivity.this).isEmpty()) {
+                    showNoContainerGuide();
+                    return;
+                }
+                applyContainerMode();
+                refreshModeChip();
+                startContainer(Containers.activeName(MainActivity.this));
+            }
+
+            @Override
+            public void onContainers() {
+                containerDialogs.showContainersDialog();
+            }
+        }).show();
     }
 
     /* -------------------- 输入设备自适应 -------------------- */
@@ -1438,14 +1326,10 @@ public class MainActivity extends Activity
         topBar.setVisibility((fullscreen || (imeVisible && landscape))
                 ? View.GONE : View.VISIBLE);
         keyBar.setVisibility((hardKeyboard || sessionEnded) ? View.GONE : View.VISIBLE);
-        int auxVis = hardKeyboard ? View.GONE : View.VISIBLE;
-        if (btnKeyboard != null) {
-            btnKeyboard.setVisibility(auxVis);
+        if (keyBarUi != null) {
+            keyBarUi.setButtonsVisible(!hardKeyboard);
+            keyBarUi.setCompact(tight);
         }
-        if (btnFullscreen != null) {
-            btnFullscreen.setVisibility(auxVis);
-        }
-        setKeyRowCompact(tight);
         if (kbdShowing() && (hardKeyboard || sessionEnded)) {
             softKbd.setVisible(false);
         }
@@ -1455,20 +1339,6 @@ public class MainActivity extends Activity
     /** 键盘还没构建时（onCreate 前段）updateChrome 也会跑，统一从这里取。 */
     private boolean kbdShowing() {
         return softKbd != null && softKbd.isVisible();
-    }
-
-    /** 横屏键盘弹出时把键条压矮一档（40dp→28dp），每像素都要还给终端。 */
-    private void setKeyRowCompact(boolean compact) {
-        int h = dp(compact ? 28 : 40);
-        for (int i = 0; i < keyRow.getChildCount(); i++) {
-            View c = keyRow.getChildAt(i);
-            ViewGroup.LayoutParams lp = c.getLayoutParams();
-            if (lp.height != h) {
-                lp.height = h;
-                c.setLayoutParams(lp);
-            }
-        }
-        keyBar.setPadding(dp(2), dp(compact ? 1 : 3), dp(2), dp(compact ? 1 : 2));
     }
 
     private void refreshInputMode() {
@@ -1595,45 +1465,25 @@ public class MainActivity extends Activity
 
     /* -------------------- 菜单 -------------------- */
 
-    /** 当前显示的自绘菜单（null = 未打开）。非焦点窗口，返回键由 onBackPressed 接管。 */
-    private android.widget.PopupWindow menuPopup;
-    /** 菜单打开期间的层级现场：返回键「二级→顶层→收起」要用。 */
-    private View menuAnchor;
-    private java.util.List<MenuGroup> menuGroups;
-    private int menuGroupIndex = -1;
-
-    /** 一组菜单：组名（二级首行）+ 动作列表（label 与 id 一一对应，id 走 onMenuClick）。 */
-    private static final class MenuGroup {
-        final String title;
-        final String[] labels;
-        final int[] ids;
-
-        MenuGroup(String title, String[] labels, int[] ids) {
-            this.title = title;
-            this.labels = labels;
-            this.ids = ids;
-        }
-    }
-
     /**
      * 菜单数据在每次打开时现算：容器数/镜像数、运行时、Root 开关这些标签
      * 都随状态变，缓存反而要到处失效。
      */
-    private java.util.List<MenuGroup> buildMenuGroups() {
-        java.util.List<MenuGroup> groups = new java.util.ArrayList<>();
-        groups.add(new MenuGroup("会话",
+    private java.util.List<MenuSheet.Group> buildMenuGroups() {
+        java.util.List<MenuSheet.Group> groups = new java.util.ArrayList<>();
+        groups.add(new MenuSheet.Group("会话",
                 new String[]{"重启当前会话", "退出应用（结束会话）"},
                 new int[]{1, 17}));
-        groups.add(new MenuGroup("屏幕内容",
+        groups.add(new MenuSheet.Group("屏幕内容",
                 new String[]{"复制全部输出", "复制当前屏", "粘贴", "清屏"},
                 new int[]{2, 18, 3, 4}));
-        groups.add(new MenuGroup("键盘与输入法",
+        groups.add(new MenuSheet.Group("键盘与输入法",
                 new String[]{"切换输入法…", "输入法设置…",
                         "外接键盘中文输入：" + takeoverLabel(),
                         "辅助键盘：恢复默认键集",
                         "辅助键盘行数：" + maxRowsLabel()},
                 new int[]{24, 25, 26, 20, 21}));
-        groups.add(new MenuGroup("容器",
+        groups.add(new MenuSheet.Group("容器",
                 new String[]{
                         "容器管理（" + Containers.items(this).size() + " 个容器 / "
                                 + Containers.images(this).size() + " 个镜像）",
@@ -1644,18 +1494,18 @@ public class MainActivity extends Activity
                         "运行时：" + runtimeLabel(),
                 },
                 new int[]{14, 16, 15, 9, 12, 8}));
-        groups.add(new MenuGroup("外观",
+        groups.add(new MenuSheet.Group("外观",
                 new String[]{fullscreen ? "退出全屏" : "全屏模式", "字号 +", "字号 -",
                         "终端字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp"},
                 new int[]{11, 5, 6, 22}));
-        groups.add(new MenuGroup("设置",
+        groups.add(new MenuSheet.Group("设置",
                 new String[]{
                         prefs.getBoolean("root", false) ? "Root Shell：开" : "Root Shell：关",
                         prefs.getBoolean("osc52", false) ? "程序写剪贴板：开" : "程序写剪贴板：关",
                         "存储权限：" + (hasAllFilesAccess() ? "已授权" : "未授权（点此开启）"),
                 },
                 new int[]{7, 23, 13}));
-        groups.add(new MenuGroup("帮助",
+        groups.add(new MenuSheet.Group("帮助",
                 new String[]{"使用说明…", "关于"},
                 new int[]{19, 10}));
         return groups;
@@ -1668,138 +1518,10 @@ public class MainActivity extends Activity
      * 辅助键盘），同类跨两处不好找，收进独立的「键盘与输入法」组；
      * 「终端字号范围」与外观组的字号 ± 同类，挪过去相邻。
      *
-     * 用自绘面板而不是 PopupMenu：PopupMenu 的二级子菜单是级联窗口，顶部那行
-     * 绿色组名只是标题摆设——点不动、也没法回到上一层。自绘后层级在同一窗口
-     * 内切换：二级首行（绿色组名）点一下回顶层，返回键同理逐层退。
+     * 面板装配、层级切换与弹出方向在 ui/MenuSheet；本方法只提供菜单数据。
      */
     private void showMenu(View anchor) {
-        showMenuPopup(anchor, buildMenuGroups(), -1);
-    }
-
-    private void showMenuPopup(final View anchor, final java.util.List<MenuGroup> groups,
-                               final int groupIndex) {
-        dismissMenu();
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setBackgroundResource(R.drawable.menu_bg);
-        panel.setMinimumWidth(dp(200));
-
-        // 行先装进 rowsBox 再套 ScrollView：菜单超过锚点下方可用高度时
-        // （横屏的容器二级最高）像系统菜单一样可滚，而不是被屏幕裁掉底行。
-        LinearLayout rowsBox = new LinearLayout(this);
-        rowsBox.setOrientation(LinearLayout.VERTICAL);
-
-        if (groupIndex < 0) {
-            // 顶层：6 个组名，点击展开对应二级
-            for (int i = 0; i < groups.size(); i++) {
-                final int idx = i;
-                TextView row = addMenuRow(rowsBox, groups.get(i).title, false);
-                row.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        showMenuPopup(anchor, groups, idx);
-                    }
-                });
-            }
-        } else {
-            final MenuGroup g = groups.get(groupIndex);
-            // 二级首行：绿色组名 = 返回按钮（"‹" 提示可点回顶层）
-            TextView back = addMenuRow(rowsBox, "‹ " + g.title, true);
-            back.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    showMenuPopup(anchor, groups, -1);
-                }
-            });
-            for (int i = 0; i < g.ids.length; i++) {
-                final int id = g.ids[i];
-                TextView row = addMenuRow(rowsBox, g.labels[i], false);
-                row.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        dismissMenu();
-                        onMenuClick(id);
-                    }
-                });
-            }
-        }
-
-        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
-        scroll.setVerticalScrollBarEnabled(false);
-        scroll.addView(rowsBox);
-        panel.addView(scroll);
-        // 先量锚点上下各有多少可见空间（可见显示框不含导航条和 IME）。
-        // 锚点可能在屏幕最底部（键条 ⌨ 长按菜单）：系统键盘未弹出时锚点
-        // 下方只剩导航条，向下弹出整窗会落到屏幕外——所以菜单超过下方
-        // 空间就向上弹，超长内容压进较大的一侧滚动。
-        android.graphics.Rect frame = new android.graphics.Rect();
-        getWindow().getDecorView().getWindowVisibleDisplayFrame(frame);
-        int[] loc = new int[2];
-        anchor.getLocationOnScreen(loc);
-        int spaceBelow = frame.bottom - (loc[1] + anchor.getHeight());
-        int spaceAbove = loc[1] - frame.top;
-        int avail = Math.max(spaceBelow, spaceAbove) - dp(12);
-        rowsBox.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
-        if (rowsBox.getMeasuredHeight() > avail) {
-            scroll.setLayoutParams(new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, avail));
-        }
-        panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
-
-        android.widget.PopupWindow popup = new android.widget.PopupWindow(panel,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT, false);
-        // 背景必须是任意非空 drawable，否则 outsideTouchable 不生效（点外部不收起）
-        popup.setBackgroundDrawable(
-                new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
-        popup.setOutsideTouchable(true);
-        popup.setElevation(dp(8));
-        menuPopup = popup;
-        menuAnchor = anchor;
-        menuGroups = groups;
-        menuGroupIndex = groupIndex;
-        if (panel.getMeasuredHeight() <= spaceBelow) {
-            // 下方放得下：常规下拉（顶栏 ⋮ 菜单走这条）
-            popup.showAsDropDown(anchor, 0, dp(4), Gravity.END);
-        } else {
-            // 下方放不下：负偏移向上弹，菜单底边贴在锚点上方。
-            // showAsDropDown 的 y 是相对「锚点底边」的偏移，要挪到锚点
-            // 顶边之上需要抵掉锚点自身高度再加菜单高度。
-            popup.showAsDropDown(anchor, 0,
-                    -(anchor.getHeight() + panel.getMeasuredHeight() + dp(4)),
-                    Gravity.END);
-        }
-    }
-
-    private TextView addMenuRow(LinearLayout rowsBox, String text, boolean accent) {
-        TextView row = new TextView(this);
-        row.setText(text);
-        row.setTextSize(15);
-        row.setSingleLine(true);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setTextColor(accent ? COLOR_ACCENT : COLOR_TEXT);
-        row.setBackgroundResource(R.drawable.menu_item_bg);
-        row.setPadding(dp(18), 0, dp(18), 0);
-        // 整行可点：宽度铺满面板。之前 WRAP_CONTENT 时短行右侧的大片面板空白
-        // 是死区——看得见点不着、也不收起菜单，系统 PopupMenu 是整行宽响应。
-        // 48dp 是 Material 建议的最小触控高度。
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
-        row.setLayoutParams(lp);
-        rowsBox.addView(row);
-        return row;
-    }
-
-    private void dismissMenu() {
-        if (menuPopup != null) {
-            if (menuPopup.isShowing()) {
-                menuPopup.dismiss();
-            }
-            menuPopup = null;
-        }
-        menuAnchor = null;
-        menuGroups = null;
-        menuGroupIndex = -1;
+        menuSheet.show(anchor, buildMenuGroups());
     }
 
     private String runtimeLabel() {
@@ -1879,16 +1601,16 @@ public class MainActivity extends Activity
                 }
                 return true;
             case 12:
-                showVolumesDialog();
+                containerDialogs.showVolumesDialog();
                 return true;
             case 13:
                 requestStorageAccess();
                 return true;
             case 14:
-                showContainersDialog();
+                containerDialogs.showContainersDialog();
                 return true;
             case 15:
-                pickArchiveForImport();
+                containerDialogs.pickArchiveForImport();
                 return true;
             case 16:
                 startActivity(new android.content.Intent(this, ConsoleActivity.class));
@@ -2146,10 +1868,8 @@ public class MainActivity extends Activity
         prefs.edit().putBoolean("fullscreen", on).apply();
 
         updateChrome();
-        if (btnFullscreen != null) {
-            btnFullscreen.setText(on ? K_FULLSCREEN_ON : K_FULLSCREEN);
-            btnFullscreen.setTextColor(on ? COLOR_ACCENT : COLOR_TEXT);
-            btnFullscreen.setContentDescription(on ? "退出全屏" : "全屏");
+        if (keyBarUi != null) {
+            keyBarUi.setFullscreenState(on);
         }
 
         Window window = getWindow();
@@ -2267,689 +1987,96 @@ public class MainActivity extends Activity
         root.requestApplyInsets();
     }
 
-    /* -------------------- 绑定目录（volumes） -------------------- */
+    /* -------------------- 容器对话框宿主能力（ContainerDialogs.Host） -------------------- */
 
-    private void showVolumesDialog() {
-        final java.util.List<String[]> items = Volumes.list(this);
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("容器绑定目录");
-
-        if (items.isEmpty()) {
-            builder.setMessage("还没有绑定。\n\n"
-                    + "绑定后，容器内的路径直接指向宿主真实目录——写进容器的文件就在手机上，"
-                    + "不是复制一份。\n\n"
-                    + "常用：宿主 /sdcard/Download → 容器 /mnt/download");
-        } else {
-            String[] labels = new String[items.size()];
-            for (int i = 0; i < items.size(); i++) {
-                String st = Volumes.state(items.get(i));
-                labels[i] = (st == null ? "✓ " : "⚠ ")
-                        + Volumes.label(items.get(i))
-                        + (st == null ? "" : "  · " + st);
-            }
-            builder.setItems(labels, new android.content.DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(android.content.DialogInterface dialog, int which) {
-                    confirmRemoveVolume(items, which);
-                }
-            });
-        }
-
-        builder.setPositiveButton("添加绑定", new android.content.DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(android.content.DialogInterface dialog, int which) {
-                showAddVolumeDialog();
-            }
-        });
-        builder.setNeutralButton("全部清除", new android.content.DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(android.content.DialogInterface dialog, int which) {
-                Volumes.clear(MainActivity.this);
-                toast("已清除全部绑定");
-            }
-        });
-        builder.setNegativeButton("关闭", null);
-        builder.show();
+    @Override
+    public Context context() {
+        return this;
     }
 
-    private void confirmRemoveVolume(final java.util.List<String[]> items, final int index) {
-        new AlertDialog.Builder(this)
-                .setTitle("删除绑定")
-                .setMessage(Volumes.label(items.get(index)) + "\n\n只删除配置，不会动宿主目录里的文件。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        Volumes.removeAt(MainActivity.this, index);
-                        toast("已删除（重启容器会话后生效）");
-                    }
-                })
-                .show();
+    @Override
+    public Context appContext() {
+        return getApplicationContext();
     }
 
-    private void showAddVolumeDialog() {
-        float density = getResources().getDisplayMetrics().density;
-        int pad = (int) (18 * density);
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(pad, pad / 2, pad, 0);
-
-        TextView hostLabel = new TextView(this);
-        hostLabel.setText("宿主路径（手机上的真实目录）");
-        hostLabel.setTextSize(12);
-        hostLabel.setTextColor(0xFF9AA0AE);
-
-        final EditText host = new EditText(this);
-        host.setHint("/sdcard/Download");
-        host.setText("/sdcard/Download");
-        host.setSingleLine(true);
-
-        TextView guestLabel = new TextView(this);
-        guestLabel.setText("容器内路径（留空表示同名挂载）");
-        guestLabel.setTextSize(12);
-        guestLabel.setTextColor(0xFF9AA0AE);
-        guestLabel.setPadding(0, (int) (10 * density), 0, 0);
-
-        final EditText guest = new EditText(this);
-        guest.setHint("/mnt/download");
-        guest.setText("/mnt/download");
-        guest.setSingleLine(true);
-
-        box.addView(hostLabel);
-        box.addView(host);
-        box.addView(guestLabel);
-        box.addView(guest);
-
-        new AlertDialog.Builder(this)
-                .setTitle("添加绑定目录")
-                .setView(box)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("添加", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        String hostPath = host.getText().toString().trim();
-                        String guestPath = guest.getText().toString().trim();
-                        if (hostPath.isEmpty()) {
-                            toast("宿主路径不能为空");
-                            return;
-                        }
-                        File hostFile = new File(hostPath);
-                        if (!hostFile.exists()) {
-                            toast("宿主路径不存在：" + hostPath);
-                            return;
-                        }
-                        if (!hostFile.isDirectory()) {
-                            toast("宿主路径不是目录：" + hostPath);
-                            return;
-                        }
-                        if (!guestPath.isEmpty() && !guestPath.startsWith("/")) {
-                            toast("容器内路径要以 / 开头");
-                            return;
-                        }
-                        if ((hostPath.startsWith("/sdcard") || hostPath.startsWith("/storage"))
-                                && !hasAllFilesAccess()) {
-                            toast("提示：未授予「所有文件访问」，容器里可能看到空目录（菜单 → 存储权限）");
-                        } else if (!hostFile.canRead()) {
-                            toast("提示：应用无权读取该目录，容器里会报 Permission denied");
-                        }
-                        Volumes.add(MainActivity.this, hostPath, guestPath);
-                        if (MODE_CONTAINER.equals(mode)) {
-                            toast("已添加，正在重启容器会话");
-                            switchMode(MODE_CONTAINER, true);
-                        } else {
-                            toast("已添加，切到容器模式后生效");
-                        }
-                    }
-                })
-                .show();
+    @Override
+    public java.util.concurrent.ExecutorService background() {
+        return background;
     }
 
-    /* -------------------- 容器管理 -------------------- */
-
-    /** 后台补齐镜像大小缓存（对话框只读缓存，绝不在线程里递归数几万个文件）。 */
-    private void refreshImageSizesAsync() {
-        final Context app = getApplicationContext();
-        background.execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    Containers.refreshImageSizes(app);
-                } catch (Throwable ignored) {
-                    // 缓存补齐失败不影响列表打开
-                }
-            }
-        });
+    @Override
+    public void runOnUi(Runnable r) {
+        runOnUiThread(r);
     }
 
-    private void showContainersDialog() {
-        refreshImageSizesAsync();
-        final java.util.List<Containers.Item> containers = Containers.items(this);
-        final java.util.List<Containers.Image> images = Containers.images(this);
-        final String active = Containers.activeName(this);
-
-        final java.util.List<String> labels = new java.util.ArrayList<>();
-        final java.util.List<int[]> meta = new java.util.ArrayList<>();
-
-        labels.add("⌨ 管理控制台（docker 命令）");
-        meta.add(new int[]{5, -1});
-        labels.add("＋ 新建容器（从镜像）");
-        meta.add(new int[]{2, -1});
-        for (int i = 0; i < containers.size(); i++) {
-            Containers.Item item = containers.get(i);
-            labels.add((item.name.equals(active) ? "★ " : "   ")
-                    + item.name + "   " + item.image
-                    + "   [" + (item.isRunning() ? "运行中" : "已停止") + "]");
-            meta.add(new int[]{0, i});
-        }
-        for (int i = 0; i < images.size(); i++) {
-            Containers.Image img = images.get(i);
-            // 大小只读缓存：dirSize 要递归数几万个文件，在 UI 线程跑必卡。
-            // 缓存缺失显示「…」，refreshImageSizesAsync 补齐后下次打开就有值。
-            long sz = Containers.cachedImageSize(this, img.name);
-            labels.add("镜像   " + img.name + "   "
-                    + (sz < 0 ? "…" : Containers.humanSize(sz)));
-            meta.add(new int[]{1, i});
-        }
-        labels.add("⇣ 拉取镜像（Docker Hub / Alpine）…");
-        meta.add(new int[]{3, -1});
-        labels.add("⇣ 导入 tar 镜像（docker save / export）…");
-        meta.add(new int[]{4, -1});
-        labels.add("⇄ 镜像源设置（换源）…");
-        meta.add(new int[]{6, -1});
-
-        new AlertDialog.Builder(this)
-                .setTitle("容器与镜像")
-                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        int[] m = meta.get(which);
-                        switch (m[0]) {
-                            case 0:
-                                showContainerActions(containers.get(m[1]));
-                                break;
-                            case 1:
-                                showImageActions(images.get(m[1]));
-                                break;
-                            case 2:
-                                chooseImageForNewContainer();
-                                break;
-                            case 3:
-                                showPullDialog();
-                                break;
-                            case 4:
-                                pickArchiveForImport();
-                                break;
-                            case 5:
-                                startActivity(new android.content.Intent(MainActivity.this,
-                                        ConsoleActivity.class));
-                                break;
-                            case 6:
-                                showMirrorDialog();
-                                break;
-                            default:
-                                break;
-                        }
-                    }
-                })
-                .setPositiveButton("关闭", null)
-                .show();
+    @Override
+    public void showProgress(String message) {
+        showOverlay(message);
     }
 
-    private void showContainerActions(final Containers.Item item) {
-        final java.util.List<String> list = new java.util.ArrayList<>();
-        list.add(item.isRunning() ? "切换到此容器" : "启动并切换");
-        if (item.isRunning()) {
-            list.add("停止");
-        }
-        list.add("删除");
-        final String[] actions = list.toArray(new String[0]);
-        new AlertDialog.Builder(this)
-                .setTitle(item.name)
-                .setItems(actions, new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        String action = actions[which];
-                        if ("删除".equals(action)) {
-                            confirmRemoveContainer(item);
-                        } else if ("停止".equals(action)) {
-                            Containers.Item it = Containers.find(MainActivity.this, item.name);
-                            if (it != null && it.isRunning()) {
-                                // 只掐这个容器的 tab，别的容器会话不受影响
-                                dropTabs(MODE_CONTAINER, item.name);
-                                updateStatus("已停止 " + item.name);
-                            }
-                        } else {
-                            mode = MODE_CONTAINER;
-                            prefs.edit().putString("mode", MODE_CONTAINER).apply();
-                            fallbackTried = false;
-                            Containers.setActive(MainActivity.this, item.name);
-                            updateModeButtons();
-                            startContainer(item.name);
-                        }
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+    @Override
+    public void updateProgress(String message) {
+        overlayText.setText(message);
     }
 
-    private void confirmRemoveContainer(final Containers.Item item) {
-        new AlertDialog.Builder(this)
-                .setTitle("删除容器 " + item.name)
-                .setMessage("会删除这个容器的 rootfs（容器里装的软件、写的文件全部消失）。"
-                        + "\n\n镜像和宿主绑定目录不受影响。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        // 不管是不是活动容器都先停它的 tab，否则 rootfs 目录被 proot 占着删不掉
-                        dropTabs(MODE_CONTAINER, item.name);
-                        if (!Containers.remove(MainActivity.this, item.name)) {
-                            toast("删除失败：" + item.name + " 的目录还在被占用");
-                            return;
-                        }
-                        toast("已删除 " + item.name);
-                        // 活动容器落位（落到剩余第一个 / 空册）由 Containers.remove 统一处理
-                        updateStatus(Containers.items(MainActivity.this).isEmpty()
-                                ? "已删除最后一个容器" : null);
-                    }
-                })
-                .show();
+    @Override
+    public void hideProgress() {
+        hideOverlay();
     }
 
-    private void chooseImageForNewContainer() {
-        refreshImageSizesAsync();
-        final java.util.List<Containers.Image> images = Containers.images(this);
-        if (images.isEmpty()) {
-            toast("还没有镜像，先拉取一个");
-            return;
-        }
-        if (images.size() == 1) {
-            askContainerName(images.get(0));
-            return;
-        }
-        String[] names = new String[images.size()];
-        for (int i = 0; i < images.size(); i++) {
-            long sz = Containers.cachedImageSize(this, images.get(i).name);
-            names[i] = images.get(i).name + "   " + (sz < 0 ? "…" : Containers.humanSize(sz));
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("选择镜像")
-                .setItems(names, new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        askContainerName(images.get(which));
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+    @Override
+    public boolean allFilesAccess() {
+        return hasAllFilesAccess();
     }
 
-    private void askContainerName(final Containers.Image image) {
-        final EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setHint("容器名，如 web");
-        input.setText(Containers.suggestName(this));
-        long sz = Containers.cachedImageSize(this, image.name);
-        String message = sz < 0
-                ? "会复制一份可写 rootfs，与镜像互不影响。"
-                : "会复制一份可写 rootfs（" + Containers.humanSize(sz) + "），与镜像互不影响。";
-        new AlertDialog.Builder(this)
-                .setTitle("从 " + image.name + " 新建容器")
-                .setMessage(message)
-                .setView(input)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("创建", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        createContainerAsync(input.getText().toString().trim(), image.name);
-                    }
-                })
-                .show();
+    @Override
+    public void startForResult(Intent intent, int requestCode) {
+        startActivityForResult(intent, requestCode);
     }
 
-    private void createContainerAsync(final String name, final String image) {
-        showOverlay("创建容器 " + name + " …");
-        background.execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    final Containers.Item created = Containers.create(getApplicationContext(), name, image);
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            hideOverlay();
-                            Containers.setActive(MainActivity.this, created.name);
-                            mode = MODE_CONTAINER;
-                            prefs.edit().putString("mode", MODE_CONTAINER).apply();
-                            updateModeButtons();
-                            startContainer(created.name);
-                        }
-                    });
-                } catch (final Exception e) {
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            hideOverlay();
-                            showError("创建容器失败", describe(e));
-                        }
-                    });
-                }
-            }
-        });
+    @Override
+    public boolean inContainerMode() {
+        return MODE_CONTAINER.equals(mode);
     }
 
-    private void showImageActions(final Containers.Image image) {
-        String[] actions = {"基于它新建容器", "删除镜像"};
-        new AlertDialog.Builder(this)
-                .setTitle(image.name)
-                .setItems(actions, new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        if (which == 0) {
-                            askContainerName(image);
-                        } else {
-                            confirmRemoveImage(image);
-                        }
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+    @Override
+    public void applyContainerMode() {
+        mode = MODE_CONTAINER;
+        prefs.edit().putString("mode", MODE_CONTAINER).apply();
     }
 
-    private void confirmRemoveImage(final Containers.Image image) {
-        new AlertDialog.Builder(this)
-                .setTitle("删除镜像 " + image.name)
-                .setMessage("只有当没有容器基于它时才能删除。已存在的容器自带 rootfs 副本，不受影响。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        try {
-                            Containers.removeImage(MainActivity.this, image.name);
-                            toast("已删除镜像 " + image.name);
-                        } catch (Exception e) {
-                            toast(describe(e));
-                        }
-                    }
-                })
-                .show();
+    @Override
+    public void refreshModeChip() {
+        updateModeButtons();
     }
 
-    private void showPullDialog() {
-        final EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setHint("镜像名，如 debian:12 / alpine:3.21");
-        input.setText("alpine:3.21");
-        String hub = Containers.hubMirror(this);
-        new AlertDialog.Builder(this)
-                .setTitle("拉取镜像")
-                .setMessage("alpine 版本：从官方 CDN 或镜像源下载 minirootfs（约 3MB）。\n"
-                        + "其余：从 Docker Hub 匿名拉取（几十 MB 起，层压缩仅支持 gzip）。\n"
-                        + "当前 Hub 源：" + (hub.isEmpty() ? "官方直连" : hub)
-                        + "（可在「镜像源设置」里换源）")
-                .setView(input)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("拉取", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        pullImageAsync(input.getText().toString().trim());
-                    }
-                })
-                .show();
+    @Override
+    public void resetFallback() {
+        fallbackTried = false;
     }
 
-    /** 换源设置：Hub 与 Alpine 两个源各一个输入框，留空=恢复官方直连。 */
-    private void showMirrorDialog() {
-        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
-        box.setOrientation(android.widget.LinearLayout.VERTICAL);
-        int pad = (int) (16 * getResources().getDisplayMetrics().density);
-        box.setPadding(pad, pad / 2, pad, 0);
-
-        android.widget.TextView l1 = new android.widget.TextView(this);
-        l1.setText("Docker Hub 镜像源（留空=官方直连）\n示例：docker.1ms.run");
-        final EditText hub = new EditText(this);
-        hub.setSingleLine(true);
-        hub.setHint("https://docker.m.daocloud.io");
-        hub.setText(Containers.hubMirror(this));
-        android.widget.TextView l2 = new android.widget.TextView(this);
-        l2.setText("Alpine CDN 镜像源（留空=官方 dl-cdn）\n示例：mirrors.tuna.tsinghua.edu.cn/alpine");
-        final EditText alpine = new EditText(this);
-        alpine.setSingleLine(true);
-        alpine.setHint("https://mirrors.tuna.tsinghua.edu.cn/alpine");
-        alpine.setText(Containers.alpineMirror(this));
-
-        box.addView(l1);
-        box.addView(hub);
-        box.addView(l2);
-        box.addView(alpine);
-
-        new AlertDialog.Builder(this)
-                .setTitle("镜像源设置")
-                .setView(box)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        try {
-                            String h = Containers.setHubMirror(MainActivity.this,
-                                    hub.getText().toString().trim());
-                            String a = Containers.setAlpineMirror(MainActivity.this,
-                                    alpine.getText().toString().trim());
-                            toast("镜像源已保存：Hub " + (h.isEmpty() ? "官方直连" : h)
-                                    + " / Alpine " + (a.isEmpty() ? "官方直连" : a));
-                        } catch (Exception e) {
-                            toast("保存失败：" + e.getMessage());
-                        }
-                    }
-                })
-                .show();
+    @Override
+    public void stopContainerTabs(String name) {
+        dropTabs(MODE_CONTAINER, name);
     }
 
-    private void pullImageAsync(final String tag) {
-        showOverlay("拉取 " + tag + " …");
-        final Context appContext = getApplicationContext();
-        background.execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    String ref = Containers.pull(appContext, tag, new ContainerRuntime.Progress() {
-                        @Override
-                        public void onProgress(final String message) {
-                            runOnUiThread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    overlayText.setText(message);
-                                }
-                            });
-                        }
-                    });
-                    final String pulled = ref;
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            hideOverlay();
-                            toast("已拉取 " + pulled + "（菜单 → 容器管理可基于它新建容器）");
-                        }
-                    });
-                } catch (final Exception e) {
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            hideOverlay();
-                            showError("拉取失败", describe(e));
-                        }
-                    });
-                }
-            }
-        });
+    @Override
+    public void restartContainerMode() {
+        switchMode(MODE_CONTAINER, true);
+    }
+
+    @Override
+    public void openConsole() {
+        startActivity(new Intent(this, ConsoleActivity.class));
     }
 
     /* -------------------- 从 tar 导入镜像 -------------------- */
 
-    /**
-     * 选一个 tar 让系统文件选择器打开（SAF，不需要存储权限）。
-     * 支持 docker export 的扁平 rootfs，也支持 docker save 的层叠包（含 OCI 布局）。
-     */
-    private void pickArchiveForImport() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        try {
-            startActivityForResult(intent, REQ_IMPORT_TAR);
-        } catch (Exception e) {
-            toast("没有可用的文件选择器：" + describe(e));
-        }
-    }
-
+    /** 文件选择器回来：导入镜像的请求交给 ui/ContainerDialogs 续接。 */
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQ_IMPORT_TAR || resultCode != RESULT_OK || data == null) {
-            return;
-        }
-        final android.net.Uri uri = data.getData();
-        if (uri == null) {
-            return;
-        }
-        showOverlay("读取归档…");
-        background.execute(new Runnable() {
-            @Override
-            public void run() {
-                File copied = null;
-                try {
-                    copied = copyUriToCache(uri);
-                    final File ready = copied;
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            hideOverlay();
-                            askImportName(ready);
-                        }
-                    });
-                } catch (final Exception e) {
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            hideOverlay();
-                            showError("读取文件失败", describe(e));
-                        }
-                    });
-                }
-            }
-        });
-    }
-
-    private File copyUriToCache(android.net.Uri uri) throws Exception {
-        String name = "import-source.tar";
-        try (android.database.Cursor c = getContentResolver().query(uri, null, null, null, null)) {
-            if (c != null && c.moveToFirst()) {
-                int idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
-                if (idx >= 0) {
-                    String display = c.getString(idx);
-                    if (display != null && !display.isEmpty()) {
-                        name = display.replaceAll("[^A-Za-z0-9._-]", "_");
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-            // 拿不到名字就用默认的
-        }
-        File dest = new File(getCacheDir(), name);
-        try (java.io.InputStream in = getContentResolver().openInputStream(uri);
-             java.io.OutputStream out = new java.io.FileOutputStream(dest)) {
-            if (in == null) {
-                throw new java.io.IOException("无法打开该文件");
-            }
-            byte[] buf = new byte[64 * 1024];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                out.write(buf, 0, n);
-            }
-        }
-        return dest;
-    }
-
-    /** 镜像名留空时用归档自带的标签（docker save 的 RepoTags / OCI 的 ref.name）。 */
-    private void askImportName(final File archive) {
-        final EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setHint("留空则用归档里的名字，如 alpine:3.20");
-        new AlertDialog.Builder(this)
-                .setTitle("导入镜像")
-                .setMessage(archive.getName() + "（" + Containers.humanSize(archive.length()) + "）\n\n"
-                        + "支持 docker export 的扁平 rootfs tar，也支持 docker save 的层叠 tar（含 .wh. 白化）。\n"
-                        + "导入的镜像架构需与设备一致：" + ContainerBootstrap.abi())
-                .setView(input)
-                .setNegativeButton("取消", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        //noinspection ResultOfMethodCallIgnored
-                        archive.delete();
-                    }
-                })
-                .setPositiveButton("导入", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        importArchiveAsync(archive, input.getText().toString().trim());
-                    }
-                })
-                .show();
-    }
-
-    private void importArchiveAsync(final File archive, final String refHint) {
-        showOverlay("导入镜像…");
-        final Context app = getApplicationContext();
-        background.execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    final ImageImporter.Result result = ImageImporter.importArchive(app, archive, refHint,
-                            new ContainerRuntime.Progress() {
-                                @Override
-                                public void onProgress(final String message) {
-                                    runOnUiThread(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            overlayText.setText(message);
-                                        }
-                                    });
-                                }
-                            });
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            hideOverlay();
-                            //noinspection ResultOfMethodCallIgnored
-                            archive.delete();
-                            String message = "已导入 " + result.ref + "\n"
-                                    + "格式：" + result.format + "\n"
-                                    + "层数：" + result.layers + "\n\n"
-                                    + "下一步：菜单 → 容器管理 → 新建容器；"
-                                    + "或控制台里 docker run --name c1 " + result.ref;
-                            if (result.note != null) {
-                                message = result.note + "\n\n" + message;
-                            }
-                            new AlertDialog.Builder(MainActivity.this)
-                                    .setTitle("导入完成")
-                                    .setMessage(message)
-                                    .setPositiveButton("好的", null)
-                                    .show();
-                        }
-                    });
-                } catch (final Exception e) {
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            hideOverlay();
-                            //noinspection ResultOfMethodCallIgnored
-                            archive.delete();
-                            showError("导入失败", describe(e));
-                        }
-                    });
-                }
-            }
-        });
+        containerDialogs.handleResult(requestCode, resultCode, data);
     }
 
     /* -------------------- 存储权限 -------------------- */
@@ -3126,12 +2253,7 @@ public class MainActivity extends Activity
     @Override
     public void onBackPressed() {
         // 自绘菜单是非焦点窗口，返回键落到这里：二级退回顶层，顶层才收起
-        if (menuPopup != null) {
-            if (menuGroupIndex >= 0) {
-                showMenuPopup(menuAnchor, menuGroups, -1);
-            } else {
-                dismissMenu();
-            }
+        if (menuSheet.handleBack()) {
             return;
         }
         if (overlay.getVisibility() == View.VISIBLE) {
@@ -3163,7 +2285,7 @@ public class MainActivity extends Activity
         super.onConfigurationChanged(newConfig);
         // 旋转 / 键盘支架开合都会走这里
         // 菜单锚在 ⋮ 按钮上，转屏后位置会挪，直接收起最干净
-        dismissMenu();
+        menuSheet.dismiss();
         refreshInputMode();
         updateChrome();
         updateStatus(null);

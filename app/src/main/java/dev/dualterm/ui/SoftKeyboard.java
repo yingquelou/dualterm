@@ -66,8 +66,6 @@ public final class SoftKeyboard {
     public interface Host {
         TerminalView terminal();
 
-        Button makeKeyButton(String label);
-
         int dp(int value);
 
         boolean hardKeyboard();
@@ -279,6 +277,24 @@ public final class SoftKeyboard {
         refresh();
     }
 
+    /** 键块工厂：样式与常驻键条一致（自绘、无系统 Button 的默认内边距）。 */
+    private Button makeKeyButton(String label) {
+        Button b = new Button(kbd.getContext());
+        b.setText(label);
+        b.setTextSize(11);
+        b.setAllCaps(false);
+        b.setGravity(android.view.Gravity.CENTER);
+        b.setTextColor(0xFFE6E6E6);
+        b.setBackgroundResource(R.drawable.key_bg);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setPadding(0, 0, 0, 0);
+        b.setSingleLine(true);
+        return b;
+    }
+
     private LinearLayout makeRow() {
         LinearLayout row = new LinearLayout(host.terminal().getContext());
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -293,7 +309,7 @@ public final class SoftKeyboard {
 
     private void addKey(LinearLayout row, final String label, View.OnClickListener click,
                         View.OnLongClickListener longClick, int textSize) {
-        Button b = host.makeKeyButton(label);
+        Button b = makeKeyButton(label);
         b.setTextSize(textSize);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, host.dp(34), 1f);
         lp.setMargins(host.dp(2), host.dp(2), host.dp(2), 0);
