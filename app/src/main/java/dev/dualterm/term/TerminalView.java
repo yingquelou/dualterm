@@ -526,16 +526,26 @@ public class TerminalView extends View {
      * 硬键盘字母是自己组词还是回退给应用，不 restartInput 就永远停在旧语义上。
      */
     private void refreshTakeover() {
-        boolean next = computeTakeover();
-        if (next == imeTakeover) {
+        if (!applyTakeover(computeTakeover())) {
             return;
         }
-        imeTakeover = next;
-        imeComposing = false;
         InputMethodManager imm = imm();
         if (imm != null && hasFocus()) {
             imm.restartInput(this);
         }
+    }
+
+    /**
+     * 接管态的唯一写入口（refreshTakeover 与 onCreateInputConnection 共用）。
+     * 返回是否发生了变化；真变了才需要让输入法重取 EditorInfo。
+     */
+    private boolean applyTakeover(boolean takeover) {
+        if (imeTakeover == takeover) {
+            return false;
+        }
+        imeTakeover = takeover;
+        imeComposing = false;
+        return true;
     }
 
     /**
@@ -1977,15 +1987,18 @@ public class TerminalView extends View {
         // - 常规（含软键盘打中文）：TYPE_NULL，安卓终端模拟器的标准做法（Termux 同款），
         //   告诉输入法「这里不是普通文本框」，压掉联想/自动纠错；中文输入不受影响——
         //   拼音组词仍在输入法内部，选词上屏走 commitText。
-        // - 外接键盘 + 输入法界面可见（见 computeTakeover）：改成普通文本框语义，
-        //   输入法才会接管硬键盘字母组词；NO_SUGGESTIONS 尽量把联想压回去。
-        imeTakeover = computeTakeover();
+        // - 外接键盘 + 输入法界面可见（见 computeTakeover）：必须是文本框语义，输入法才会
+        //   接管硬键盘字母组词；用 NO_SUGGESTIONS 压联想，避免把敲的命令当成词条候选。
+        // 学习词库两种形态都不进：终端里敲的是命令/密码，不该留给输入法做个性化语料。
+        applyTakeover(computeTakeover());
+        // 新会话不存在旧组词状态，必须清（applyTakeover 只在接管态变化时清）
         imeComposing = false;
         out.inputType = imeTakeover
-                ? InputType.TYPE_CLASS_TEXT
+                ? (InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
                 : InputType.TYPE_NULL;
         out.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
-                | EditorInfo.IME_FLAG_NO_FULLSCREEN;
+                | EditorInfo.IME_FLAG_NO_FULLSCREEN
+                | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
         // fullEditor=true（Termux 同款）：composing 文本由 BaseInputConnection 默认实现
         // 落进内部 Editable 并维护 composing span，IME 回读状态自洽——待选区才能正常收尾。
         // 之前 fullEditor=false + 吞掉 setComposingText/finishComposingText 是反例：
