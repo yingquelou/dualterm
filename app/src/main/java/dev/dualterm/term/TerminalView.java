@@ -255,9 +255,13 @@ public class TerminalView extends View {
     /** 选区辅助游标：1 = 拖起点，2 = 拖终点，0 = 未拖。 */
     private int handleDrag;
     private float startHandleX, startHandleY, endHandleX, endHandleY;
-    private static final float HANDLE_STEM_DP = 9f;
-    private static final float HANDLE_RADIUS_DP = 7f;
-    private static final float HANDLE_TOUCH_DP = 22f;
+    /**
+     * 选区手柄尺寸（dp）：杆长 / 半径 / 命中半径。默认值与手柄落地时一致；
+     * 指腹触屏时指甲会遮住手柄，长度与大小因人而异，由宿主从 prefs 注入。
+     */
+    private float handleStemDp = 9f;
+    private float handleRadiusDp = 7f;
+    private float handleTouchDp = 22f;
 
     public TerminalView(Context context) {
         super(context);
@@ -441,6 +445,17 @@ public class TerminalView extends View {
         if (cur != textSizeSp) {
             setTextSizeSp(cur);
         }
+    }
+
+    /** 选区手柄尺寸（dp）：杆长 / 圆头半径 / 命中半径。越界自动夹紧。 */
+    public void setHandleMetrics(float stemDp, float radiusDp, float touchDp) {
+        handleStemDp = Math.max(4f, Math.min(40f, stemDp));
+        handleRadiusDp = Math.max(3f, Math.min(24f, radiusDp));
+        handleTouchDp = Math.max(16f, Math.min(48f, touchDp));
+        if (selActive) {
+            updateHandlePositions();
+        }
+        invalidate();
     }
 
     public boolean isCtrlDown() {
@@ -1133,8 +1148,8 @@ public class TerminalView extends View {
         synchronized (e) {
             viewportTopGlobal = e.getEvictedRows() + e.getScrollbackCount() - scrollOffset;
         }
-        float stem = dp(HANDLE_STEM_DP);
-        float r = dp(HANDLE_RADIUS_DP);
+        float stem = dp(handleStemDp);
+        float r = dp(handleRadiusDp);
         int startRow = Math.max(0, Math.min(gridRows - 1, selStartRow - viewportTopGlobal));
         int endRow = Math.max(0, Math.min(gridRows - 1, selEndRow - viewportTopGlobal));
         float maxY = getHeight() - r - dp(2);
@@ -1147,7 +1162,7 @@ public class TerminalView extends View {
     /** 命中哪个手柄：1 = 起点，2 = 终点，0 = 都没有。 */
     private int hitsHandle(float x, float y) {
         updateHandlePositions();
-        float r = dp(HANDLE_TOUCH_DP);
+        float r = dp(handleTouchDp);
         if (Math.hypot(x - startHandleX, y - startHandleY) <= r) {
             return 1;
         }
@@ -1182,15 +1197,15 @@ public class TerminalView extends View {
     private void extendSelectionToTouch() {
         float y = selTouchY;
         if (handleDrag != 0) {
-            y -= dp(HANDLE_STEM_DP + HANDLE_RADIUS_DP);
+            y -= dp(handleStemDp + handleRadiusDp);
         }
         extendSelectionTo(selTouchX, y);
     }
 
     private void drawSelectionHandle(Canvas canvas, float x, float y) {
-        float r = dp(HANDLE_RADIUS_DP);
+        float r = dp(handleRadiusDp);
         fillPaint.setColor(COLOR_CURSOR);
-        rect.set(x - dp(1.5f), y - r - dp(HANDLE_STEM_DP), x + dp(1.5f), y);
+        rect.set(x - dp(1.5f), y - r - dp(handleStemDp), x + dp(1.5f), y);
         canvas.drawRect(rect, fillPaint);
         canvas.drawCircle(x, y, r, fillPaint);
     }
@@ -1693,7 +1708,7 @@ public class TerminalView extends View {
         int barEndRow = Math.max(0, Math.min(gridRows - 1, selEndRow - viewportTopGlobal));
         float selTop = padY + barStartRow * cellHeight;
         float selBottom = padY + (barEndRow + 1) * cellHeight;
-        float handleSpace = dp(HANDLE_STEM_DP + HANDLE_RADIUS_DP * 2 + 6);
+        float handleSpace = dp(handleStemDp + handleRadiusDp * 2 + 6);
         float top = selTop - h - dp(6);
         if (top < dp(4)) {
             top = Math.min(getHeight() - h - dp(4), selBottom + handleSpace);
@@ -2633,17 +2648,25 @@ public class TerminalView extends View {
         }
 
         // 取基础字符时要摘掉 Ctrl 位：getUnicodeChar 遇到 Ctrl 组合通常直接返回 0
-        int meta = event.getMetaState()
+        int noCtrlMeta = event.getMetaState()
                 & ~(KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_LEFT_ON | KeyEvent.META_CTRL_RIGHT_ON);
-        int cp = event.getUnicodeChar(meta);
+        // AltGr（法语等布局的 Alt+E→€）在安卓里报成右 Alt：KeyCharacterMap 按修饰位
+        // 给出布局字符，此时 Alt 是「字符修饰」而不是 Meta，不能再拼 ESC 前缀，否则
+        // 终端收到 ESC+€（vim/readline 当 Meta-€ 吞掉，等于打不出）。判据 = 含 Alt
+        // 取到的字符与不含 Alt（保留 Shift）取到的不同，且是可见字符。
+        int plainMeta = noCtrlMeta
+                & ~(KeyEvent.META_ALT_ON | KeyEvent.META_ALT_LEFT_ON | KeyEvent.META_ALT_RIGHT_ON);
+        int plain = event.getUnicodeChar(plainMeta);
+        int cp = event.getUnicodeChar(noCtrlMeta);
         if (cp <= 0) {
             cp = event.getUnicodeChar(0);
         }
         if (cp <= 0) {
             return false;
         }
+        boolean altGrChar = alt && plain > 0 && cp != plain && cp >= 0x20;
 
-        String out = withModifiers(cp, ctrl, alt);
+        String out = withModifiers(cp, ctrl, alt && !altGrChar);
         if (out == null) {
             return false;
         }

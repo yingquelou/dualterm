@@ -229,6 +229,11 @@ public class MainActivity extends Activity
         });
         terminal.setFontRange(fontMinSp(), fontMaxSp());
         terminal.setTextSizeSp(prefs.getInt("font_size", 13));
+        // 选区手柄尺寸：指腹触屏时指甲会遮住手柄，长度/大小按人可调（菜单「外观」）
+        terminal.setHandleMetrics(
+                prefs.getInt("handle_stem_dp", 9),
+                prefs.getInt("handle_radius_dp", 7),
+                prefs.getInt("handle_touch_dp", 22));
 
         buildKeyBar();
         buildSoftKeyboard();
@@ -1496,8 +1501,9 @@ public class MainActivity extends Activity
                 new int[]{14, 16, 15, 9, 12, 8}));
         groups.add(new MenuSheet.Group("外观",
                 new String[]{fullscreen ? "退出全屏" : "全屏模式", "字号 +", "字号 -",
-                        "终端字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp"},
-                new int[]{11, 5, 6, 22}));
+                        "终端字号范围：" + fontMinSp() + "–" + fontMaxSp() + "sp",
+                        "选区手柄：" + handleMetricsLabel()},
+                new int[]{11, 5, 6, 22, 27}));
         groups.add(new MenuSheet.Group("设置",
                 new String[]{
                         prefs.getBoolean("root", false) ? "Root Shell：开" : "Root Shell：关",
@@ -1581,6 +1587,9 @@ public class MainActivity extends Activity
                 return true;
             case 22:
                 showFontRangeDialog();
+                return true;
+            case 27:
+                showHandleMetricsDialog();
                 return true;
             case 26:
                 showImeTakeoverDialog();
@@ -1753,6 +1762,97 @@ public class MainActivity extends Activity
                 updateStatus(null);
                 dialog.dismiss();
                 toast("字号范围：" + min + "–" + max + "sp");
+            }
+        });
+    }
+
+    /** 外观组里的一行摘要：当前手柄三围。 */
+    private String handleMetricsLabel() {
+        return "杆 " + prefs.getInt("handle_stem_dp", 9) + "dp / 半径 "
+                + prefs.getInt("handle_radius_dp", 7) + "dp";
+    }
+
+    /**
+     * 选区手柄尺寸。杆长把圆头推离文字行（指腹触屏时指甲会遮住手柄，越长越不容易
+     * 挡住）；圆头半径决定外观与命中区；命中半径单独可调，手粗/手细都能点中。
+     * 改完立即生效并落盘，下次启动沿用。
+     */
+    private void showHandleMetricsDialog() {
+        float density = getResources().getDisplayMetrics().density;
+        int pad = (int) (20 * density);
+        int gap = (int) (10 * density);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(pad, pad / 2, pad, 0);
+
+        TextView stemLabel = new TextView(this);
+        stemLabel.setText("杆长（dp，4–40）：越长圆头离文字越远");
+        stemLabel.setTextSize(12);
+        stemLabel.setTextColor(0xFF9AA0AE);
+        final EditText stemInput = new EditText(this);
+        stemInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        stemInput.setSingleLine(true);
+        stemInput.setText(String.valueOf(prefs.getInt("handle_stem_dp", 9)));
+
+        TextView radiusLabel = new TextView(this);
+        radiusLabel.setText("圆头半径（dp，3–24）");
+        radiusLabel.setTextSize(12);
+        radiusLabel.setTextColor(0xFF9AA0AE);
+        radiusLabel.setPadding(0, gap, 0, 0);
+        final EditText radiusInput = new EditText(this);
+        radiusInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        radiusInput.setSingleLine(true);
+        radiusInput.setText(String.valueOf(prefs.getInt("handle_radius_dp", 7)));
+
+        TextView touchLabel = new TextView(this);
+        touchLabel.setText("命中半径（dp，16–48）：手指粗细不同，点得中即可");
+        touchLabel.setTextSize(12);
+        touchLabel.setTextColor(0xFF9AA0AE);
+        touchLabel.setPadding(0, gap, 0, 0);
+        final EditText touchInput = new EditText(this);
+        touchInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        touchInput.setSingleLine(true);
+        touchInput.setText(String.valueOf(prefs.getInt("handle_touch_dp", 22)));
+
+        box.addView(stemLabel);
+        box.addView(stemInput);
+        box.addView(radiusLabel);
+        box.addView(radiusInput);
+        box.addView(touchLabel);
+        box.addView(touchInput);
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("选区手柄")
+                .setView(box)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确定", null)
+                .show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int stem = parseDialogInt(stemInput.getText().toString(), -1);
+                int radius = parseDialogInt(radiusInput.getText().toString(), -1);
+                int touch = parseDialogInt(touchInput.getText().toString(), -1);
+                if (stem < 4 || stem > 40) {
+                    toast("杆长只能是 4–40dp");
+                    return;
+                }
+                if (radius < 3 || radius > 24) {
+                    toast("圆头半径只能是 3–24dp");
+                    return;
+                }
+                if (touch < 16 || touch > 48) {
+                    toast("命中半径只能是 16–48dp");
+                    return;
+                }
+                prefs.edit()
+                        .putInt("handle_stem_dp", stem)
+                        .putInt("handle_radius_dp", radius)
+                        .putInt("handle_touch_dp", touch)
+                        .apply();
+                terminal.setHandleMetrics(stem, radius, touch);
+                dialog.dismiss();
+                toast("手柄：杆 " + stem + "dp / 半径 " + radius + "dp / 命中 " + touch + "dp");
             }
         });
     }

@@ -120,10 +120,12 @@ app/src/main/
   维持「程序优先」；单击在选区存在时清选区不弹键盘，选中态下任何写 PTY 的
   输入弃选区（xterm key press discards selection）。
 - **端点手柄**：`updateHandlePositions()` 每帧算两个手柄的屏幕坐标（挂在选区首行上方、
-  末行下方）；`hitsHandle()` 按 `HANDLE_TOUCH_DP = 22` 的半径命中，命中后
-  `beginHandleDrag()` 进入手柄拖拽态，触点先抬高 `HANDLE_STEM_DP + HANDLE_RADIUS_DP`
-  再取格——不抬高就会选中手柄自己遮住的那一格。`clearSelection()`、`ACTION_CANCEL`、
-  `ACTION_UP` 都重置 `handleDrag`。
+  末行下方）；`hitsHandle()` 按命中半径（默认 22dp）判断，命中后
+  `beginHandleDrag()` 进入手柄拖拽态，触点先抬高「杆长 + 圆头半径」再取格——不抬高
+  就会选中手柄自己遮住的那一格。`clearSelection()`、`ACTION_CANCEL`、`ACTION_UP`
+  都重置 `handleDrag`。三围由 `setHandleMetrics(stem, radius, touch)` 注入（范围夹紧
+  4–40 / 3–24 / 16–48dp），宿主从 prefs `handle_stem_dp` 等读盘、菜单「外观 →
+  选区手柄」写入——指腹触屏时指甲会遮住圆头，长度因人而异。
 - **浮动条跟随**：`drawSelectionBar` 优先贴在选区上方（预留手柄空间），`top < dp(4)`
   时翻到 `selBottom + handleSpace`，水平按选区中点居中并夹在屏内。原实现固定顶部，
   长选区时会盖住选中的内容。

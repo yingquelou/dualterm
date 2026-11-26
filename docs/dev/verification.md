@@ -52,6 +52,9 @@
 | MainActivity 拆分：容器对话框 → `ui/ContainerDialogs`（2026-11-26，M2010J19SC） | `uiautomator dump` 逐项核对：容器与镜像列表（4 个容器含 `★ ubuntu [运行中]`、7 个镜像带大小）、滚到底后「⇣ 拉取镜像 / ⇣ 导入 tar / ⇄ 镜像源设置」三项齐全；容器动作菜单（切换到此容器 / 停止 / 删除）；绑定目录空册文案 + 添加绑定（默认 `/sdcard/Download → /mnt/download`）；拉取对话框读到当前 Hub 源 `https://docker.m.daocloud.io`。文案与项序与拆分前源码逐字一致；七套桌面回归全过 |
 | MainActivity 拆分：菜单面板 → `ui/MenuSheet`（2026-11-26，M2010J19SC） | `⋮` 打开后顶层 7 组完整；进「容器」二级显示 7 行（绿色 `‹ 容器` 返回行 + 容器管理 / 控制台 / 导入镜像 / 重建 / 绑定目录 / 运行时）；返回键第一次回顶层、第二次收起；点「外观 → 字号 +」状态栏由 `96x84 · 5sp` 变 `75x69 · 6sp` 且菜单收起，再点「字号 -」复原（Host 分发与收起时序正确）；七套桌面回归全过 |
 | 发布前构建校验（2026-11-26，本地） | `DT_VERSION_NAME=3.10.0 DT_VERSION_CODE=31000 assembleRelease` 成功；`aapt2 dump badging`：`dev.dualterm` versionName `3.10.0` / versionCode `31000`、native-code 三 ABI；APK 内 `lib/{arm64-v8a,armeabi-v7a,x86_64}/libproot.so` 齐全，体积 547KB；七套桌面回归全过（EmuTest ALL PASS / Sec 42 / Tar 24 / Import 35 / Ports 36 / Registry 73 / Kbd 137）。本次本地包为测试签名，正式包由 CI 注入 Secrets 私钥 |
+| 选区手柄尺寸可配置（2026-11-26，M2010J19SC） | 「外观 → 选区手柄：杆 9dp / 半径 7dp」打开三输入框（默认 9/7/22，范围校验生效）；杆长改 20 确认后 prefs `handle_stem_dp=20` 落盘，长按选词截图中手柄杆明显加长；改回 9 后 prefs 复原 |
+| AltGr 字符修复（2026-11-26，代码级） | `handleKeyCode` 改为「含 Alt 与不含 Alt（保留 Shift）的 KeyCharacterMap 字符不同且可见 → 判为 AltGr，只发字符不加 ESC」。US 布局 Alt+E / Alt+Shift+E 仍走 ESC 前缀（字符相同）；法语 AltGr+E→`€` 待用户用同一键盘复测 |
+| 手动测试结论回收（2026-11-26，用户实机） | E13 TalkBack 按逻辑行朗读通过；H1 端点重锚手感基本没问题；E7 手柄落地前测过、代码复核 shiftSelect 分支未动；F3 `"+yy` 未进剪贴板，判定为 vim 侧能力/配置（命令已写入 manual-test）；G4 AltGr 已修待复测 |
 | MainActivity 拆分：会话选择器 → `ui/SessionPicker`（2026-11-26，M2010J19SC） | 点模式 chip 弹出 `● 容器 · ubuntu · pid 29771` + 「＋ 新建本地 Shell / ＋ 新建容器会话（ubuntu）/ 容器与镜像…」；点当前会话项正常收起并保持贴屏；再点「容器与镜像…」打开容器列表（标题与内容完整）；七套桌面回归全过 |
 
 未经真机验证的部分：Docker 后端（缺少带 namespace 内核的设备）、整包 `ImageImporter.importArchive`（依赖 Context 与真 `org.json`，仅有单元级测试）。
