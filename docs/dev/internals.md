@@ -233,6 +233,11 @@ Android 11/12 的系统差异（同一版搜狗在两台设备上行为不同）
 | `Insert` / `Delete` | `ESC[2~` / `ESC[3~` | |
 | `Ctrl+Backspace` | `0x08` | 普通退格是 `0x7F` |
 
+**AltGr 优先于 Meta**：含 Alt 取到的 KeyCharacterMap 字符与不含 Alt（保留 Shift）取到的
+不同且是可见字符时，判定为布局字符，只发字符、不拼 `ESC`——法语 `AltGr+E`→`€`、默认
+布局 `Ctrl+Alt+S`→`ß`，与系统文本框一致（用户不必另学一套键位）；两字符相同时仍按上表
+发 `ESC` 前缀（US 的 `Alt+E`、`Alt+Shift+E` 不变）。
+
 新补的键位与让路（2026-11）：
 
 | 按键 | 发出/行为 | 备注 |
