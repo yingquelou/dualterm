@@ -664,28 +664,28 @@ public class EmuTest {
 
         // ---- OSC 52 写剪贴板 ----
 
-        // 47) 基本写入：BEL 终止，"hello" 编码后落 sink
+        // 56) 基本写入：BEL 终止，"hello" 编码后落 sink
         check("osc52 basic write",
                 osc52Of("\u001b]52;c;aGVsbG8=\u0007").equals("hello"),
                 "[" + osc52Of("\u001b]52;c;aGVsbG8=\u0007") + "]");
 
-        // 48) ST（ESC \）终止同样生效
+        // 57) ST（ESC \）终止同样生效
         check("osc52 st terminator",
                 osc52Of("\u001b]52;c;Zm9v\u001b\\").equals("foo"),
                 "[" + osc52Of("\u001b]52;c;Zm9v\u001b\\") + "]");
 
-        // 49) 其它目标忽略（c2 是「主选区」，我们不回读、也不当系统剪贴板写）
+        // 58) 其它目标忽略（c2 是「主选区」，我们不回读、也不当系统剪贴板写）
         check("osc52 target c2 ignored",
                 osc52Of("\u001b]52;c2;aGVsbG8=\u0007").isEmpty(),
                 "[" + osc52Of("\u001b]52;c2;aGVsbG8=\u0007") + "]");
 
-        // 50) 查询（数据为 ?）不支持：不回读剪贴板也不应答
+        // 59) 查询（数据为 ?）不支持：不回读剪贴板也不应答
         check("osc52 query ignored",
                 osc52Of("\u001b]52;c;?\u0007").isEmpty()
                         && queryReplyOf(mk(), "\u001b]52;c;?\u0007").isEmpty(),
                 "[" + osc52Of("\u001b]52;c;?\u0007") + "]");
 
-        // 51) 空 base64 / 解不动的数据整体忽略
+        // 60) 空 base64 / 解不动的数据整体忽略
         check("osc52 empty data ignored",
                 osc52Of("\u001b]52;c;\u0007").isEmpty(),
                 "[" + osc52Of("\u001b]52;c;\u0007") + "]");
@@ -693,36 +693,36 @@ public class EmuTest {
                 osc52Of("\u001b]52;c;!!!not-base64!!!\u0007").isEmpty(),
                 "[" + osc52Of("\u001b]52;c;!!!not-base64!!!\u0007") + "]");
 
-        // 52) MIME 宽容解码：发送方夹的换行不影响结果
+        // 61) MIME 宽容解码：发送方夹的换行不影响结果
         check("osc52 mime lenient",
                 osc52Of("\u001b]52;c;aGVs\nbG8=\u0007").equals("hello"),
                 "[" + osc52Of("\u001b]52;c;aGVs\nbG8=\u0007") + "]");
 
-        // 53) 多字节 UTF-8：中文原文 → base64 → 解回原文
+        // 62) 多字节 UTF-8：中文原文 → base64 → 解回原文
         check("osc52 utf8 roundtrip",
                 osc52Of("\u001b]52;c;" + b64("你好") + "\u0007").equals("你好"),
                 "[" + osc52Of("\u001b]52;c;" + b64("你好") + "\u0007") + "]");
 
-        // 54) 解码后 > 64KB 截断
+        // 63) 解码后 > 64KB 截断
         String big = b64(repeat('x', 70000));
         String clipped = osc52Of("\u001b]52;c;" + big + "\u0007");
         check("osc52 64KB clamp",
                 clipped.length() == 65536 && clipped.charAt(65535) == 'x',
                 "len=" + clipped.length());
 
-        // 55) OSC 序列本身超 100KB：整体丢弃，半截 base64 不落 sink
+        // 64) OSC 序列本身超 100KB：整体丢弃，半截 base64 不落 sink
         String huge = b64(repeat('y', 200000));   // base64 ≈ 267KB > 100KB 缓冲
         check("osc52 oversized sequence dropped",
                 osc52Of("\u001b]52;c;" + huge + "\u0007").isEmpty(),
                 "len=" + osc52Of("\u001b]52;c;" + huge + "\u0007").length());
 
-        // 56) 超长序列丢弃后，后续正常 OSC 52 不受牵连
+        // 65) 超长序列丢弃后，后续正常 OSC 52 不受牵连
         check("osc52 recovers after overflow",
                 osc52Of("\u001b]52;c;" + huge + "\u0007" + "\u001b]52;c;aGVsbG8=\u0007")
                         .equals("hello"),
                 "[" + osc52Of("\u001b]52;c;" + huge + "\u0007" + "\u001b]52;c;aGVsbG8=\u0007") + "]");
 
-        // 57) 其它 OSC 行为不回归：改标题依旧忽略、颜色查询依旧应答
+        // 66) 其它 OSC 行为不回归：改标题依旧忽略、颜色查询依旧应答
         TerminalEmulator q = mk();
         check("osc52 leaves other osc untouched",
                 queryReplyOf(q, "\u001b]10;?\u0007").startsWith("10;rgb:")

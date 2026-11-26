@@ -102,7 +102,7 @@ app/src/main/
   取文本（`getSelectionText`）与画高亮共用这个公式（同持 emulator 锁，无撕裂）。
 - **`TerminalEmulator` 保持纯 Java**：`getSelectionText` 做软换行拼行、行尾填充
   剥除（复用 `isTrailingPadding`）、宽字符尾格收拢；`wordSelectionAt` 做长按选词的
-  词边界扫描（空白 / 标点 / 宽字符逐字，跨软换行）。两者共 **EmuTest 36→55 用例**覆盖。
+  词边界扫描（空白 / 标点 / 宽字符逐字，跨软换行）。两者共 **EmuTest 36→52 用例**覆盖。
 - **长按选词的词锁**：`startSelectionAt` 选中整词后置 `selWordLocked`；`extendSelectionTo`
   在触点仍落于词内时不动选区（真实手指按下必抖，若 MOVE 一律改活动端，整词会
   塌成一个字符），拖出词外才清锁、回到按字符扩展。
