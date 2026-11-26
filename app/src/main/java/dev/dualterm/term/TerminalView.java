@@ -224,6 +224,15 @@ public class TerminalView extends View {
     private static final int SEL_BAR_ALL = 1;
     private static final int SEL_BAR_CANCEL = 2;
 
+    /** 视口第 0 行对应的全局行号（绘制时更新；手柄、浮窗、触摸换算共用）。 */
+    private int viewportTopGlobal;
+    /** 选区辅助游标：1 = 拖起点，2 = 拖终点，0 = 未拖。 */
+    private int handleDrag;
+    private float startHandleX, startHandleY, endHandleX, endHandleY;
+    private static final float HANDLE_STEM_DP = 9f;
+    private static final float HANDLE_RADIUS_DP = 7f;
+    private static final float HANDLE_TOUCH_DP = 22f;
+
     public TerminalView(Context context) {
         super(context);
         init();
@@ -982,6 +991,7 @@ public class TerminalView extends View {
 
     private void clearSelection() {
         selecting = false;
+        handleDrag = 0;
         selActive = false;
         selBarVisible = false;
         removeCallbacks(edgeScrollRunnable);
@@ -1012,7 +1022,7 @@ public class TerminalView extends View {
             int next = Math.max(0, Math.min(max, scrollOffset + dir));
             if (next != scrollOffset) {
                 scrollOffset = next;
-                extendSelectionTo(selTouchX, selTouchY);
+                extendSelectionToTouch();
             }
             postDelayed(this, 40);
         }
@@ -1025,6 +1035,84 @@ public class TerminalView extends View {
         if (selTouchY < topEdge || selTouchY > bottomEdge) {
             postDelayed(edgeScrollRunnable, 40);
         }
+    }
+
+    /* -------------------- 选区辅助游标 -------------------- */
+
+    /**
+     * 重算两个端点手柄的位置（圆头中心，视图坐标）。
+     * 手柄画在行底再往下 stem + r，手指按圆头时边界线在指尖上方，不会被遮挡。
+     * 端点滚出视口时贴边，保证还能把它拖回来。
+     */
+    private void updateHandlePositions() {
+        TermSession s = session;
+        if (!selActive || s == null) {
+            return;
+        }
+        TerminalEmulator e = s.getEmulator();
+        synchronized (e) {
+            viewportTopGlobal = e.getEvictedRows() + e.getScrollbackCount() - scrollOffset;
+        }
+        float stem = dp(HANDLE_STEM_DP);
+        float r = dp(HANDLE_RADIUS_DP);
+        int startRow = Math.max(0, Math.min(gridRows - 1, selStartRow - viewportTopGlobal));
+        int endRow = Math.max(0, Math.min(gridRows - 1, selEndRow - viewportTopGlobal));
+        float maxY = getHeight() - r - dp(2);
+        startHandleX = padX + selStartCol * cellWidth + dp(1);
+        startHandleY = Math.min(maxY, padY + (startRow + 1) * cellHeight + stem + r);
+        endHandleX = padX + (selEndCol + 1) * cellWidth;
+        endHandleY = Math.min(maxY, padY + (endRow + 1) * cellHeight + stem + r);
+    }
+
+    /** 命中哪个手柄：1 = 起点，2 = 终点，0 = 都没有。 */
+    private int hitsHandle(float x, float y) {
+        updateHandlePositions();
+        float r = dp(HANDLE_TOUCH_DP);
+        if (Math.hypot(x - startHandleX, y - startHandleY) <= r) {
+            return 1;
+        }
+        if (Math.hypot(x - endHandleX, y - endHandleY) <= r) {
+            return 2;
+        }
+        return 0;
+    }
+
+    private void beginHandleDrag(int which) {
+        handleDrag = which;
+        selecting = true;
+        selBarVisible = false;
+        abortFling();
+        // 锚固定在对侧端点：拖起点就是改 selStart，拖终点就是改 selEnd
+        if (which == 1) {
+            selAnchorRow = selEndRow;
+            selAnchorCol = selEndCol;
+            selTouchX = startHandleX;
+            selTouchY = startHandleY;
+        } else {
+            selAnchorRow = selStartRow;
+            selAnchorCol = selStartCol;
+            selTouchX = endHandleX;
+            selTouchY = endHandleY;
+        }
+        normalizeSelection();
+        invalidate();
+    }
+
+    /** 手柄拖拽时把触点抬高到提示杆顶部，再取格——否则会多选一行。 */
+    private void extendSelectionToTouch() {
+        float y = selTouchY;
+        if (handleDrag != 0) {
+            y -= dp(HANDLE_STEM_DP + HANDLE_RADIUS_DP);
+        }
+        extendSelectionTo(selTouchX, y);
+    }
+
+    private void drawSelectionHandle(Canvas canvas, float x, float y) {
+        float r = dp(HANDLE_RADIUS_DP);
+        fillPaint.setColor(COLOR_CURSOR);
+        rect.set(x - dp(1.5f), y - r - dp(HANDLE_STEM_DP), x + dp(1.5f), y);
+        canvas.drawRect(rect, fillPaint);
+        canvas.drawCircle(x, y, r, fillPaint);
     }
 
     private void copySelection() {
@@ -1220,9 +1308,17 @@ public class TerminalView extends View {
                 }
             }
 
+            viewportTopGlobal = evicted + scrollbackCount - scrollOffset;
             if (scrollOffset == 0 && emulator.isCursorVisible()) {
                 drawCursor(canvas, emulator);
             }
+        }
+
+        // 选区辅助游标先画，浮动条压在最上层
+        if (selActive && !selectionEmpty()) {
+            updateHandlePositions();
+            drawSelectionHandle(canvas, startHandleX, startHandleY);
+            drawSelectionHandle(canvas, endHandleX, endHandleY);
         }
 
         // 选区浮动条：长按拖完/Shift 拖完出现，复制 / 全选 / 取消
@@ -1261,8 +1357,19 @@ public class TerminalView extends View {
                 w += gap;
             }
         }
-        float left = Math.max(dp(6), (getWidth() - w) / 2f);
-        float top = dp(6);
+        // 跟随选区：优先贴在选区上方；选区从顶部开始时转到下方，并给手柄留出高度。
+        // 水平中心对齐选区中点，贴边时夹紧，保证浮窗总在手指附近、不压住选中的文字。
+        int barStartRow = Math.max(0, Math.min(gridRows - 1, selStartRow - viewportTopGlobal));
+        int barEndRow = Math.max(0, Math.min(gridRows - 1, selEndRow - viewportTopGlobal));
+        float selTop = padY + barStartRow * cellHeight;
+        float selBottom = padY + (barEndRow + 1) * cellHeight;
+        float handleSpace = dp(HANDLE_STEM_DP + HANDLE_RADIUS_DP * 2 + 6);
+        float top = selTop - h - dp(6);
+        if (top < dp(4)) {
+            top = Math.min(getHeight() - h - dp(4), selBottom + handleSpace);
+        }
+        float centerX = padX + ((selStartCol + selEndCol + 1) / 2f) * cellWidth;
+        float left = Math.max(dp(6), Math.min(getWidth() - w - dp(6), centerX - w / 2f));
         selBarRect.set(left, top, left + w, top + h);
 
         fillPaint.setColor(0xEE2A2A33);
@@ -1493,6 +1600,15 @@ public class TerminalView extends View {
             invalidate();
             return true;
         }
+        // 选区端点手柄：按住圆头拖，边界线在手指上方，不会被手掌挡住
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN
+                && selActive && !selecting && !isDead()) {
+            int handle = hitsHandle(event.getX(), event.getY());
+            if (handle != 0) {
+                beginHandleDrag(handle);
+                return true;
+            }
+        }
         // 捏合改字号；进入缩放后这一串事件都归手势，不再当作拖动。
         // 鼠标上报模式（vim/htop）下同样要喂：否则双指捏合会被整段当
         // 鼠标事件吞掉，字号永远调不了（实测复现）。双指纯上下滑跨度
@@ -1562,7 +1678,7 @@ public class TerminalView extends View {
                 if (selecting) {
                     selTouchX = event.getX();
                     selTouchY = event.getY();
-                    extendSelectionTo(selTouchX, selTouchY);
+                    extendSelectionToTouch();
                     scheduleEdgeScroll();
                     return true;
                 }
@@ -1588,6 +1704,7 @@ public class TerminalView extends View {
                 if (selecting) {
                     // 长按没拖动 = 空选区，照旧吃掉手势但不进入选中态
                     selecting = false;
+                    handleDrag = 0;
                     if (!selectionEmpty()) {
                         selActive = true;
                         selBarVisible = true;
@@ -1624,6 +1741,7 @@ public class TerminalView extends View {
                 abortFling();
                 recycleVelocityTracker();
                 selecting = false;
+                handleDrag = 0;
                 return true;
             default:
                 return super.onTouchEvent(event);
@@ -1911,6 +2029,49 @@ public class TerminalView extends View {
                 sendCommitted(getEditable().toString());
                 getEditable().clear();
                 return true;
+            }
+
+            /**
+             * 输入法「复制」靠这里取选区：返回 null 时它拿不到文本，
+             * 浮动工具条的复制/剪切会保持禁用（本次改造前的状态）。
+             */
+            @Override
+            public CharSequence getSelectedText(int flags) {
+                if (!selActive || selecting || session == null) {
+                    return null;
+                }
+                String text = session.getEmulator()
+                        .getSelectionText(selStartRow, selStartCol, selEndRow, selEndCol);
+                return text.isEmpty() ? null : text;
+            }
+
+            /** 输入法的「全选」会传 0..N；终端没有字符偏移模型，按语义落到终端选区。 */
+            @Override
+            public boolean setSelection(int start, int end) {
+                if (start == 0 && end > 0) {
+                    selectAllSelection();
+                    return true;
+                }
+                if (start == end) {
+                    clearSelection();
+                    return true;
+                }
+                return false;
+            }
+
+            /** 输入法浮动工具条：复制 / 剪切 / 全选。粘贴走 commitText，本来就是通的。 */
+            @Override
+            public boolean performContextMenuAction(int id) {
+                if (id == android.R.id.copy || id == android.R.id.cut) {
+                    // 终端里没有「剪切」语义（不能删掉已输出的文本），按复制处理
+                    copySelection();
+                    return true;
+                }
+                if (id == android.R.id.selectAll) {
+                    selectAllSelection();
+                    return true;
+                }
+                return false;
             }
 
             @Override
