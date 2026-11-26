@@ -470,8 +470,9 @@ shell 域（`/data/local/tmp`）也被拒——是域级策略而非目录/文�
   一行（`@id/progress_text` + 小号 indeterminate ProgressBar），不再用全屏 scrim；
   拉取 / 导入 / 创建期间菜单、会话、其它 tab 全程可用。
 - 全屏 `overlay` 只留给「启动容器」——它需要短暂独占（接上 PTY 再切屏）。
-- 拉取走独立执行器 `dualterm-pull`（`pulls`），不占 `background` 单线程队列，
-  否则一边下载一边启动容器会排队到下载结束；`onDestroy`（`isFinishing`）一并
+- 拉取与导入走独立执行器 `dualterm-io`（Host `ioLong()`），不占 `background`
+  单线程队列：下载/解包期间启动容器、重建容器不再排在后面；两者共用一条线程
+  也顺带串行化「同时改镜像注册表」的写操作。`onDestroy`（`isFinishing`）一并
   `shutdownNow`。
 - 重入守卫在 `ContainerDialogs.pulling`（tag 集合）：同一镜像重复点拉取只提示不重跑。
   未注册的镜像本来就不出现在列表里，因此不会出现「基于半成品镜像建容器」。

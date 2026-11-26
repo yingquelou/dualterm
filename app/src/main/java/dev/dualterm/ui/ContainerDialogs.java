@@ -49,8 +49,8 @@ public final class ContainerDialogs {
         /** 单线程后台执行器（与宿主共用，退出时统一收口）。 */
         ExecutorService background();
 
-        /** 拉取专用执行器：几十秒的网络任务不该堵住启动/导入等其它后台活。 */
-        ExecutorService pulls();
+        /** 长 IO 专用执行器（拉取 / 导入共用一条）：不堵启动、创建等短任务。 */
+        ExecutorService ioLong();
 
         /** 回到 UI 线程（等价于 Activity.runOnUiThread）。 */
         void runOnUi(Runnable r);
@@ -594,7 +594,7 @@ public final class ContainerDialogs {
         }
         host.showProgress("拉取 " + tag + " …");
         final Context appContext = host.appContext();
-        host.pulls().execute(new Runnable() {
+        host.ioLong().execute(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -662,7 +662,7 @@ public final class ContainerDialogs {
             return true;
         }
         host.showProgress("读取归档…");
-        host.background().execute(new Runnable() {
+        host.ioLong().execute(new Runnable() {
             @Override
             public void run() {
                 File copied = null;
@@ -752,7 +752,7 @@ public final class ContainerDialogs {
     private void importArchiveAsync(final File archive, final String refHint) {
         host.showProgress("导入镜像…");
         final Context app = host.appContext();
-        host.background().execute(new Runnable() {
+        host.ioLong().execute(new Runnable() {
             @Override
             public void run() {
                 try {

@@ -82,15 +82,16 @@ public class MainActivity extends Activity
                     });
 
     /**
-     * 镜像拉取专用执行器：几十秒的网络下载不该把 background 队列上的
-     * 启动/导入等活堵住（进度条不再遮屏后，用户会一边拉一边操作）。
+     * 长 IO 任务（镜像拉取 / tar 导入）专用执行器：不占 background 队列，
+     * 否则一边下载一边启动容器会排队到下载结束；两者共用一条线程也顺带
+     * 串行化了「同时改镜像注册表」的写操作。
      */
-    private final java.util.concurrent.ExecutorService pulls =
+    private final java.util.concurrent.ExecutorService ioLong =
             java.util.concurrent.Executors.newSingleThreadExecutor(
                     new java.util.concurrent.ThreadFactory() {
                         @Override
                         public Thread newThread(Runnable r) {
-                            Thread t = new Thread(r, "dualterm-pull");
+                            Thread t = new Thread(r, "dualterm-io");
                             t.setDaemon(true);
                             return t;
                         }
@@ -2126,8 +2127,8 @@ public class MainActivity extends Activity
     }
 
     @Override
-    public java.util.concurrent.ExecutorService pulls() {
-        return pulls;
+    public java.util.concurrent.ExecutorService ioLong() {
+        return ioLong;
     }
 
     @Override
@@ -2483,7 +2484,7 @@ public class MainActivity extends Activity
         }
         if (isFinishing()) {
             background.shutdownNow(); // 排队/在跑的后台任务全部中断
-            pulls.shutdownNow();
+            ioLong.shutdownNow();
             for (Tab t : tabs.values()) {
                 t.session.stop();
             }
