@@ -128,6 +128,25 @@ app/src/main/
   时翻到 `selBottom + handleSpace`，水平按选区中点居中并夹在屏内。原实现固定顶部，
   长选区时会盖住选中的内容。
 
+## 无障碍
+
+`TerminalView.getAccessibilityNodeProvider()` 返回 `RowNodeProvider`，把**当前视口**按
+可见逻辑行暴露成只读虚拟节点：
+
+- 节点文本走 `TerminalEmulator.getLogicalLineText()`：软换行续行拼回一个逻辑行，
+  续行行尾空格是真实内容、只在逻辑行末行剥除（与选区取文本同一口径）；
+  `isWrappedContinuation()` 标记续行，节点只发逻辑行首行；
+- 空白行不建节点；节点只支持无障碍焦点动作，没有点击/编辑/文本动作，触摸探索
+  只朗读文本（双击不会进编辑）；
+- 内容变化发 `TYPE_WINDOW_CONTENT_CHANGED`，节流 300ms（`A11Y_NOTIFY_MS`），
+  通知在锁外发，不阻塞会话读线程；
+- `uiautomator dump` 与读屏共用这一份节点，测试口径见 manual-test E0/E13；
+  逻辑行拼接的纯函数在 EmuTest 67–69 锁定。
+
+**边界**：只覆盖可见行（scrollback 不在节点里），没有按词粒度与「朗读选区」动作。
+回归成本：`RowNodeProvider` 依赖 `TerminalView`，桌面套件不覆盖，改动后用
+`uiautomator dump` 核对（E0）。
+
 ## OSC 52 写剪贴板
 
 vim `"+y`、tmux copy-mode 靠它把文本写进系统剪贴板。实现分三层，

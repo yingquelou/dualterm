@@ -238,8 +238,9 @@ PTY；输入法收起或用户显式退出接管时回到 `TYPE_NULL`，字母�
 | `docker pull` 的 digest / 第三方 registry / 登录 / 续传、zstd 层 | 第八节已定；导入通路补足 | 主流镜像只发 zstd 且无 gzip 变体 |
 | 协议缺口（IRM/LNM、modifyOtherKeys、kitty、OSC 0/2/8、`?2026`、ZWJ、Sixel） | 均静默降级（internals「与 xterm 对表的取舍」） | 程序明确依赖且无降级路径 |
 
-**发布动作**：正式包 `3.9.0`（2026-11-22）落后于 master（缺长按选词与折行恢复），
-随下一次 `v*` tag 一起出，不单独发版。
+**发布动作**：`3.9.0`（2026-11-22）之后 master 累积了长按选词、折行恢复、无障碍
+虚拟节点与 MainActivity 分区拆分，按语义化版本随下一个 `v3.10.0` tag 出，不单独发版；
+发版前本地收尾 = release 构建（测试签名）+ 三 ABI `libproot.so` 校验 + 七套回归。
 
 ## 硬约束（后续任何条目开工前先对一遍）
 
