@@ -286,7 +286,7 @@ AI 已用 adb 全流程实测（选区手势在触屏上难以人工单手复现
 - 注意：应用菜单**不在**终端长按上（入口 = 长按键条「⌨」或顶栏「⋮」），
   鼠标模式下终端长按无本地动作。
 
-### E7 Shift 直通（未测，需硬件键盘）
+### E7 Shift 直通（已测 + 代码复核）
 - 鼠标上报模式下 Shift+按下/拖动走本地选区（xterm shift override）。
   adb 无法模拟带 META_SHIFT 的触摸事件，留待接硬件键盘时测：
   vim `mouse=a` 下 Shift+拖动应出现本地绿色高亮而非 vim Visual。
@@ -495,7 +495,6 @@ bash tools/ime-check.sh 'enter' 'n i h a o :800 enter' 'space' 'n i h a o :800 e
   布局字符——终端实际收到 `ESC + €`，被 readline/vim 当 Meta-€ 吞掉。已修：含 Alt
   取到的字符与不含 Alt（保留 Shift）取到的不同且是可见字符时判为 AltGr，只发字符、
   不加 ESC；US 布局的 Alt+E / Alt+Shift+E 不受影响（字符相同，仍走 Meta）。
-  待用户用同一键盘复测 `€`、Ctrl+Alt 组合与 AltGr+字母的其它符号。
 - **复测结论（2026-11-26 晚，用户实机）**：法语键盘 AltGr+E → `€` ✓ 已可用。
   默认（US）KCM 下 **Ctrl+Alt+S 打出 `ß`**（形状像 β）——这是 AltGr 语义，
   与系统文本框一致（系统短信里同样出 `ß`），不是回归：安卓把 Ctrl+Alt+字母
