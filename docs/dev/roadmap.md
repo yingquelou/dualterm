@@ -308,4 +308,5 @@ PTY；输入法收起或用户显式退出接管时回到 `TYPE_NULL`，字母�
   指腹触屏时指甲遮住圆头的手感问题（manual-test E8）
 - 2026-11-26 AltGr 字符修复：法语布局 AltGr+E→`€` 此前被当 Meta 发成 `ESC + €`，
   按「带 Alt 与不带 Alt 的 KeyCharacterMap 字符不同即 AltGr」只发字符；US 布局
-  Alt+E / Alt+Shift+E 不受影响（manual-test G4）
+  Alt+E / Alt+Shift+E 不受影响（manual-test G4）。用户实机复测：法语 `€` 已可用；
+  US 的 Ctrl+Alt+S → `ß` 属 AltGr 语义（与系统文本框一致），非回归

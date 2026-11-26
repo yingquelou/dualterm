@@ -496,6 +496,11 @@ bash tools/ime-check.sh 'enter' 'n i h a o :800 enter' 'space' 'n i h a o :800 e
   取到的字符与不含 Alt（保留 Shift）取到的不同且是可见字符时判为 AltGr，只发字符、
   不加 ESC；US 布局的 Alt+E / Alt+Shift+E 不受影响（字符相同，仍走 Meta）。
   待用户用同一键盘复测 `€`、Ctrl+Alt 组合与 AltGr+字母的其它符号。
+- **复测结论（2026-11-26 晚，用户实机）**：法语键盘 AltGr+E → `€` ✓ 已可用。
+  默认（US）KCM 下 **Ctrl+Alt+S 打出 `ß`**（形状像 β）——这是 AltGr 语义，
+  与系统文本框一致（系统短信里同样出 `ß`），不是回归：安卓把 Ctrl+Alt+字母
+  定义为布局字符，应用跟随系统。终端 Meta 组合仍走 Alt+字母（`ESC` 前缀），
+  控制符仍走单独 Ctrl（Ctrl+S = 0x13）；需要「Ctrl+Alt+字母」原义时改绑键条。
 
 ## I. 输入法接管真机复核与菜单重组（AI 实机，2026-11-21）
 
