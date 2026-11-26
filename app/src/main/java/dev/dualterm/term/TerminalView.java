@@ -30,7 +30,8 @@ import android.view.ScaleGestureDetector;
  * 触摸端的四个约定（都在手机单手握持的范围内）：
  * <ul>
  *   <li>单指拖动 = 看历史；右下角浮出「回到底部」胶囊，点它一键回游标（否则用户会被留在历史里）</li>
- *   <li>长按拖动 = 选区（复制 / 全选 / 取消浮动条），跨屏幕与 scrollback；鼠标上报模式归程序</li>
+ *   <li>长按 = 选区（落点即按词选中，拖动继续扩展；复制 / 全选 / 取消浮动条），
+ *       跨屏幕与 scrollback；鼠标上报模式归程序</li>
  *   <li>双指捏合 = 改字号（桌面终端靠 Ctrl+滚轮，触屏用捏合最直觉）</li>
  *   <li>鼠标滚轮 / 触控板 = 滚屏；程序开了鼠标上报就转成滚轮序列交给它（vim、htop）</li>
  * </ul>
@@ -87,9 +88,9 @@ public class TerminalView extends View {
             // 退化成一次点击（点终端 = 切键盘），手感上像误触
             longPressFired = true;
             // 选区接管长按（非鼠标模式，或 Shift 直通的手势）：
-            // 锚点落在长按处，后续 MOVE 扩展、UP 固定并弹浮动条
+            // 落点所在的词直接选中，后续 MOVE 继续扩展、UP 固定并弹浮动条
             if (longPressForSelect && session != null && session.isRunning()) {
-                startSelectionAt(selTouchX, selTouchY);
+                startSelectionAt(selTouchX, selTouchY, true);
                 return;
             }
             if (longPressListener == null) {
@@ -212,6 +213,13 @@ public class TerminalView extends View {
     private boolean selecting;                  // 长按拖选进行中
     private boolean selActive;                  // 有生效中的选区
     private float selTouchX, selTouchY;         // 手指位置（边缘自动滚动用）
+    /**
+     * 长按直接选中的词范围。真实手指按下去必然有几像素抖动，若 MOVE 一律把
+     * 活动端改成触点所在格，整词会立刻塌成一个字符（实测更容易塌成空选区）；
+     * 在拖出词外之前保持整词不动。
+     */
+    private boolean selWordLocked;
+    private int selWordStartRow, selWordStartCol, selWordEndRow, selWordEndCol;
     /** DOWN 时刻快照：长按是否允许转成选区（鼠标上报模式下归程序）。 */
     private boolean longPressForSelect;
     /** 硬件键盘 Shift+按下：本手势不再上报程序，走本地选区（xterm shift override）。 */
@@ -934,18 +942,43 @@ public class TerminalView extends View {
         return new int[]{global, col};
     }
 
-    private void startSelectionAt(float x, float y) {
+    /**
+     * 从触点起选。{@code wordSelect=true} 表示这是长按入口：落点即按词选中，
+     * 松手就有内容可复制；硬件键盘 Shift+按下保持 xterm 的「从触点起按字符拖选」
+     * 语义，不替你扩成整词。
+     */
+    private void startSelectionAt(float x, float y, boolean wordSelect) {
         int[] cell = cellAt(x, y);
         if (selActive) {
             // xterm extend-selection 语义：已有选区时长按 = 挪离触点最近的那个
             // 端点（锚固定在较远端）。往选区外拖是扩，往里拖是缩——增减同一手势。
             anchorAtEndpointFartherFrom(cell[0], cell[1]);
+            selMoveRow = cell[0];
+            selMoveCol = cell[1];
+            selWordLocked = false;
         } else {
-            selAnchorRow = cell[0];
-            selAnchorCol = cell[1];
+            // 长按即选词：按空白/标点/宽字符边界取触点所在的词，松手就有内容可复制；
+            // 落在空白上没有词，退化成单格空选区（行为与以前一致）。
+            int[] word = wordSelect && session != null
+                    ? session.getEmulator().wordSelectionAt(cell[0], cell[1]) : null;
+            if (word != null && !(word[0] == word[2] && word[1] == word[3])) {
+                selAnchorRow = word[0];
+                selAnchorCol = word[1];
+                selMoveRow = word[2];
+                selMoveCol = word[3];
+                selWordStartRow = word[0];
+                selWordStartCol = word[1];
+                selWordEndRow = word[2];
+                selWordEndCol = word[3];
+                selWordLocked = true;
+            } else {
+                selAnchorRow = cell[0];
+                selAnchorCol = cell[1];
+                selMoveRow = cell[0];
+                selMoveCol = cell[1];
+                selWordLocked = false;
+            }
         }
-        selMoveRow = cell[0];
-        selMoveCol = cell[1];
         selecting = true;
         selActive = false;
         selBarVisible = false;
@@ -974,10 +1007,24 @@ public class TerminalView extends View {
 
     private void extendSelectionTo(float x, float y) {
         int[] cell = cellAt(x, y);
+        if (selWordLocked && insideSelectedWord(cell[0], cell[1])) {
+            normalizeSelection();
+            invalidate();
+            return;
+        }
+        selWordLocked = false;
         selMoveRow = cell[0];
         selMoveCol = cell[1];
         normalizeSelection();
         invalidate();
+    }
+
+    /** 触点是否仍落在长按选中的词内（行列按阅读顺序比较）。 */
+    private boolean insideSelectedWord(int row, int col) {
+        long p = (long) row * 100000L + col;
+        long s = (long) selWordStartRow * 100000L + selWordStartCol;
+        long e = (long) selWordEndRow * 100000L + selWordEndCol;
+        return p >= s && p <= e;
     }
 
     private void normalizeSelection() {
@@ -1004,6 +1051,7 @@ public class TerminalView extends View {
         handleDrag = 0;
         selActive = false;
         selBarVisible = false;
+        selWordLocked = false;
         removeCallbacks(edgeScrollRunnable);
         invalidate();
     }
@@ -1648,7 +1696,7 @@ public class TerminalView extends View {
                     dragging = false;
                     selTouchX = event.getX();
                     selTouchY = event.getY();
-                    startSelectionAt(selTouchX, selTouchY);
+                    startSelectionAt(selTouchX, selTouchY, false);
                     return true;
                 }
             }
@@ -1671,7 +1719,7 @@ public class TerminalView extends View {
                 if ((event.getMetaState() & KeyEvent.META_SHIFT_MASK) != 0 && !isDead()) {
                     removeCallbacks(longPressRunnable);
                     longPressFired = true;
-                    startSelectionAt(selTouchX, selTouchY);
+                    startSelectionAt(selTouchX, selTouchY, false);
                     return true;
                 }
                 // 鼠标上报模式下长按归程序（程序优先），不转选区

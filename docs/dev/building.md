@@ -40,12 +40,12 @@ gradle assembleDebug           # 等价，跳过 wrapper 下载
 **终端仿真器**（纯 Java，无依赖）：
 
 ```bash
-javac -encoding UTF-8 -d /tmp/etest \
+javac -encoding UTF-8 -sourcepath app/src/main/java -d /tmp/etest \
       app/src/main/java/dev/dualterm/term/TerminalEmulator.java tools/EmuTest.java
 java -cp /tmp/etest EmuTest      # 全部通过时打印 ALL PASS
 ```
 
-覆盖 DEC 画线字符集、延迟换行、DECAWM、CJK 占位、DECSCUSR、鼠标序列、焦点上报、备用屏 scrollback 隔离、SO/SI、CPR、resize（顶裁/底补/scrollback 保留/宽字符跨界）、DECALN、`ESC % G` 参数字节吞除、DECSTR、DECOM 原点模式、SGR 冒号真彩、modifyOtherKeys 不当 SGR、制表位（HTS/TBC）、组合字符、DCH 宽字符修复、BCE。修改仿真器后先跑这一套，再上真机看 vim。
+覆盖 DEC 画线字符集、延迟换行、DECAWM、CJK 占位、DECSCUSR、鼠标序列、焦点上报、备用屏 scrollback 隔离、SO/SI、CPR、resize（顶裁/底补/scrollback 保留/宽字符跨界）、DECALN、`ESC % G` 参数字节吞除、DECSTR、DECOM 原点模式、SGR 冒号真彩、modifyOtherKeys 不当 SGR、制表位（HTS/TBC）、组合字符、DCH 宽字符修复、BCE、选区取文本（软换行拼行 / 填充剥除 / 宽字符收拢 / 全局行号）与长按选词的词边界（空白 / 标点 / 宽字符逐字 / 跨软换行）。修改仿真器后先跑这一套，再上真机看 vim。
 
 **tar/OCI 解包**（`tools/TarTest.java`）：
 

@@ -1,6 +1,7 @@
 import dev.dualterm.term.TerminalEmulator;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /** 桌面 JVM 上的仿真器回归：DEC 字符集 / 延迟换行 / DECAWM / CJK 占格 / 鼠标与光标形状。 */
 public class EmuTest {
@@ -546,6 +547,70 @@ public class EmuTest {
                         && ev.getSelectionText(2, 0, 4, 9).equals("L2\nL3\nL4\n"),
                 "evicted=" + ev.getEvictedRows()
                         + " [" + ev.getSelectionText(2, 0, 4, 9) + "]");
+
+        // ---- 长按选词 ----
+        // "ls -la /data/local/tmp"：local 在 13..17
+        TerminalEmulator wd = new TerminalEmulator(40, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(wd, "ls -la /data/local/tmp");
+
+        // 47) 长按落在词中间 → 取整词（标点 / 空白是边界）
+        int[] wseg = wd.wordSelectionAt(0, 14);
+        check("word selection on path segment",
+                Arrays.equals(wseg, new int[]{0, 13, 0, 17})
+                        && wd.getSelectionText(wseg[0], wseg[1], wseg[2], wseg[3])
+                                .equals("local\n"),
+                Arrays.toString(wseg) + " ["
+                        + wd.getSelectionText(wseg[0], wseg[1], wseg[2], wseg[3]) + "]");
+
+        // 48) 标点自成一词
+        int[] wp = wd.wordSelectionAt(0, 3);
+        check("word selection punctuation run",
+                Arrays.equals(wp, new int[]{0, 3, 0, 3})
+                        && wd.getSelectionText(wp[0], wp[1], wp[2], wp[3]).equals("-\n"),
+                Arrays.toString(wp) + " [" + wd.getSelectionText(wp[0], wp[1], wp[2], wp[3]) + "]");
+
+        // 49) 落在空白上 → 单格（上层退化为空选区，不弹浮动条）
+        int[] ws = wd.wordSelectionAt(0, 6);
+        check("word selection whitespace is single cell",
+                Arrays.equals(ws, new int[]{0, 6, 0, 6}), Arrays.toString(ws));
+
+        // 50) CJK 逐字成词；尾格触点收拢到头格
+        TerminalEmulator cj = new TerminalEmulator(20, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(cj, "中文abc");
+        int[] wc1 = cj.wordSelectionAt(0, 0);
+        int[] wc2 = cj.wordSelectionAt(0, 3);   // 文 的尾格
+        int[] wc3 = cj.wordSelectionAt(0, 5);
+        check("word selection CJK per char",
+                Arrays.equals(wc1, new int[]{0, 0, 0, 1})
+                        && cj.getSelectionText(wc1[0], wc1[1], wc1[2], wc1[3]).equals("中\n"),
+                Arrays.toString(wc1));
+        check("word selection CJK tail cell snaps to head",
+                Arrays.equals(wc2, new int[]{0, 2, 0, 3})
+                        && cj.getSelectionText(wc2[0], wc2[1], wc2[2], wc2[3]).equals("文\n"),
+                Arrays.toString(wc2));
+        check("word selection ascii after CJK",
+                Arrays.equals(wc3, new int[]{0, 4, 0, 6})
+                        && cj.getSelectionText(wc3[0], wc3[1], wc3[2], wc3[3]).equals("abc\n"),
+                Arrays.toString(wc3));
+
+        // 51) 软换行：折到下一行的词拼回同一逻辑行（词跨行）
+        TerminalEmulator wr = new TerminalEmulator(10, 4, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(wr, "abcdefghijk");     // abcdefghij + k（wrapped）
+        int[] ww = wr.wordSelectionAt(1, 0);
+        check("word selection spans soft wrap",
+                Arrays.equals(ww, new int[]{0, 0, 1, 0})
+                        && wr.getSelectionText(ww[0], ww[1], ww[2], ww[3])
+                                .equals("abcdefghijk\n"),
+                Arrays.toString(ww) + " ["
+                        + wr.getSelectionText(ww[0], ww[1], ww[2], ww[3]) + "]");
+
+        // 52) scrollback 行：用全局行号定位（ev 在 46) 后已逐出 2 行）
+        int[] wg = ev.wordSelectionAt(2, 0);
+        check("word selection on scrollback global row",
+                Arrays.equals(wg, new int[]{2, 0, 2, 1})
+                        && ev.getSelectionText(wg[0], wg[1], wg[2], wg[3]).equals("L2\n"),
+                Arrays.toString(wg) + " ["
+                        + ev.getSelectionText(wg[0], wg[1], wg[2], wg[3]) + "]");
 
         // ---- OSC 52 写剪贴板 ----
 

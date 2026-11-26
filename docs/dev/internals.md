@@ -92,8 +92,8 @@ app/src/main/
 
 ## 文本选区
 
-长按定锚 → 拖动扩展 → 浮动条（复制/全选/取消），边界与取舍见 roadmap.md 第一节，
-这里只记实现上不显然的三件事：
+长按即按词选中（词内抖动保持整词）→ 拖动扩展 → 浮动条（复制/全选/取消），
+边界与取舍见 roadmap.md 第一节，这里只记实现上不显然的几件事：
 
 - **锚点是全局行号**（= `evictedRows` + scrollback 内行数 + 屏幕行），不是屏幕行。
   `pushScrollback` 与 `clearScreen` 都推进 `evictedRows`，全局行号空间只增不减，
@@ -101,7 +101,11 @@ app/src/main/
   视口行 → 全局行的换算：`global = evictedRows + scrollbackCount + row − scrollOffset`，
   取文本（`getSelectionText`）与画高亮共用这个公式（同持 emulator 锁，无撕裂）。
 - **`TerminalEmulator` 保持纯 Java**：`getSelectionText` 做软换行拼行、行尾填充
-  剥除（复用 `isTrailingPadding`）、宽字符尾格收拢，EmuTest 36→46 用例覆盖。
+  剥除（复用 `isTrailingPadding`）、宽字符尾格收拢；`wordSelectionAt` 做长按选词的
+  词边界扫描（空白 / 标点 / 宽字符逐字，跨软换行）。两者共 **EmuTest 36→52 用例**覆盖。
+- **长按选词的词锁**：`startSelectionAt` 选中整词后置 `selWordLocked`；`extendSelectionTo`
+  在触点仍落于词内时不动选区（真实手指按下必抖，若 MOVE 一律改活动端，整词会
+  塌成一个字符），拖出词外才清锁、回到按字符扩展。
 - **端点增减**（xterm extend-selection）：`startSelectionAt` 在已有选区（`selActive`）
   时把锚移到离触点更远的选区端点（全局行距为主、同行比列），拖动即挪最近的端点——
   扩大与缩小是同一手势。硬件键盘 Shift+按下同走此入口（鼠标上报模式的 shift override

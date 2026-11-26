@@ -732,6 +732,97 @@ public final class TerminalEmulator {
         return sb.toString();
     }
 
+    /* -------------------- 长按选词 -------------------- */
+
+    private static final int WORD_BLANK = 0;
+    private static final int WORD_CHAR = 1;
+    private static final int WORD_PUNCT = 2;
+    private static final int WORD_WIDE = 3;
+
+    /**
+     * 长按落点所在的「词」：返回 {起始全局行, 起始列, 结束全局行, 结束列}，端点都含。
+     *
+     * 边界口径：空白分隔；标点各成一词（`/data/local/tmp` 长按选中 `local` 这样的
+     * 路径片段）；CJK/emoji 等宽字符**逐字成词**（整段成词不是长按的期待）。
+     * 软换行折出来的续行拼回同一逻辑行，词可以跨行；触点落在空白或宽字符尾格上
+     * 按对应规则收拢（空白返回单格，上层据此退化为空选区）。已逐出的行返回 null。
+     */
+    public synchronized int[] wordSelectionAt(int globalRow, int col) {
+        Line line = getGlobalLine(globalRow);
+        if (line == null) {
+            return null;
+        }
+        int len = line.text.length;
+        int c = Math.max(0, Math.min(len - 1, col));
+        if (line.text[c] == 0 && c > 0) {
+            c--;    // 触点落在宽字符尾格 → 收到头格
+        }
+        int cls = wordClassAt(line, c);
+        if (cls == WORD_BLANK) {
+            return new int[]{globalRow, c, globalRow, c};
+        }
+        if (cls == WORD_WIDE) {
+            int end = (c + 1 < len && line.text[c + 1] == 0) ? c + 1 : c;
+            return new int[]{globalRow, c, globalRow, end};
+        }
+        int startRow = globalRow;
+        int startCol = c;
+        while (true) {
+            Line li = getGlobalLine(startRow);
+            while (startCol > 0 && wordClassAt(li, startCol - 1) == cls) {
+                startCol--;
+            }
+            if (startCol > 0) {
+                break;
+            }
+            // 本行首列仍是同一个词 → 上一行若因软换行折下来，词跨行继续
+            Line prev = getGlobalLine(startRow - 1);
+            if (prev == null || !prev.wrapped
+                    || wordClassAt(prev, prev.text.length - 1) != cls) {
+                break;
+            }
+            startRow--;
+            startCol = prev.text.length - 1;
+        }
+        int endRow = globalRow;
+        int endCol = c;
+        while (true) {
+            Line li = getGlobalLine(endRow);
+            int last = li.text.length - 1;
+            while (endCol < last && wordClassAt(li, endCol + 1) == cls) {
+                endCol++;
+            }
+            if (endCol < last || !li.wrapped) {
+                break;
+            }
+            Line next = getGlobalLine(endRow + 1);
+            if (next == null || wordClassAt(next, 0) != cls) {
+                break;
+            }
+            endRow++;
+            endCol = 0;
+        }
+        return new int[]{startRow, startCol, endRow, endCol};
+    }
+
+    /** 单格词法分类；宽字符尾格（text==0）随头格算宽字符。 */
+    private static int wordClassAt(Line line, int index) {
+        int cp = line.text[index];
+        if (cp == 0) {
+            return WORD_WIDE;
+        }
+        if (cp == ' ' || cp == '\t') {
+            return WORD_BLANK;
+        }
+        if (charWidth(cp) == 2) {
+            return WORD_WIDE;
+        }
+        if (Character.isLetterOrDigit(cp) || cp == '_') {
+            return WORD_CHAR;
+        }
+        return WORD_PUNCT;
+    }
+
     public synchronized int getCursorRow() {
         return cursorRow;
     }
