@@ -73,6 +73,23 @@ app/src/main/
 
 整帧绘制与光标绘制都在 `synchronized (emulator)` 内完成，避免读到被 `append` 改到一半的屏幕状态。
 
+## 视口与滚动
+
+`scrollOffset` 是**距底部的行数**（0 = 跟随底部）。视口行 → 全局行的换算与选区共用
+同一条公式：`global = evictedRows + scrollbackCount + row − scrollOffset`。
+
+- **锚点是绝对行号**：`getViewportAnchor()` 记录 `evictedRows + scrollbackCount −
+  scrollOffset`；`MainActivity.Tab.viewportAnchor` 在 `onStop` / `onDestroy` / 切换标签前
+  记下，`attach()` 里 `setSession` 之后恢复。存相对偏移会在 Activity 重建期间的后台输出上
+  漂移，绝对行号不会。
+- **后台输出不推走视口**：`anchorToContent()` 在 `onDraw` 的 emulator 锁内按「总行数增量」
+  补偿 offset，只在 `scrollOffset > 0` 时生效；停在底部（0）继续跟新输出。实测 8 秒后台
+  输出原会推走 116 行，补偿后为 0。
+- **惯性**：`VelocityTracker` + `Scroller`，速度上限 8000、低于 180 不算 fling，
+  `FLING_SCALE = 0.25` 把像素速度换算成行速度；`ACTION_DOWN` 立即 `abortFling()`，
+  每帧按当前 `scrollbackCount` 重新夹紧，避免 scrollback 裁剪后越界。会话重建
+  （`setSession`）时 `scrollOffset = 0`、`lastTotalLines = -1`。
+
 ## 文本选区
 
 长按定锚 → 拖动扩展 → 浮动条（复制/全选/取消），边界与取舍见 roadmap.md 第一节，
@@ -94,6 +111,14 @@ app/src/main/
   捏合 → 鼠标上报（Shift 直通例外）→ 选区扩展/本地滚动。选区在鼠标上报之后，
   维持「程序优先」；单击在选区存在时清选区不弹键盘，选中态下任何写 PTY 的
   输入弃选区（xterm key press discards selection）。
+- **端点手柄**：`updateHandlePositions()` 每帧算两个手柄的屏幕坐标（挂在选区首行上方、
+  末行下方）；`hitsHandle()` 按 `HANDLE_TOUCH_DP = 22` 的半径命中，命中后
+  `beginHandleDrag()` 进入手柄拖拽态，触点先抬高 `HANDLE_STEM_DP + HANDLE_RADIUS_DP`
+  再取格——不抬高就会选中手柄自己遮住的那一格。`clearSelection()`、`ACTION_CANCEL`、
+  `ACTION_UP` 都重置 `handleDrag`。
+- **浮动条跟随**：`drawSelectionBar` 优先贴在选区上方（预留手柄空间），`top < dp(4)`
+  时翻到 `selBottom + handleSpace`，水平按选区中点居中并夹在屏内。原实现固定顶部，
+  长选区时会盖住选中的内容。
 
 ## OSC 52 写剪贴板
 
@@ -258,6 +283,8 @@ Android 11/12 的系统差异（同一版搜狗在两台设备上行为不同）
 自动档要求 `WindowInsets.isVisible(Type.ime())`，API 30 以下取不到 inset，退化成不接管
 （保持历史行为）。状态一变必须 `InputMethodManager.restartInput(this)`——输入法按创建
 会话时拿到的 `inputType` 决定硬键盘字母是自己组词还是回退给应用，不重取就永远停在旧语义。
+映射成什么（拼音、注音、五笔）完全由输入法决定，应用不假设键位；输入法不支持某种方案的
+外接键盘时，它会自行提示并退回按键（如搜狗注音）。
 
 判定挂在四处：`onSizeChanged`（`adjustResize` 下输入法窗口的出现/消失就是本视图的高度
 变化，这是最省事的可见性回调）、`setExternalKeyboard`、`setImeTakeoverMode`、
@@ -274,12 +301,23 @@ Android 11/12 的系统差异（同一版搜狗在两台设备上行为不同）
 就是开关输入法窗口，不另立状态，也不越过用户在菜单里定的策略——「始终」「从不」两档下
 这个键不生效。
 
+**前提**：双击 Shift 的切换语义只在输入法处于拼音 9 键 / 26 键布局时成立；英文、五笔、
+手写等其它输入方案下它不动中英状态，验证时不要把这种情况判成接管失效。
+
 组词期间输入法收起（`hideIme`）必须清掉 `imeComposing`，否则让路判定一直成立，
 表现为回车/Esc/方向键全体失灵。
 
 验证工装：`tools/hardkey.c`（uinput 真实设备路径，`--stdin` 让设备常驻，否则每次注入
 重建键盘会把输入法会话一起重建）与 `tools/ime-check.sh`（拉起接管态后逐条注入序列）。
 `#` token 发真组合键（`ctrl shift #`），`:毫秒` 停顿会把挂着的修饰键拆成独立单击。
+
+**接管态的 `inputType` 取值**：接管 = `TYPE_CLASS_TEXT | TYPE_TEXT_FLAG_NO_SUGGESTIONS`，
+不接管 = `TYPE_NULL`；`imeOptions` 恒带 `IME_FLAG_NO_EXTRACT_UI |
+IME_FLAG_NO_FULLSCREEN | IME_FLAG_NO_PERSONALIZED_LEARNING`（minSdk 26 均可用）。
+`NO_SUGGESTIONS` 关掉联想候选，避免候选词混进命令；`NO_PERSONALIZED_LEARNING`
+让输入法不把终端内容收进用户词库。写入收敛到 `applyTakeover(boolean)` 一个入口
+（返回是否变化），`refreshTakeover()` 只在变化时 `restartInput(this)`；
+`onCreateInputConnection` 里同时把 `imeComposing` 清零——新会话不继承上个会话的组词状态。
 
 ## 全屏程序依赖的能力
 

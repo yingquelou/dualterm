@@ -13,7 +13,8 @@ Android 终端模拟器。一个 APK 提供两种会话模式：
 
 - **终端仿真**：VT100/xterm 子集，`vim`、`htop`、`tmux`、`less` 可正常使用（DEC 画线字符集、备用屏、鼠标上报、括号粘贴、BCE、组合字符等）。
 - **输入**：外接键盘全键映射（`Ctrl`/`Alt` 组合、`F1`–`F12`、`Ctrl+方向键`）；系统输入法 + 辅助键盘（编辑键/F 键固定区、控制字符/shell 符号可自定义区）组合；一次性修饰键；多行粘贴确认。
-- **文本选区**：长按拖选（跨屏幕与 3000 行 scrollback，边缘自动滚动）→ 浮动条复制/全选/取消；软换行拼行、行尾空白剥除，与桌面终端复制语义一致。
+- **文本选区**：长按拖选（跨屏幕与 3000 行 scrollback，边缘自动滚动），两端手柄可拖拽微调；浮动条跟随选区而非固定在顶部；软换行拼行、行尾空白剥除，与桌面终端复制语义一致。
+- **滚动与视口**：拖动带惯性；视口按绝对行号记录，Activity 重建与切换标签后回到原位置，后台输出不会把视口推走。
 - **程序写剪贴板（OSC 52）**：vim `"+y`、tmux copy-mode 直写系统剪贴板；菜单开关默认关、仅前台写入、只写不读、单次 64KB 上限。
 - **容器**：PRoot 独立 rootfs（镜像不随包分发，体积优先），可在应用内拉取镜像、导入 `docker save` / `export` / OCI 归档，创建、启动、停止、删除容器与镜像；附带 docker 语法子集的控制台。
 - **多标签会话**：任意多个本地 / 容器会话并行，模式 chip 下拉即会话列表；重启与停止精确到单个标签页。
@@ -60,8 +61,7 @@ powershell -ExecutionPolicy Bypass -File scripts\fetch-runtime.ps1   # Windows
 | [docs/dev/roadmap.md](docs/dev/roadmap.md) | 后续开发的取舍评估：候选功能的边界、成本与不做/缓做的理由 |
 | [docs/dev/verification.md](docs/dev/verification.md) | 实机验证记录 |
 | [docs/dev/pull-registry.md](docs/dev/pull-registry.md) | docker pull 泛化与镜像源设计定稿 |
-| [docs/dev/manual-test.md](docs/dev/manual-test.md) | 手动测试清单（桌面回归之外的真机交互项） || [docs/roadmap.md](docs/roadmap.md) | 后续开发的取舍评估：候选功能的边界、成本与不做/缓做的理由 |
-| [docs/verification.md](docs/verification.md) | 实机验证记录 |
+| [docs/dev/manual-test.md](docs/dev/manual-test.md) | 手动测试清单（桌面回归之外的真机交互项） |
 
 ## 设计取向
 
