@@ -54,7 +54,8 @@
 | 发布前构建校验（2026-11-26，本地） | `DT_VERSION_NAME=3.10.0 DT_VERSION_CODE=31000 assembleRelease` 成功；`aapt2 dump badging`：`dev.dualterm` versionName `3.10.0` / versionCode `31000`、native-code 三 ABI；APK 内 `lib/{arm64-v8a,armeabi-v7a,x86_64}/libproot.so` 齐全，体积 547KB；七套桌面回归全过（EmuTest ALL PASS / Sec 42 / Tar 24 / Import 35 / Ports 36 / Registry 73 / Kbd 137）。本次本地包为测试签名，正式包由 CI 注入 Secrets 私钥 |
 | 选区手柄尺寸可配置（2026-11-26，M2010J19SC） | 「外观 → 选区手柄：杆 9dp / 半径 7dp」打开三输入框（默认 9/7/22，范围校验生效）；杆长改 20 确认后 prefs `handle_stem_dp=20` 落盘，长按选词截图中手柄杆明显加长；改回 9 后 prefs 复原 |
 | AltGr 字符修复（2026-11-26，代码级） | `handleKeyCode` 改为「含 Alt 与不含 Alt（保留 Shift）的 KeyCharacterMap 字符不同且可见 → 判为 AltGr，只发字符不加 ESC」。US 布局 Alt+E / Alt+Shift+E 仍走 ESC 前缀（字符相同）；用户复测：法语 AltGr+E→`€` 通过，US 的 Ctrl+Alt+S→`ß` 为 AltGr 语义（与系统文本框一致），非回归 |
-| 手动测试结论回收（2026-11-26，用户实机） | E13 TalkBack 按逻辑行朗读通过；H1 端点重锚手感基本没问题；E7 手柄落地前测过、代码复核 shiftSelect 分支未动；F3 `"+yy` 未进剪贴板，判定为 vim 侧能力/配置（命令已写入 manual-test）；G4 AltGr 已修待复测 |
+| 手动测试结论回收（2026-11-26，用户实机） | E13 TalkBack 按逻辑行朗读通过；H1 端点重锚手感基本没问题；E7 手柄落地前测过、代码复核 shiftSelect 分支未动；F3 `"+yy` 未进剪贴板，判定为 vim 侧能力/配置（命令已写入 manual-test）；G4 AltGr 已修复并复测：法语 `€` 通过，US 的 Ctrl+Alt+S→`ß` 属标准布局语义 |
+| 拉取镜像非模态（2026-11-26，M2010J19SC） | 拉 alpine:3.21 期间顶栏下方实体显示进度、无全屏遮罩；点 ⋮ 菜单正常弹出、点终端输入法正常弹起；完成后进度条收起且镜像注册（prefs 可见），测试镜像已删除、镜像表复原 |
 | MainActivity 拆分：会话选择器 → `ui/SessionPicker`（2026-11-26，M2010J19SC） | 点模式 chip 弹出 `● 容器 · ubuntu · pid 29771` + 「＋ 新建本地 Shell / ＋ 新建容器会话（ubuntu）/ 容器与镜像…」；点当前会话项正常收起并保持贴屏；再点「容器与镜像…」打开容器列表（标题与内容完整）；七套桌面回归全过 |
 
 未经真机验证的部分：Docker 后端（缺少带 namespace 内核的设备）、整包 `ImageImporter.importArchive`（依赖 Context 与真 `org.json`，仅有单元级测试）。

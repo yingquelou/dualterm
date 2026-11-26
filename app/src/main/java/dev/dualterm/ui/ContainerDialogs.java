@@ -49,10 +49,13 @@ public final class ContainerDialogs {
         /** 单线程后台执行器（与宿主共用，退出时统一收口）。 */
         ExecutorService background();
 
+        /** 拉取专用执行器：几十秒的网络任务不该堵住启动/导入等其它后台活。 */
+        ExecutorService pulls();
+
         /** 回到 UI 线程（等价于 Activity.runOnUiThread）。 */
         void runOnUi(Runnable r);
 
-        /** 覆盖层：显示 / 更新文案 / 隐藏。 */
+        /** 非模态进度条：显示 / 更新文案 / 隐藏（不遮屏，菜单与会话照常可用）。 */
         void showProgress(String message);
 
         void updateProgress(String message);
@@ -92,6 +95,9 @@ public final class ContainerDialogs {
     }
 
     private final Host host;
+
+    /** 正在拉取的 tag（主线程访问）：进度条不遮屏后，防同一镜像被重复点两次。 */
+    private final java.util.Set<String> pulling = new java.util.HashSet<>();
 
     public ContainerDialogs(Host host) {
         this.host = host;
@@ -582,9 +588,13 @@ public final class ContainerDialogs {
     }
 
     private void pullImageAsync(final String tag) {
+        if (!pulling.add(tag)) {
+            host.toast("正在拉取 " + tag + " …");
+            return;
+        }
         host.showProgress("拉取 " + tag + " …");
         final Context appContext = host.appContext();
-        host.background().execute(new Runnable() {
+        host.pulls().execute(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -603,6 +613,7 @@ public final class ContainerDialogs {
                     host.runOnUi(new Runnable() {
                         @Override
                         public void run() {
+                            pulling.remove(tag);
                             host.hideProgress();
                             host.toast("已拉取 " + pulled + "（菜单 → 容器管理可基于它新建容器）");
                         }
@@ -611,6 +622,7 @@ public final class ContainerDialogs {
                     host.runOnUi(new Runnable() {
                         @Override
                         public void run() {
+                            pulling.remove(tag);
                             host.hideProgress();
                             host.showError("拉取失败", describe(e));
                         }

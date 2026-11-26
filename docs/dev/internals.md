@@ -464,6 +464,18 @@ shell 域（`/data/local/tmp`）也被拒——是域级策略而非目录/文�
 
 此外，AGP 只打包匹配 `lib*.so` 的文件，`libtalloc.so.2` 会被**静默丢弃**（构建成功、运行期缺库）。脚本因此把 proot 的 `DT_NEEDED` 字符串原位改写为 `libtalloc2.so`（更短，NUL 补齐），库文件随之改名。
 
+## 长任务与进度条（2026-11-26）
+
+- `showProgress / updateProgress / hideProgress` 只驱动顶栏下方 `progress_strip`
+  一行（`@id/progress_text` + 小号 indeterminate ProgressBar），不再用全屏 scrim；
+  拉取 / 导入 / 创建期间菜单、会话、其它 tab 全程可用。
+- 全屏 `overlay` 只留给「启动容器」——它需要短暂独占（接上 PTY 再切屏）。
+- 拉取走独立执行器 `dualterm-pull`（`pulls`），不占 `background` 单线程队列，
+  否则一边下载一边启动容器会排队到下载结束；`onDestroy`（`isFinishing`）一并
+  `shutdownNow`。
+- 重入守卫在 `ContainerDialogs.pulling`（tag 集合）：同一镜像重复点拉取只提示不重跑。
+  未注册的镜像本来就不出现在列表里，因此不会出现「基于半成品镜像建容器」。
+
 ## 远程调试入口
 
 无需触屏，便于无人值守验证：

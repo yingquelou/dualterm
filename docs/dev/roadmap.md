@@ -310,3 +310,6 @@ PTY；输入法收起或用户显式退出接管时回到 `TYPE_NULL`，字母�
   按「带 Alt 与不带 Alt 的 KeyCharacterMap 字符不同即 AltGr」只发字符；US 布局
   Alt+E / Alt+Shift+E 不受影响（manual-test G4）。用户实机复测：法语 `€` 已可用；
   US 的 Ctrl+Alt+S → `ß` 属 AltGr 语义（与系统文本框一致），非回归
+- 2026-11-26 拉取/导入/创建改非模态：进度从全屏 scrim 改为顶栏下方一行，拉取期间
+  可切会话、开菜单；拉取走独立 `dualterm-pull` 执行器，同一 tag 重入被拦
+  （仅「启动容器」仍用短暂遮罩）

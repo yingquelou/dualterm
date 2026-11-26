@@ -80,6 +80,22 @@ public class MainActivity extends Activity
                             return t;
                         }
                     });
+
+    /**
+     * 镜像拉取专用执行器：几十秒的网络下载不该把 background 队列上的
+     * 启动/导入等活堵住（进度条不再遮屏后，用户会一边拉一边操作）。
+     */
+    private final java.util.concurrent.ExecutorService pulls =
+            java.util.concurrent.Executors.newSingleThreadExecutor(
+                    new java.util.concurrent.ThreadFactory() {
+                        @Override
+                        public Thread newThread(Runnable r) {
+                            Thread t = new Thread(r, "dualterm-pull");
+                            t.setDaemon(true);
+                            return t;
+                        }
+                    });
+
     /** 容器启动任务的代次号：每次 startContainer 递增，旧任务的 UI 回调直接丢弃。 */
     private final java.util.concurrent.atomic.AtomicInteger startGen =
             new java.util.concurrent.atomic.AtomicInteger();
@@ -92,6 +108,9 @@ public class MainActivity extends Activity
     private LinearLayout keyRow;
     private View overlay;
     private TextView overlayText;
+    /** 长任务进度条（不遮屏）：拉取/导入/创建期间只占顶栏下方一行。 */
+    private View progressStrip;
+    private TextView progressText;
 
     /** 顶部键条（dev.dualterm.ui.KeyBar）：键位与样式已从本类拆出。 */
     private KeyBar keyBarUi;
@@ -202,6 +221,8 @@ public class MainActivity extends Activity
         exitText = findViewById(R.id.exit_text);
         overlay = findViewById(R.id.overlay);
         overlayText = findViewById(R.id.overlay_text);
+        progressStrip = findViewById(R.id.progress_strip);
+        progressText = findViewById(R.id.progress_text);
 
         terminal.setGridListener(this);
         terminal.setModifierWatcher(this);
@@ -2105,23 +2126,30 @@ public class MainActivity extends Activity
     }
 
     @Override
+    public java.util.concurrent.ExecutorService pulls() {
+        return pulls;
+    }
+
+    @Override
     public void runOnUi(Runnable r) {
         runOnUiThread(r);
     }
 
     @Override
     public void showProgress(String message) {
-        showOverlay(message);
+        // 非模态：拉取/导入/创建都不再冻住界面，进度只占顶栏下一行
+        progressText.setText(message);
+        progressStrip.setVisibility(View.VISIBLE);
     }
 
     @Override
     public void updateProgress(String message) {
-        overlayText.setText(message);
+        progressText.setText(message);
     }
 
     @Override
     public void hideProgress() {
-        hideOverlay();
+        progressStrip.setVisibility(View.GONE);
     }
 
     @Override
@@ -2455,6 +2483,7 @@ public class MainActivity extends Activity
         }
         if (isFinishing()) {
             background.shutdownNow(); // 排队/在跑的后台任务全部中断
+            pulls.shutdownNow();
             for (Tab t : tabs.values()) {
                 t.session.stop();
             }

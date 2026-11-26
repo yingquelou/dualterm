@@ -72,6 +72,41 @@
                 android:textSize="18sp" />
         </LinearLayout>
 
+        <!--
+          长任务进度（拉取 / 导入 / 创建）：只占一行，不遮屏、不抢焦点。
+          这些活本来就在后台线程，以前却用全屏 scrim 把整个 app 冻住——拉一个
+          镜像几十秒不能切会话。改成常驻条后菜单、会话、其它 tab 照常可用。
+        -->
+        <LinearLayout
+            android:id="@+id/progress_strip"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/bar_bg"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingLeft="12dp"
+            android:paddingTop="4dp"
+            android:paddingRight="12dp"
+            android:paddingBottom="4dp"
+            android:visibility="gone">
+
+            <ProgressBar
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:indeterminateTint="@color/accent" />
+
+            <TextView
+                android:id="@+id/progress_text"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="10dp"
+                android:layout_weight="1"
+                android:ellipsize="middle"
+                android:singleLine="true"
+                android:textColor="@color/text_dim"
+                android:textSize="11sp" />
+        </LinearLayout>
+
         <dev.dualterm.term.TerminalView
             android:id="@+id/terminal"
             android:layout_width="match_parent"
