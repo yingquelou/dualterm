@@ -729,6 +729,29 @@ public class EmuTest {
                         && osc52Of("\u001b]0;title\u0007").isEmpty(),
                 "[" + queryReplyOf(q, "\u001b]10;?\u0007") + "]");
 
+        // ---- 无障碍：逻辑行文本 ----
+
+        // 67) 折行链拼回一条逻辑行（节点文本不该被视口宽度切断）
+        TerminalEmulator a11y = new TerminalEmulator(20, 6, 50, 0xFFE6E6E6, 0xFF101014);
+        String a11yLine = "0123456789012345678901234567890123456789";   // 40 字符，20 列折两行
+        feed(a11y, a11yLine + "\r\n");
+        int a11yBase = a11y.getEvictedRows();
+        check("a11y logical line joins wrapped rows",
+                a11y.getLogicalLineText(a11yBase).equals(a11yLine),
+                "[" + a11y.getLogicalLineText(a11yBase) + "]");
+
+        // 68) 续行标记：第二行是续行，第一行不是
+        check("a11y wrapped continuation flags",
+                !a11y.isWrappedContinuation(a11yBase)
+                        && a11y.isWrappedContinuation(a11yBase + 1),
+                "first=" + a11y.isWrappedContinuation(a11yBase)
+                        + " second=" + a11y.isWrappedContinuation(a11yBase + 1));
+
+        // 69) 空白行返回空串（上层据此不建节点）
+        check("a11y blank line yields empty text",
+                a11y.getLogicalLineText(a11yBase + 2).isEmpty(),
+                "[" + a11y.getLogicalLineText(a11yBase + 2) + "]");
+
         System.out.println(fails == 0 ? "ALL PASS" : fails + " FAILURES");
         System.exit(fails == 0 ? 0 : 1);
     }

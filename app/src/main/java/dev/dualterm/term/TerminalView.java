@@ -5,8 +5,10 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.os.Bundle;
 import android.text.InputType;
 import android.util.AttributeSet;
 import android.view.KeyEvent;
@@ -14,6 +16,10 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.VelocityTracker;
 import android.widget.Scroller;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityNodeProvider;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -234,6 +240,18 @@ public class TerminalView extends View {
 
     /** 视口第 0 行对应的全局行号（绘制时更新；手柄、浮窗、触摸换算共用）。 */
     private int viewportTopGlobal;
+
+    /* -------------------- 无障碍虚拟节点（roadmap 第十节） -------------------- */
+
+    private AccessibilityNodeProvider a11yProvider;
+    /** 触摸探索/可访问性焦点当前所在行（虚拟 id = 视口行号），-1 = 无。 */
+    private int a11yFocusedRow = -1;
+    /** 上一次通知内容变化的时刻（节流）。 */
+    private long lastA11yNotify;
+    private static final long A11Y_NOTIFY_MS = 300;
+    /** 上次通知时的总行数与视口偏移；两者都没变就不打扰读屏。 */
+    private long lastA11yTotal = -1;
+    private int lastA11yOffset = -1;
     /** 选区辅助游标：1 = 拖起点，2 = 拖终点，0 = 未拖。 */
     private int handleDrag;
     private float startHandleX, startHandleY, endHandleX, endHandleY;
@@ -353,6 +371,10 @@ public class TerminalView extends View {
         this.scrollOffset = 0;
         // 换会话后总行数没有可比性，下一帧重新起算锚点
         this.lastTotalLines = -1;
+        // 无障碍节点按行号生成，换会话后旧焦点失效
+        this.a11yFocusedRow = -1;
+        this.lastA11yTotal = -1;
+        this.lastA11yOffset = -1;
         abortFling();
         clearSelection();
         if (value != null) {
@@ -1220,6 +1242,252 @@ public class TerminalView extends View {
         }
     }
 
+    /* -------------------- 无障碍虚拟节点 -------------------- */
+
+    /*
+     * 只读虚拟视图：每个**可见逻辑行**一个节点（虚拟 id = 该逻辑行在视口里的起始行），
+     * 折行的续行不重复建节点，节点 bounds 覆盖这条逻辑行在视口内占用的所有行。
+     * 节点文本走 TerminalEmulator.getLogicalLineText()——按 wrapped 链拼回一行，
+     * 读屏不会把折行的路径/单词读成两段。
+     *
+     * 全部懒生成、不缓存：滚动/转屏/字号变化后自然按新视口重算，配
+     * TYPE_WINDOW_CONTENT_CHANGED 通知（节流 300ms）。空白行不建节点，免得
+     * TalkBack 逐行朗读"空白"。只读：不做节点写操作，也不模拟点击。
+     */
+
+    @Override
+    public AccessibilityNodeProvider getAccessibilityNodeProvider() {
+        if (a11yProvider == null) {
+            a11yProvider = new RowNodeProvider();
+        }
+        return a11yProvider;
+    }
+
+    private final class RowNodeProvider extends AccessibilityNodeProvider {
+        @Override
+        public AccessibilityNodeInfo createAccessibilityNodeInfo(int virtualViewId) {
+            if (virtualViewId == AccessibilityNodeProvider.HOST_VIEW_ID) {
+                return buildHostNode();
+            }
+            String text = a11yTextAt(virtualViewId);
+            return text == null ? null : buildRowNode(virtualViewId, text);
+        }
+
+        @Override
+        public boolean performAction(int virtualViewId, int action, Bundle arguments) {
+            if (virtualViewId == AccessibilityNodeProvider.HOST_VIEW_ID) {
+                return TerminalView.this.performAccessibilityAction(action, arguments);
+            }
+            if (virtualViewId < 0 || virtualViewId >= gridRows) {
+                return false;
+            }
+            if (action == AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS) {
+                setA11yFocus(virtualViewId);
+                return true;
+            }
+            if (action == AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS) {
+                if (a11yFocusedRow == virtualViewId) {
+                    a11yFocusedRow = -1;
+                    sendA11yEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                            virtualViewId, null);
+                }
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private AccessibilityNodeInfo buildHostNode() {
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain(this);
+        info.setPackageName(getContext().getPackageName());
+        info.setClassName(TerminalView.class.getName());
+        info.setSource(this);
+        info.setEnabled(true);
+        info.setFocusable(true);
+        info.setVisibleToUser(true);
+        info.setScrollable(true);
+        Rect bounds = new Rect(0, 0, getWidth(), getHeight());
+        info.setBoundsInParent(bounds);
+        int[] loc = new int[2];
+        getLocationOnScreen(loc);
+        bounds.offset(loc[0], loc[1]);
+        info.setBoundsInScreen(bounds);
+        if (session != null) {
+            for (int row = 0; row < gridRows; row++) {
+                if (a11yTextAt(row) != null) {
+                    info.addChild(this, row);
+                }
+            }
+        }
+        return info;
+    }
+
+    private AccessibilityNodeInfo buildRowNode(int row, String text) {
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain(this, row);
+        info.setPackageName(getContext().getPackageName());
+        info.setClassName("android.widget.TextView");
+        info.setText(text);
+        info.setEnabled(true);
+        info.setFocusable(true);
+        info.setVisibleToUser(true);
+        info.setParent(this);
+        boolean focused = row == a11yFocusedRow;
+        info.setAccessibilityFocused(focused);
+        info.addAction(focused
+                ? AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS
+                : AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS);
+        Rect bounds = new Rect();
+        int span = a11yRowSpan(row);
+        bounds.set(Math.round(padX), Math.round(padY + row * cellHeight),
+                Math.round(padX + gridCols * cellWidth),
+                Math.round(padY + (row + span) * cellHeight));
+        info.setBoundsInParent(bounds);
+        int[] loc = new int[2];
+        getLocationOnScreen(loc);
+        bounds.offset(loc[0], loc[1]);
+        info.setBoundsInScreen(bounds);
+        return info;
+    }
+
+    /** 该视口行的节点文本；续行、空白行、越界都返回 null（不建节点）。 */
+    private String a11yTextAt(int row) {
+        TermSession s = session;
+        if (s == null || row < 0 || row >= gridRows) {
+            return null;
+        }
+        TerminalEmulator e = s.getEmulator();
+        synchronized (e) {
+            int global = a11yGlobal(e, row);
+            if (row > 0 && e.isWrappedContinuation(global)) {
+                return null;
+            }
+            String text = e.getLogicalLineText(global);
+            return text.isEmpty() ? null : text;
+        }
+    }
+
+    /** 该视口行是否属于上面某条逻辑行（折行续行）。 */
+    private boolean a11yIsContinuation(int row) {
+        TermSession s = session;
+        if (s == null || row <= 0) {
+            return false;
+        }
+        TerminalEmulator e = s.getEmulator();
+        synchronized (e) {
+            return e.isWrappedContinuation(a11yGlobal(e, row));
+        }
+    }
+
+    /** 逻辑行在视口内占用的行数（≥1）。 */
+    private int a11yRowSpan(int row) {
+        TermSession s = session;
+        if (s == null) {
+            return 1;
+        }
+        TerminalEmulator e = s.getEmulator();
+        synchronized (e) {
+            int span = 1;
+            while (row + span < gridRows
+                    && e.isWrappedContinuation(a11yGlobal(e, row + span))) {
+                span++;
+            }
+            return span;
+        }
+    }
+
+    private int a11yGlobal(TerminalEmulator e, int row) {
+        return e.getEvictedRows() + e.getScrollbackCount() - scrollOffset + row;
+    }
+
+    private void setA11yFocus(int row) {
+        int old = a11yFocusedRow;
+        a11yFocusedRow = row;
+        if (old >= 0 && old != row) {
+            sendA11yEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED, old, null);
+        }
+        sendA11yEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED, row, a11yTextAt(row));
+    }
+
+    private void clearA11yHover() {
+        if (a11yFocusedRow >= 0) {
+            sendA11yEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                    a11yFocusedRow, null);
+            a11yFocusedRow = -1;
+        }
+    }
+
+    private void sendA11yEvent(int type, int row, String text) {
+        AccessibilityManager am = (AccessibilityManager)
+                getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
+        if (am == null || !am.isEnabled()) {
+            return;
+        }
+        AccessibilityEvent event = AccessibilityEvent.obtain(type);
+        event.setPackageName(getContext().getPackageName());
+        event.setClassName("android.widget.TextView");
+        event.setSource(this, row);
+        if (text != null) {
+            event.getText().add(text);
+        }
+        am.sendAccessibilityEvent(event);
+    }
+
+    /** 触摸探索：悬停/双击落到哪一行就聚焦哪个节点（续行归到逻辑行起点）。 */
+    @Override
+    public boolean dispatchHoverEvent(MotionEvent event) {
+        AccessibilityManager am = (AccessibilityManager)
+                getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
+        if (session == null || am == null || !am.isEnabled() || !am.isTouchExplorationEnabled()) {
+            return super.dispatchHoverEvent(event);
+        }
+        if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT) {
+            clearA11yHover();
+            return true;
+        }
+        int row = (int) ((event.getY() - padY) / cellHeight);
+        if (row < 0 || row >= gridRows) {
+            clearA11yHover();
+            return true;
+        }
+        int anchor = row;
+        while (anchor > 0 && a11yIsContinuation(anchor)) {
+            anchor--;
+        }
+        if (a11yTextAt(anchor) == null) {
+            clearA11yHover();
+            return true;
+        }
+        if (anchor != a11yFocusedRow) {
+            setA11yFocus(anchor);
+        }
+        return true;
+    }
+
+    /** 视口或内容变化后通知读屏重拉节点；同一状态不重复发，发送节流 300ms。 */
+    private void notifyA11yChanged(int total) {
+        if (total == lastA11yTotal && scrollOffset == lastA11yOffset) {
+            return;
+        }
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - lastA11yNotify < A11Y_NOTIFY_MS) {
+            return;
+        }
+        AccessibilityManager am = (AccessibilityManager)
+                getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
+        if (am == null || !am.isEnabled()) {
+            return;
+        }
+        lastA11yNotify = now;
+        lastA11yTotal = total;
+        lastA11yOffset = scrollOffset;
+        AccessibilityEvent event = AccessibilityEvent.obtain(
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        event.setPackageName(getContext().getPackageName());
+        event.setClassName(TerminalView.class.getName());
+        event.setSource(this);
+        am.sendAccessibilityEvent(event);
+    }
+
     /* -------------------- 尺寸与网格 -------------------- */
 
     @Override
@@ -1331,6 +1599,7 @@ public class TerminalView extends View {
         // 一帧里半行旧半行新的撕裂。绘制整帧持 emulator 的监视器锁拿一致性视图：
         // 写入端按 4~16KB 块持锁，这里最多等一个块的处理时间（毫秒级），可接受。
         // 注意 getLine/getScrollbackLine 是 synchronized 方法，监视器可重入，无死锁面。
+        int a11yTotal;
         synchronized (emulator) {
             int evicted = emulator.getEvictedRows();
             int scrollbackCount = emulator.getScrollbackCount();
@@ -1367,10 +1636,13 @@ public class TerminalView extends View {
             }
 
             viewportTopGlobal = evicted + scrollbackCount - scrollOffset;
+            a11yTotal = evicted + scrollbackCount;
             if (scrollOffset == 0 && emulator.isCursorVisible()) {
                 drawCursor(canvas, emulator);
             }
         }
+        // 通知放在锁外：sendAccessibilityEvent 是跨进程调用，不占着仿真器的锁
+        notifyA11yChanged(a11yTotal);
 
         // 选区辅助游标先画，浮动条压在最上层
         if (selActive && !selectionEmpty()) {

@@ -766,6 +766,51 @@ public final class TerminalEmulator {
         return sb.toString();
     }
 
+    /* -------------------- 无障碍：逻辑行文本 -------------------- */
+
+    /**
+     * 该全局行是否是软换行的续行（上一行带 wrapped 标记）。
+     * 无障碍节点据它决定哪些屏幕行已被上面那条逻辑行覆盖，不再重复建节点。
+     */
+    public synchronized boolean isWrappedContinuation(int global) {
+        Line prev = getGlobalLine(global - 1);
+        return prev != null && prev.wrapped;
+    }
+
+    /**
+     * 该全局行所属逻辑行的全文：沿 wrapped 链向上、向下合到一行，
+     * 行尾填充只剥最后一行（与 {@link #getSelectionText} 同口径）。
+     * 空白逻辑行返回空串。供无障碍虚拟节点直接当节点文本用；
+     * 纯 Java，桌面 EmuTest 可回归。
+     */
+    public synchronized String getLogicalLineText(int global) {
+        Line li = getGlobalLine(global);
+        if (li == null) {
+            return "";
+        }
+        int start = global;
+        while (true) {
+            Line prev = getGlobalLine(start - 1);
+            if (prev == null || !prev.wrapped) {
+                break;
+            }
+            start--;
+        }
+        int end = global;
+        while (true) {
+            Line cur = getGlobalLine(end);
+            if (cur == null || !cur.wrapped || getGlobalLine(end + 1) == null) {
+                break;
+            }
+            end++;
+        }
+        String text = getSelectionText(start, 0, end, li.text.length - 1);
+        if (text.endsWith("\n")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return text;
+    }
+
     /* -------------------- 长按选词 -------------------- */
 
     private static final int WORD_BLANK = 0;
