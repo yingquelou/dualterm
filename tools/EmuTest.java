@@ -612,6 +612,56 @@ public class EmuTest {
                 Arrays.toString(wg) + " ["
                         + ev.getSelectionText(wg[0], wg[1], wg[2], wg[3]) + "]");
 
+        // ---- resize 往返的折行恢复 ----
+
+        // 53) 变矮再变高：被挤进 scrollback 的行回到屏幕（弹键盘/转屏往返幂等）
+        TerminalEmulator rz = new TerminalEmulator(35, 19, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(rz, ":prompt-long-path-here $ seq -s. 1 20\r\n"
+                + "01.02.03.04.05.06.07.08.09.10.11.12.13.14.15.16.17.18.19.20\r\n");
+        String beforeRz = rz.getScreenText();
+        int cyBefore = rz.getCursorRow();
+        rz.resize(35, 4);
+        rz.resize(35, 19);
+        check("shrink-grow roundtrip is idempotent",
+                beforeRz.equals(rz.getScreenText()) && cyBefore == rz.getCursorRow()
+                        && rz.getScrollbackCount() == 0,
+                "sb=" + rz.getScrollbackCount() + " cursor=" + rz.getCursorRow());
+
+        // 54) 仍折行时按新宽度重新分割（逻辑行不变、分段边界改变）
+        String rlLine = "abcdefghijklmnopqrstuvwxyz0123456789"
+                + "abcdefghijklmnopqrstuvwxyz0123456789"
+                + "abcdefghijklmnopqrstuvwxyz0123456789";   // 108 字符
+        TerminalEmulator rw = new TerminalEmulator(35, 8, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(rw, rlLine + "\r\n");
+        int seg35 = lineText(rw, 0).length();
+        String text35 = rw.getSelectionText(0, 0, 7, 34).replace("\n", "");
+        rw.resize(76, 8);
+        int seg76 = lineText(rw, 0).length();
+        String text76 = rw.getSelectionText(0, 0, 7, 75).replace("\n", "");
+        rw.resize(20, 8);
+        int seg20 = lineText(rw, 0).length();
+        String text20 = rw.getSelectionText(0, 0, 7, 19).replace("\n", "");
+        check("re-wrapped line re-splits at each width",
+                seg35 == 35 && seg76 == 76 && seg20 == 20
+                        && text35.equals(rlLine) && text76.equals(rlLine)
+                        && text20.equals(rlLine),
+                "seg=" + seg35 + "/" + seg76 + "/" + seg20
+                        + " len=" + text35.length() + "/" + text76.length()
+                        + "/" + text20.length());
+
+        // 55) 重新分割不劈开宽字符（CJK 行在 35/76/20 列下取文本一致）
+        String cjk = "中文宽字符测 试.0123456789.中文宽字符测 试.0123456789.中文宽字符测 试";
+        TerminalEmulator rc = new TerminalEmulator(35, 8, 100, 0xFFE6E6E6, 0xFF101014);
+        feed(rc, cjk + "\r\n");
+        String cjk35 = rc.getSelectionText(0, 0, 7, 34).replace("\n", "");
+        rc.resize(76, 8);
+        String cjk76 = rc.getSelectionText(0, 0, 7, 75).replace("\n", "");
+        rc.resize(20, 8);
+        String cjk20 = rc.getSelectionText(0, 0, 7, 19).replace("\n", "");
+        check("re-wrap never splits wide chars",
+                cjk35.equals(cjk) && cjk76.equals(cjk) && cjk20.equals(cjk),
+                "35=" + cjk35 + " | 76=" + cjk76 + " | 20=" + cjk20);
+
         // ---- OSC 52 写剪贴板 ----
 
         // 47) 基本写入：BEL 终止，"hello" 编码后落 sink

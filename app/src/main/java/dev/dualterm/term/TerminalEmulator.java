@@ -22,7 +22,9 @@ import java.util.ArrayList;
  * gh / fzf / survey 这类 TUI 在画提示符前会先问光标位置，收不到回报就卡在第一个提示上。
  *
  * resize 与 xterm 对齐：变矮时从顶部裁（裁掉的行进 scrollback），保证光标不离开屏幕；
- * 变高时在底部补空行，光标行列不变；scrollback 不清空。
+ * 变高时优先把 scrollback 末尾的行放回屏幕顶部（底部锚定），没有历史才在底部补
+ * 空行；scrollback 不清空。这样弹键盘/转屏的「变矮→变高」往返是幂等的：同一窗口
+ * 尺寸回来时渲染与当初一致，不取决于中间的尺寸序列。
  * 变宽/变窄对主屏做双向 reflow：按行的软换行标记拆成逻辑行再按新宽度重新折行，
  * 转屏变窄时右端内容折成续行而不是截断丢失（Line.wrapped）。
  * 备用屏（vim/less 等全屏应用）不 reflow，只截断——应用收到 SIGWINCH 会整屏重画。
@@ -338,8 +340,9 @@ public final class TerminalEmulator {
      *
      * <p>1. scrollback 不能清。转屏/弹键盘就抹掉历史，等于把终端最常用的功能废掉。
      * <p>2. 变矮时优先从顶部裁，把裁掉的行推进 scrollback —— 保证光标（也就是提示符）还在屏幕上。
-     *    原来是从底部裁，软键盘一弹提示符直接消失。变高时在底部补空行（xterm 也是这么做，
-     *    内容不跟着往下跳），光标行列不变。
+     *    原来是从底部裁，软键盘一弹提示符直接消失。变高时若光标下方已经没有内容（用户在底部），
+     *    就把 scrollback 末尾的行拉回屏幕顶部；只有没历史时才在底部补空行。这样收键盘/转回
+     *    原方向时内容原样回来，不会出现「提示符跑到屏幕中间、下方一片空白」。
      */
     public synchronized void resize(int newCols, int newRows) {
         newCols = Math.max(10, newCols);
@@ -579,12 +582,26 @@ public final class TerminalEmulator {
         Line[] out = new Line[newRows];
         int delta = newRows - rows;
         int dropTop = 0;
+        int pull = 0;
         if (delta < 0 && main) {
             // 只有光标会被裁掉时才从顶部删；删掉的行进 scrollback
             dropTop = clamp(cursorRow - (newRows - 1), 0, -delta);
+        } else if (delta > 0 && main && sbSize() > 0 && !hasContentBelowCursor(src)) {
+            // 变高时把之前被挤进 scrollback 的行拉回屏幕顶部（底部锚定）。
+            // 不这么做，「弹键盘变矮 → 收键盘变高」和转屏往返会把提示符以上的
+            // 内容永久留在历史里、屏幕下方反而多出一片空行；同一窗口回来后
+            // 渲染就该和当初一致，而不是取决于中间的尺寸序列。
+            pull = Math.min(delta, sbSize());
         }
-        for (int r = 0; r < newRows; r++) {
-            int from = r + dropTop;
+        int sbBefore = sbSize();
+        for (int i = 0; i < pull; i++) {
+            out[i] = sbGet(sbBefore - pull + i);
+        }
+        for (int i = 0; i < pull; i++) {
+            scrollback.remove(scrollback.size() - 1);
+        }
+        for (int r = pull; r < newRows; r++) {
+            int from = r - pull + dropTop;
             if (from < rows) {
                 out[r] = src[from];
             } else {
@@ -596,9 +613,19 @@ public final class TerminalEmulator {
             for (int r = 0; r < dropTop; r++) {
                 pushScrollback(src[r]);
             }
-            cursorRow = clamp(cursorRow - dropTop, 0, newRows - 1);
+            cursorRow = clamp(cursorRow - dropTop + pull, 0, newRows - 1);
         }
         return out;
+    }
+
+    /** 光标下方是否还有内容；有说明用户不在底部，变高时不该把历史拉进屏幕。 */
+    private boolean hasContentBelowCursor(Line[] src) {
+        for (int r = cursorRow + 1; r < rows; r++) {
+            if (!isBlankLine(src[r])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void initTabStops() {
@@ -684,8 +711,8 @@ public final class TerminalEmulator {
      * 选区文本。参数为全局行号 + 0 基列号，起止顺序自动归一。
      * 语义对齐 xterm 的线性（click-drag）选区：
      * <ul>
-     *   <li>行尾填充空格逐行剥除（反显/下划线/非默认背景的空格可见，不剥），
-     *       与 getScreenText 同口径；</li>
+     *   <li>行尾填充空格只在逻辑行末行剥除（反显/下划线/非默认背景的空格可见，
+     *       不剥）；软换行续行不剥——折行点上的空格是真实内容；</li>
      *   <li>软换行（autowrap 折行）的行拼回一个逻辑行，行间不补换行符——
      *       长命令/URL 折行后复制出来仍是完整一行；选区终点落在被折行块
      *       中间时，终点行仍补一个换行标记截断；</li>
@@ -711,8 +738,15 @@ public final class TerminalEmulator {
             if (li.text[from] == 0 && from > 0) {
                 from--;     // 起点落在宽字符尾格 → 收到头格
             }
-            while (to >= from && isTrailingPadding(li, to)) {
-                to--;       // 行尾填充剥除
+            // 行尾填充剥除只对逻辑行末行生效。软换行续行的行尾空格可能是真实内容
+            // （折行点正好落在一个空格上），剥掉会把「测 试」复制成「测试」。
+            // 代价：宽字符装不进最后一列被挤到下一行时，留下的占位空格也会保留——
+            // 它与真实空格在模型里无法区分，宁可多一个空格也不丢内容。
+            boolean continues = li.wrapped && g < g1 && getGlobalLine(g + 1) != null;
+            if (!continues) {
+                while (to >= from && isTrailingPadding(li, to)) {
+                    to--;
+                }
             }
             for (int i = from; i <= to; i++) {
                 int cp = li.text[i];

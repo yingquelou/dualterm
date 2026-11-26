@@ -11,7 +11,7 @@ token 只能复制整屏再手动删。现由长按拖选覆盖，实测全项�
 
 **实现要点**：
 
-- `TerminalEmulator.getSelectionText()`（纯 Java，EmuTest 36→52 用例）：
+- `TerminalEmulator.getSelectionText()`（纯 Java，EmuTest 36→55 用例）：
   软换行行拼回一个逻辑行、行尾填充逐行剥除（复用 `isTrailingPadding`）、
   宽字符尾格收拢到头格、组合字符随主格保留（不做 NFC 合成）；同节的
   `wordSelectionAt()` 提供长按选词的词边界扫描（空白 / 标点 / 宽字符逐字，
