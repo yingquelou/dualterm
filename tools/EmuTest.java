@@ -752,6 +752,23 @@ public class EmuTest {
                 a11y.getLogicalLineText(a11yBase + 2).isEmpty(),
                 "[" + a11y.getLogicalLineText(a11yBase + 2) + "]");
 
+        // 70) CSI 3 J 清 scrollback 必须推进 evictedRows（与 clearScreen 同口径）。
+        // 全局行号只增不减，否则清屏后既有选区的全局行号会撞上新内容。
+        TerminalEmulator clr = mk();
+        for (int i = 0; i < 30; i++) {
+            feed(clr, "line" + i + "\r\n");
+        }
+        int evictedBefore = clr.getEvictedRows();
+        int scrollLine = clr.getScrollbackCount();
+        check("CSI 3 J precondition: scrollback present",
+                scrollLine > 0 && evictedBefore >= 0,
+                "sb=" + scrollLine + " evicted=" + evictedBefore);
+        feed(clr, "\u001b[3J");
+        check("CSI 3 J advances evictedRows by cleared scrollback",
+                clr.getScrollbackCount() == 0
+                        && clr.getEvictedRows() == evictedBefore + scrollLine,
+                "evicted " + evictedBefore + "->" + clr.getEvictedRows() + " sb=" + scrollLine);
+
         System.out.println(fails == 0 ? "ALL PASS" : fails + " FAILURES");
         System.exit(fails == 0 ? 0 : 1);
     }

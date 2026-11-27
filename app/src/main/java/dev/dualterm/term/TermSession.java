@@ -317,6 +317,11 @@ public final class TermSession {
         }
         exitNotified = true;
         android.util.Log.i("DualTerm", "exit pid=" + pid + " status=" + status);
-        listener.onExit(this, status);
+        // Activity 被系统销毁但进程存活时监听者被摘掉，会话仍会在后台自行结束；
+        // 此处与 onOutput 一样判空，避免 pty-wait 线程 NPE 连坐整个进程
+        Listener l = listener;
+        if (l != null) {
+            l.onExit(this, status);
+        }
     }
 }

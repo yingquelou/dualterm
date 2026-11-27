@@ -2412,8 +2412,10 @@ public final class TerminalEmulator {
                 lines[r].wrapped = false;
             }
             if (mode == 3) {
-                scrollback.clear();
-                sbHead = 0;
+                // 清 scrollback 必须和 clearScreen 同口径走 trimScrollback：
+                // 它把被清行数计入 evictedRows，全局行号只增不减。若这里直接
+                // clear + sbHead=0，已存在的选区全局行号会突然错位、复制取错内容
+                trimScrollback(0);
             }
         }
     }

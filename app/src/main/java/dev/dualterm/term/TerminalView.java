@@ -186,6 +186,8 @@ public class TerminalView extends View {
      * Termux 同款做法——「丝滑」来自抬手后的减速，而不是像素级滚动（两边都是整行步进）。
      */
     private Scroller scroller;
+    /** 上一帧已消费的 scroller Y；只把位移增量加到 scrollOffset，避免覆盖锚定补偿。 */
+    private int flingLastY;
     private VelocityTracker velocityTracker;
     /** fling 速度缩放：0.25 让一次快滑能走完大半屏历史，又不至于冲到顶（同 Termux）。 */
     private static final float FLING_SCALE = 0.25f;
@@ -249,9 +251,16 @@ public class TerminalView extends View {
     /** 上一次通知内容变化的时刻（节流）。 */
     private long lastA11yNotify;
     private static final long A11Y_NOTIFY_MS = 300;
-    /** 上次通知时的总行数与视口偏移；两者都没变就不打扰读屏。 */
+    /** 上次通知时的总行数、视口偏移与可见内容指纹；三者都没变就不打扰读屏。 */
     private long lastA11yTotal = -1;
     private int lastA11yOffset = -1;
+    /** 进度条/\r 重绘这类「行数不变」的内容变化靠指纹识别，否则读屏文本永久过期。 */
+    private int lastA11yContentHash;
+    /** 节流窗口内发生过变化没播报——窗口结束后补发一次，避免最后一次变化丢失。 */
+    private boolean a11yPending;
+    /** 最近一帧算出的总数与指纹，供节流补发时更新基线（读屏事件本身实时读节点）。 */
+    private long seenA11yTotal;
+    private int seenA11yContentHash;
     /** 选区辅助游标：1 = 拖起点，2 = 拖终点，0 = 未拖。 */
     private int handleDrag;
     private float startHandleX, startHandleY, endHandleX, endHandleY;
@@ -379,6 +388,9 @@ public class TerminalView extends View {
         this.a11yFocusedRow = -1;
         this.lastA11yTotal = -1;
         this.lastA11yOffset = -1;
+        this.lastA11yContentHash = 0;
+        this.a11yPending = false;
+        removeCallbacks(a11yPendingRunnable);
         abortFling();
         clearSelection();
         if (value != null) {
@@ -1479,14 +1491,31 @@ public class TerminalView extends View {
     }
 
     /** 视口或内容变化后通知读屏重拉节点；同一状态不重复发，发送节流 300ms。 */
-    private void notifyA11yChanged(int total) {
-        if (total == lastA11yTotal && scrollOffset == lastA11yOffset) {
+    private void notifyA11yChanged(int total, int contentHash) {
+        if (total == lastA11yTotal && scrollOffset == lastA11yOffset
+                && contentHash == lastA11yContentHash) {
             return;
         }
         long now = android.os.SystemClock.uptimeMillis();
         if (now - lastA11yNotify < A11Y_NOTIFY_MS) {
+            // 纯丢弃会让节流窗内的最后一次变化永远不播报（输出停了就不再有 onDraw）。
+            // 记下 pending，等窗口过去 post 一次补发，内容以届时的最新状态为准。
+            a11yPending = true;
             return;
         }
+        dispatchA11yChanged(total, contentHash, now);
+    }
+
+    private void scheduleA11yCatchUp() {
+        if (a11yPending) {
+            removeCallbacks(a11yPendingRunnable);
+            postDelayed(a11yPendingRunnable, A11Y_NOTIFY_MS);
+        }
+    }
+
+    /** 真正发事件；把三项基线更新到当前值，避免读取期间状态漂移。 */
+    private void dispatchA11yChanged(long total, int contentHash, long now) {
+        a11yPending = false;
         AccessibilityManager am = (AccessibilityManager)
                 getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
         if (am == null || !am.isEnabled()) {
@@ -1495,6 +1524,7 @@ public class TerminalView extends View {
         lastA11yNotify = now;
         lastA11yTotal = total;
         lastA11yOffset = scrollOffset;
+        lastA11yContentHash = contentHash;
         AccessibilityEvent event = AccessibilityEvent.obtain(
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
         event.setPackageName(getContext().getPackageName());
@@ -1502,6 +1532,17 @@ public class TerminalView extends View {
         event.setSource(this);
         am.sendAccessibilityEvent(event);
     }
+
+    /** 节流窗口的补发尾巴：延迟 A11Y_NOTIFY_MS 后若仍有 pending 就发一次。 */
+    private final Runnable a11yPendingRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (a11yPending) {
+                dispatchA11yChanged(seenA11yTotal, seenA11yContentHash,
+                        android.os.SystemClock.uptimeMillis());
+            }
+        }
+    };
 
     /* -------------------- 尺寸与网格 -------------------- */
 
@@ -1615,6 +1656,7 @@ public class TerminalView extends View {
         // 写入端按 4~16KB 块持锁，这里最多等一个块的处理时间（毫秒级），可接受。
         // 注意 getLine/getScrollbackLine 是 synchronized 方法，监视器可重入，无死锁面。
         int a11yTotal;
+        int contentHash = 0;
         synchronized (emulator) {
             int evicted = emulator.getEvictedRows();
             int scrollbackCount = emulator.getScrollbackCount();
@@ -1630,6 +1672,11 @@ public class TerminalView extends View {
                 }
                 if (line != null) {
                     drawLine(canvas, line, row);
+                    // 内容指纹：只取每格码点，与绘制同一遍循环、同锁，不额外遍历。
+                    // 进度条原地刷新时行数与滚动都不变，靠它让读屏感知到文本变化。
+                    for (int c = 0; c < line.text.length; c++) {
+                        contentHash = contentHash * 31 + line.text[c];
+                    }
                 }
                 // 选区高亮：半透明叠层压在文字上。行号换算与绘制共用同一把锁，
                 // 不会拿到撕裂的坐标
@@ -1657,7 +1704,10 @@ public class TerminalView extends View {
             }
         }
         // 通知放在锁外：sendAccessibilityEvent 是跨进程调用，不占着仿真器的锁
-        notifyA11yChanged(a11yTotal);
+        seenA11yTotal = a11yTotal;
+        seenA11yContentHash = contentHash;
+        notifyA11yChanged(a11yTotal, contentHash);
+        scheduleA11yCatchUp();
 
         // 选区辅助游标先画，浮动条压在最上层
         if (selActive && !selectionEmpty()) {
@@ -2134,6 +2184,7 @@ public class TerminalView extends View {
             return;
         }
         scroller.fling(0, scrollOffset, 0, (int) (vy * FLING_SCALE), 0, 0, 0, max);
+        flingLastY = scrollOffset;
         post(flingRunnable);
     }
 
@@ -2154,12 +2205,19 @@ public class TerminalView extends View {
             if (!scroller.computeScrollOffset()) {
                 return;
             }
-            // 历史行数会在惯性期间变化（新输出把旧行挤出），每帧重新夹紧
+            // 只取 scroller 的位移增量，叠加到 scrollOffset 上——onDraw 的
+            // anchorToContent 会因新输出同步推进 scrollOffset，若这里用绝对 currY
+            // 赋值就会把那部分补偿抹掉，甩动期间视口来回跳、停点漂移。
             int max = s.getEmulator().getScrollbackCount();
-            int next = Math.max(0, Math.min(max, scroller.getCurrY()));
-            if (next != scrollOffset) {
-                scrollOffset = next;
-                invalidate();
+            int currY = scroller.getCurrY();
+            int delta = currY - flingLastY;
+            flingLastY = currY;
+            if (delta != 0) {
+                int next = Math.max(0, Math.min(max, scrollOffset + delta));
+                if (next != scrollOffset) {
+                    scrollOffset = next;
+                    invalidate();
+                }
             }
             if (!scroller.isFinished()) {
                 post(this);
