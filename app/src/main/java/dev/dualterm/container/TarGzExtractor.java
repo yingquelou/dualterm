@@ -6,6 +6,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -347,6 +348,68 @@ public final class TarGzExtractor {
         }
     }
 
+    /**
+     * 从 start 跟随符号链接（绝对目标按 rootfs 根解释），返回最终实体文件。
+     * 只认 rootfs 内的路径，跳数上限 8，防止环路与「宿主绝对链接」逃逸。
+     */
+    private static File resolveInsideRootfs(File destDir, File start) {
+        String root = destDir.getAbsolutePath();
+        File cur = start;
+        for (int hop = 0; hop < 8; hop++) {
+            Path p = cur.toPath();
+            if (!Files.isSymbolicLink(p)) {
+                return cur.isFile() ? cur : null;
+            }
+            String target;
+            try {
+                target = Files.readSymbolicLink(p).toString();
+            } catch (IOException e) {
+                return null;
+            }
+            File base = target.startsWith("/")
+                    ? destDir
+                    : (cur.getParentFile() == null ? destDir : cur.getParentFile());
+            cur = new File(base, target.startsWith("/") ? target.substring(1) : target);
+            String abs = new File(cur.getAbsolutePath()).toPath().normalize().toString();
+            if (!abs.equals(root) && !abs.startsWith(root + File.separator)) {
+                return null;   // 指到 rootfs 外，交给拷贝兜底
+            }
+            cur = new File(abs);
+        }
+        return null;
+    }
+
+    /** rootfs 内的文件转成 guest 绝对路径（/usr/bin/coreutils），与镜像里的写法一致。 */
+    private static String guestAbsolutePath(File destDir, File file) {
+        String root = destDir.getAbsolutePath();
+        String abs = file.getAbsolutePath();
+        if (!abs.startsWith(root + File.separator)) {
+            return null;
+        }
+        return "/" + abs.substring(root.length() + 1).replace(File.separatorChar, '/');
+    }
+
+    /**
+     * uutils 的 applet 替代品：把 applet 名钉死在脚本里，交给多调用二进制分发。
+     * 不能靠 $0 的 basename 取名字——proot 执行脚本时传下来的路径不保证是调用路径。
+     */
+    private static boolean writeCoreutilsShim(File destDir, File link, String guestTarget)
+            throws IOException {
+        if (!new File(destDir, "bin/sh").exists()) {
+            return false;   // 无 shell 的镜像用不了脚本，只能按份拷贝
+        }
+        String script = "#!/bin/sh\nexec " + guestTarget + " \"" + link.getName() + "\" \"$@\"\n";
+        try (FileOutputStream fos = new FileOutputStream(link)) {
+            fos.write(script.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return false;
+        }
+        link.setReadable(true, true);
+        link.setWritable(true, true);
+        link.setExecutable(true, true);
+        return true;
+    }
+
     private static void copyFile(File src, File dest) throws IOException {
         try (InputStream in = Files.newInputStream(src.toPath());
              FileOutputStream out = new FileOutputStream(dest)) {            byte[] buf = new byte[8192];
@@ -357,6 +420,9 @@ public final class TarGzExtractor {
         }
     }
 
+    /** 测试用：置 true 时跳过 createLink，强制走 Android 上的兜底路径。 */
+    static volatile boolean skipHardLink;
+
     /**
      * tar 硬链接条目（type '1'）。link() 一律被 SELinux 拒绝——**不是**系统调用
      * 缺失（bionic 有 link(2)，Files.createLink 直通它），也**不是**存储权限
@@ -365,15 +431,21 @@ public final class TarGzExtractor {
      * installd 无法保证删净被链接文件、硬链接易被用于安全攻击）。实测同一台
      * 设备上 shell 域（/data/local/tmp）也被拒，符号链接（lnk_file 类、独立
      * 权限线）则可创建。proot 在 app 进程内跑，容器里 link() 同样被拒。
+     *
      * 兜底顺序：
      *   1. createLink（最佳：零拷贝、语义一致；root 设备/某些域可过）
-     *   2. 实体拷贝并从源恢复可执行位——硬链接条目的 tar 头不带 x 位，丢了它
-     *      proot 会报 "'/usr/bin/env' is not executable"
-     *   3. 相对符号链接（最后手段）——**不能**用来兜多调用二进制：uutils coreutils
-     *      （ubuntu 25.10 起默认）要求 argv[0] 的符号链接直接目标就是实际执行的
-     *      文件（/proc/self/exe），链接链多跳一跳就会被它的 "Security violation"
-     *      拒掉；硬链接没有这个跳转所以真 docker 没事。拷贝会多占盘
-     *      （uutils 全家 ≈ 120 × 10MB），但语义与硬链接一致
+     *   2. uutils 多调用二进制（真身叫 coreutils）：写成钉死 applet 名的小脚本。
+     *      Ubuntu 25.10 起的 applet 是「cargo/bin/coreutils/<名> 硬链接到
+     *      /usr/bin/coreutils」，同名校验打的是 require-utility-to-be-invoked-at-
+     *      matching-path 补丁：读 /proc/self/exe 的**文件名**必须等于 argv[0]。
+     *      符号链接的最终 dentry 是 coreutils，必然判 Security violation（实测
+     *      /usr/bin/env 直接让容器起不来）；拷贝 10MB×上百个 applet 又要 1.2GB。
+     *      60 字节脚本 `exec /usr/bin/coreutils 名 "$@"` 保持零拷贝且通过校验，
+     *      代价是每次调用多一个 /bin/sh。没有 /bin/sh 的镜像退回拷贝。
+     *   3. 指向**最终实体**的符号链接：busybox 这类只看 argv[0] 的多调用二进制
+     *      走这里（硬链接密集的 busybox 镜像不再按份拷贝）
+     *   4. 实体拷贝并从源恢复可执行位——硬链接条目的 tar 头不带 x 位，丢了它
+     *      proot 会报 "'/usr/bin/env' is not executable"。盘满等情况下才走到
      */
     private static void makeHardLink(File destDir, File link, String target) throws IOException {
         String cleanTarget = cleanName(target);
@@ -384,11 +456,30 @@ public final class TarGzExtractor {
             parent.mkdirs();
         }
         dropSymlink(link);
-        try {
-            Files.createLink(link.toPath(), src.toPath());
-            return;
-        } catch (Exception ignored) {
-            // 本机不支持硬链接：走拷贝兜底
+        if (!skipHardLink) {
+            try {
+                Files.createLink(link.toPath(), src.toPath());
+                return;
+            } catch (Exception ignored) {
+                // 本机不支持硬链接：走下面的兜底
+            }
+        }
+        File real = resolveInsideRootfs(destDir, src);
+        String guest = real == null ? null : guestAbsolutePath(destDir, real);
+        if (real != null && guest != null) {
+            if ("coreutils".equals(real.getName())) {
+                if (writeCoreutilsShim(destDir, link, guest)) {
+                    return;
+                }
+            } else {
+                try {
+                    Files.createSymbolicLink(link.toPath(),
+                            link.toPath().getFileSystem().getPath(guest));
+                    return;
+                } catch (Exception ignored) {
+                    // 建不了链接，继续走拷贝
+                }
+            }
         }
         if (src.isFile()) {
             try {

@@ -41,6 +41,7 @@ public class TarTest {
         fileReplacedByDir(new File(base, "t14"));
         listNamesCleaned(new File(base, "t15"));
         fileReplacesSymlink(new File(base, "t17"));
+        hardLinkFallback(new File(base, "t18"));
 
         File guard = new File(base, "t16");
         guard.mkdirs();
@@ -233,6 +234,79 @@ public class TarTest {
         extract(b, dest, false);
         check("上层文件被本层目录顶替", new File(dest, "d").isDirectory()
                 && readFile(dest, "d/inner.txt").equals("inner"));
+    }
+
+    /** Android 上硬链接一律被 SELinux 拒，桌面能建链接，用反射把生产代码切到兜底路径。
+     *  uutils 的 applet 必须变成钉死名字的脚本：符号链接会让 /proc/self/exe 报
+     *  coreutils，触发 Security violation（ubuntu:25.10 实测容器起不来）。 */
+    static void hardLinkFallback(File dest) throws Exception {
+        boolean links = symlinkSupported(dest.getParentFile());
+        TarBuilder b = new TarBuilder();
+        b.file("bin/sh", "SH".getBytes("UTF-8"), 0755);
+        b.file("usr/bin/coreutils", "COREUTILS".getBytes("UTF-8"), 0755);
+        b.link("usr/bin/env", "/usr/bin/coreutils", '2');
+        b.link("usr/bin/ls", "usr/bin/env", '1');
+        b.link("usr/bin/cat", "usr/bin/coreutils", '1');
+        b.file("bin/busybox", "BUSYBOX".getBytes("UTF-8"), 0755);
+        b.link("bin/pidof", "bin/busybox", '1');
+        forceFallback(true);
+        try {
+            extract(b, dest, false);
+        } finally {
+            forceFallback(false);
+        }
+        check("兜底：uutils applet 写成钉死名字的脚本",
+                readFile(dest, "usr/bin/cat").equals(
+                        "#!/bin/sh\nexec /usr/bin/coreutils \"cat\" \"$@\"\n"));
+        if (links) {
+            check("兜底：经符号链接的硬链接钉死自己的名字",
+                    readFile(dest, "usr/bin/ls").contains("\"ls\""));
+            check("兜底：符号链接条目保持链接",
+                    Files.isSymbolicLink(new File(dest, "usr/bin/env").toPath()));
+            check("兜底：非 uutils 的硬链接走符号链接",
+                    Files.isSymbolicLink(new File(dest, "bin/pidof").toPath())
+                            && Files.readSymbolicLink(new File(dest, "bin/pidof").toPath())
+                            .toString().equals("/bin/busybox"));
+        } else {
+            pass += 3;
+            System.out.println("SKIP  兜底链接形态（本机不支持符号链接）");
+        }
+
+        File noSh = new File(dest.getParentFile(), dest.getName() + "-nosh");
+        TarBuilder c = new TarBuilder();
+        c.file("usr/bin/coreutils", "COREUTILS".getBytes("UTF-8"), 0755);
+        c.link("usr/bin/cat", "usr/bin/coreutils", '1');
+        forceFallback(true);
+        try {
+            extract(c, noSh, false);
+        } finally {
+            forceFallback(false);
+        }
+        check("兜底：没有 /bin/sh 时按份拷贝",
+                Arrays.equals(readBytes(noSh, "usr/bin/cat"), "COREUTILS".getBytes("UTF-8")));
+    }
+
+    /** 探测本机是否能建符号链接（Windows 未开开发者模式时为否）。 */
+    static boolean symlinkSupported(File dir) {
+        File a = new File(dir, "symlink-probe-a");
+        File b = new File(dir, "symlink-probe-b");
+        try {
+            a.createNewFile();
+            Files.createSymbolicLink(b.toPath(), a.toPath());
+            return true;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            b.delete();
+            a.delete();
+        }
+    }
+
+    /** 桌面上 createLink 可用；把生产代码的开关拨到「跳过链接」，回到 Android 的路径。 */
+    static void forceFallback(boolean value) throws Exception {
+        java.lang.reflect.Field f = TarGzExtractor.class.getDeclaredField("skipHardLink");
+        f.setAccessible(true);
+        f.setBoolean(null, value);
     }
 
     static void listNamesCleaned(File dest) throws Exception {
