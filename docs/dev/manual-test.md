@@ -357,20 +357,27 @@ printf '\033]52;c;'$(printf hello52 | base64)'\007'
 - 开关关（默认值），改写 `off52` 重跑：无 toast；
 - 输入法剪贴板栏（第三方位证）内容仍是 `hello52`——写入被策略层拦截。
 
-### F3 用户复核项
-- vim 容器会话里 `"+yy` + 系统粘贴的真实手感（AI 用 printf 模拟的序列
-  与 vim 发出的等价，但 `set clipboard` 差异、块选择等组合值得真跑一遍）；
-- toast 文案与出现频率是否合适（每次写入都会弹）。
-- **用户实测（2026-11-26）**：vim `"+yy` **没有**写进系统剪贴板。
-- **AI 结论（2026-11-26）**：应用侧 OSC 52 通路本身已由 F1/F2 证实；`"+y` 能不能
-  到达系统剪贴板取决于 vim 自身是否真的发 OSC 52——需要 `+clipboard` 与
-  `+xterm_clipboard`（Ubuntu 的 `vim-tiny` 两者皆无），且 `set clipboard=unnamedplus`；
-  在 tmux 里还要 `set -g set-clipboard on`，并且 tmux 会把序列包进 DCS，应用目前
-  只解析裸 OSC、不拆 tmux 包裹（这是已知边界，不在本次修）。
-  一分钟判定命令：`vim --version | grep -o '[+-]clipboard'`（两处都应为 `+`）、
-  vim 内 `:echo has('clipboard')`（应为 1）、`:set clipboard?`。
-  若 vim 侧全满足仍失败，再按缺陷跟进：`am start … --ei chunklog 400` 看 PTY
-  是否收到 `\e]52;`，即可分清「vim 没发」还是「应用没接」。
+### F3 Vim `"+yy`：根因已定位，Neovim 方案已验证（2026-11-27，M2010J19SC）
+- **用户实测（2026-11-26）**：vim `"+yy` **没有**写进系统剪贴板；安装带系统剪贴板支持的 Vim 后仍失败。
+- **实机复核（2026-11-27，Ubuntu 22.04 容器）**：Huge Vim 8.2 GTK3，`+clipboard`、
+  `+xterm_clipboard`、`+X11` 均已编译，`clipboard=autoselect,exclude:cons\|linux`，无 tmux；
+  应用「程序写剪贴板」开关为开。
+- 逐层证据：`:echo $DISPLAY` 为空；`"+yy` 无写入 Toast，`:registers +` 没有任何 `+`
+  寄存器内容；普通 `yy` 后 `:registers 0 +` 能看到 `0` 号寄存器内容、仍无 `+`，说明
+  yank 与按键输入正常，失败点只在 `+` 剪贴板寄存器。
+- **结论**：Vim 8.2 的 `+clipboard/+xterm_clipboard` 是 **X11** 剪贴板能力，不代表会向
+  终端发送 OSC 52。容器没有 X11/`DISPLAY` 时，`+` 寄存器不可用，应用收不到任何 OSC 52；
+  `set clipboard=unnamedplus` 也只改变默认寄存器，不能补建剪贴板提供方。需另配 OSC 52
+  插件/提供方，或改用明确支持终端 OSC 52 的编辑器；Dualterm 应用侧无需修复。
+- 此前把 `+clipboard/+xterm_clipboard` 当作 `"+y` 可发 OSC 52 的充分条件，结论作废。
+  tmux 边界不变：仍需 `set -g set-clipboard on`，其 DCS 包裹目前不由应用拆解。
+- **Neovim 可用方案已落地（2026-11-27）**：Jammy 自带 0.6.1、stable PPA 0.7.2 均过旧；
+  改用 `ppa:neovim-ppa/unstable` 安装 ARM64 包，`nvim --version` 实测 `NVIM v0.13.0-dev`。
+  在容器 `~/.config/nvim/init.lua` 写入 `vim.g.clipboard = 'osc52'`（自动探测在本终端未命中，
+  必须显式强制；`nvim --clean` 会忽略此配置，不能用来验收）。
+- 新缓冲区输入 `F3_NEOVIM_OK` 后 `"+yy`，出现系统剪贴板写入 Toast；退出 Neovim，在 shell
+  用 Dualterm 的 `Shift+Insert` 回读，粘贴内容确为 `F3_NEOVIM_OK`，端到端通过。
+- Toast 文案与出现频率可另行复核，不影响本次根因与可用方案结论。
 
 ---
 
@@ -472,10 +479,10 @@ bash tools/ime-check.sh 'enter' 'n i h a o :800 enter' 'space' 'n i h a o :800 e
   （手写走拼音候选，`ab` + 空格 → `阿布`；9 键候选计算较慢，字母与空格要分两步、间隔 ≥2s，
   否则空格会把未转换的拼音原样提交）；注音提示「当前键盘不支持外接键盘输入」并退回；
   笔画输入数字直发、无候选。映射完全由输入法决定，应用不介入。
-- 其它输入法（百度/Gboard）的实体键盘行为是否与搜狗一致——尤其**是否老实上报
-  `setComposingText`**：Gboard 报了就会额外走 `imeComposing` 让路分支，搜狗全程不报
-  也不影响（仲裁已不依赖它），但「回车交给输入法」在别的输入法上是否退得干净要实测
-  （2026-11-21 设备上仅剩搜狗小米版，完整版搜狗/百度/Gboard 均未装，待装后测）；
+- **百度输入法 + 实体键盘（2026-11-27 用户复核）**：可用，百度分支复核通过；
+- **Gboard + 实体键盘**：仍待实测，重点看候选上屏、回车归属及是否正常上报
+  `setComposingText`；搜狗不报也不影响现有仲裁，Gboard 若上报还会走 `imeComposing`
+  让路分支；
 - 候选栏画在输入法自己窗口（不占 IME inset）的输入法自动档会判成「不可见」→ 不接管。
   **已定性为已知限制，不是待查缺陷**（见 [limitations.md](../limitations.md) 第 10 条），
   解法是菜单选「始终」；此处只保留「哪些输入法属于这一类」的实测待补；

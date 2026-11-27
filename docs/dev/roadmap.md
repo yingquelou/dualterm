@@ -65,6 +65,14 @@ token 只能复制整屏再手动删。现由长按拖选覆盖，实测全项�
   空数据 / 坏 base64 / MIME 宽容 / UTF-8 往返 / 64KB 截断 / 超长丢弃 /
   丢弃后恢复 / 其它 OSC 不回归。
 
+**编辑器侧前置条件（2026-11-27 实机定性，别再当应用缺陷查）**：Vim 的
+`+clipboard`/`+xterm_clipboard` 只代表 **X11** 剪贴板能力，不代表会向终端发 OSC 52；
+容器无 X11/`DISPLAY` 时 `"+y` 的 `+` 寄存器为空，应用端收不到任何序列（普通 `yy`
+写 `0` 号寄存器正常）。`set clipboard=unnamedplus` 只是改默认寄存器，补不出提供方。
+可用路径：Neovim 0.10+ 配 `vim.g.clipboard = 'osc52'`（Jammy 仓库 0.6.1 与 stable
+PPA 0.7.2 都过旧，需 `ppa:neovim-ppa/unstable`；`nvim --clean` 会忽略该配置）。
+详见 [manual-test.md](manual-test.md#f3-vim-yy根因已定位neovim-方案已验证2026-11-27m2010j19sc)。
+
 ## 三、多标签会话 —— 已完成（2026-11）
 
 会话 id 采用**根进程 pid**（用户建议，评估后采纳）：
