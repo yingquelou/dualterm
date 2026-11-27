@@ -5,9 +5,11 @@ import java.io.IOException;
 
 /**
  * RegistryPuller 桌面回归（纯逻辑部分，可离线跑）：
- *   1. parseRef  —— ref 解析与闸门（library 前缀、tag 归一化、digest 拒绝、非法字符）
+ *   1. parseRef  —— ref 解析与闸门（library 前缀、tag 归一化、digest 拒绝、非法字符、
+ *      第三方 registry 域名与 Hub 域名归一）
  *   2. platformMatches —— manifest list 的平台选择（按设备 ABI + variant 匹配规则）
  *   3. layerKind / rejectReason —— 层 mediaType 白名单（gzip 收、zstd/nondistributable 拒）
+ *   4. registryBase —— Hub 走镜像源、第三方直连
  *
  * JSON 解析与流下载依赖 Context + 真 org.json，留真机验证（与 ImportTest 同一限制）。
  * 纯函数都是 static 且不碰 Context——这是 RegistryPuller 对本回归的实现承诺。
@@ -21,6 +23,7 @@ public class RegistryTest {
         parseRefCases();
         platformCases();
         layerKindCases();
+        registryBaseCases();
         mirrorCases();
         realmCases();
 
@@ -57,6 +60,30 @@ public class RegistryTest {
         check("parseRef: alpine:edge → library/alpine", "library/alpine".equals(r.repo));
         check("parseRef: alpine:edge local", "alpine:edge".equals(r.local));
 
+        // 第三方 registry：域名保留在登记名里，发请求时 repo 不再补 library/
+        r = parseOk("ghcr.io/owner/app:1.2");
+        check("parseRef: ghcr host", "ghcr.io".equals(r.host));
+        check("parseRef: ghcr repo", "owner/app".equals(r.repo));
+        check("parseRef: ghcr tag", "1.2".equals(r.tag));
+        check("parseRef: ghcr local", "ghcr.io/owner/app:1.2".equals(r.local));
+
+        r = parseOk("ghcr.io/owner/app");
+        check("parseRef: ghcr 无 tag → latest", "latest".equals(r.tag));
+
+        r = parseOk("quay.io/coreos/etcd:v3.5.14");
+        check("parseRef: quay host", "quay.io".equals(r.host));
+        check("parseRef: quay local", "quay.io/coreos/etcd:v3.5.14".equals(r.local));
+
+        // Docker 官方域名归一：登记名与 Hub 写法一致，镜像源照常生效
+        r = parseOk("docker.io/library/nginx:1.27");
+        check("parseRef: docker.io 归一 Hub",
+                "".equals(r.host) && "library/nginx".equals(r.repo));
+        check("parseRef: docker.io 登记名", "nginx:1.27".equals(r.local));
+
+        r = parseOk("index.docker.io/user/app:1");
+        check("parseRef: index.docker.io 归一 Hub",
+                "".equals(r.host) && "user/app".equals(r.repo));
+
         // 拒绝类
         parseFail("parseRef: 空", "");
         parseFail("parseRef: null", null);
@@ -65,7 +92,22 @@ public class RegistryTest {
         parseFail("parseRef: tag 非法字符", "debian:12..//");
         parseFail("parseRef: repo 大写非法字符", "Deb ian");
         parseFail("parseRef: validImageRef 闸门", "debian:tag with space");
+        parseFail("parseRef: 带端口的自建 registry", "localhost:5000/x/y");
+        parseFail("parseRef: 自建 registry localhost", "localhost/x/y");
+        parseFail("parseRef: 第三方缺 owner 段", "ghcr.io/app");
+        parseFail("parseRef: 非法域名", "gh cr.io/x/y");
         check("parseRef: 闸门消息带拒绝字样", true);
+    }
+
+    /* -------------------- registryBase -------------------- */
+
+    static void registryBaseCases() {
+        check("registryBase: Hub 无源 → 官方",
+                "https://registry-1.docker.io/v2/".equals(RegistryPuller.registryBase("", "")));
+        check("registryBase: Hub 有源 → 镜像站", "https://docker.1ms.run/v2/"
+                .equals(RegistryPuller.registryBase("", "https://docker.1ms.run")));
+        check("registryBase: 第三方直连，忽略镜像源", "https://ghcr.io/v2/"
+                .equals(RegistryPuller.registryBase("ghcr.io", "https://docker.1ms.run")));
     }
 
     static RegistryPuller.Ref parseOk(String in) throws Exception {

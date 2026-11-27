@@ -148,10 +148,16 @@ UI：模式 chip 下拉即会话列表（`●` 标当前）+ 新建本地/容器
   manifest list 按设备 ABI 选平台、blob 边下边验 sha256、串行下载一层叠一层）；
 - **只收 gzip / 未压缩 tar 层，拒 zstd**（native 解码器与零依赖、512KB
   两条硬约束冲突），遇 zstd 报错指路导入通路；
-- 第一版不做：digest 引用、ghcr/quay 等第三方 registry、登录鉴权、续传；
+- 第一版不做：digest 引用、登录鉴权、续传；2026-11 增补公共第三方 registry
+  （ghcr/quay 等匿名直连，见 pull-registry.md 第九节）；
+- 同批修复 `TarGzExtractor`：下层实体文件覆盖上层绝对符号链接时不再顺链写到宿主
+  `/bin`（真机表现为 EROFS），`TarTest` 24→25 用例；
+- 已知：ghcr.io 直连在大陆网络可能只有 1–5 KB/s，可把镜像域名（如
+  `ghcr.nju.edu.cn`）当 registry 域名填；busybox 这类硬链接密集镜像解包时会
+  复制成多份（SELinux 禁 link(2)），体积放大属既有行为，另评估；
 - 纯判定逻辑（ref 解析 / 平台选择 / mediaType 白名单 / 换源归一化 /
-  WWW-Authenticate 解析）抽 static 纯函数，桌面 `RegistryTest`（73 用例）
-  回归；JSON 与流下载已实机验证；
+  WWW-Authenticate 解析 / registry 端点选择）抽 static 纯函数，桌面
+  `RegistryTest`（90 用例）回归；JSON 与流下载已实机验证；
 - APK 增量≈0（512KB → 530KB，仍远低于旧基线 10.93MB）。
 
 **镜像源（换源）**：官方 Hub 在大陆经常被 DNS 污染（实测 401 前就连接

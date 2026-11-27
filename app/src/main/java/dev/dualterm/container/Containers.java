@@ -725,8 +725,8 @@ public final class Containers {
     /**
      * 镜像拉取唯一入口（UI 拉取对话框与控制台 docker pull 共用）。
      * Alpine 版本标签（3.21 这类）/ latest / 空 走官方 CDN 快路径——免鉴权、
-     * 单文件、已在用；其余引用交给 Docker Hub 拉取器（RegistryPuller）。
-     * 分发收在这里，两个入口不用各写一份。
+     * 单文件、已在用；其余引用交给 RegistryPuller（Docker Hub 或 ghcr 等
+     * 公共 registry）。分发收在这里，两个入口不用各写一份。
      */
     public static String pull(Context ctx, String tag, ContainerRuntime.Progress progress) throws IOException {
         // 容忍 UI/CLI 传进来的各种写法：3.22 / alpine:3.22 / alpine

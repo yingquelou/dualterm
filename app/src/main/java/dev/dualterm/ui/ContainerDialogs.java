@@ -290,7 +290,7 @@ public final class ContainerDialogs {
                     + (sz < 0 ? "…" : Containers.humanSize(sz)));
             meta.add(new int[]{1, i});
         }
-        labels.add("⇣ 拉取镜像（Docker Hub / Alpine）…");
+        labels.add("⇣ 拉取镜像（Docker Hub / ghcr 等 / Alpine）…");
         meta.add(new int[]{3, -1});
         labels.add("⇣ 导入 tar 镜像（docker save / export）…");
         meta.add(new int[]{4, -1});
@@ -519,13 +519,15 @@ public final class ContainerDialogs {
         final Context ctx = host.context();
         final EditText input = new EditText(ctx);
         input.setSingleLine(true);
-        input.setHint("镜像名，如 debian:12 / alpine:3.21");
+        input.setHint("镜像名，如 debian:12 / alpine:3.21 / ghcr.io/owner/app:tag");
         input.setText("alpine:3.21");
         String hub = Containers.hubMirror(ctx);
         new AlertDialog.Builder(ctx)
                 .setTitle("拉取镜像")
                 .setMessage("alpine 版本：从官方 CDN 或镜像源下载 minirootfs（约 3MB）。\n"
-                        + "其余：从 Docker Hub 匿名拉取（几十 MB 起，层压缩仅支持 gzip）。\n"
+                        + "其余：匿名拉取（几十 MB 起，层压缩仅支持 gzip）。\n"
+                        + "ghcr.io / quay.io 等公共 registry 直连，不走 Hub 镜像源；"
+                        + "私有仓库与自建（带端口）registry 不支持。\n"
                         + "当前 Hub 源：" + (hub.isEmpty() ? "官方直连" : hub)
                         + "（可在「镜像源设置」里换源）")
                 .setView(input)

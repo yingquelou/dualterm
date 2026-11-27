@@ -1,10 +1,11 @@
 # docker pull 泛化：Docker Hub 官方镜像子集（设计定稿）
 
-状态：已实现并实机验证（2026-11）。RegistryTest 73 用例 + 其余各套全绿（现共七套）；
+状态：已实现并实机验证（2026-11）。RegistryTest 90 用例 + 其余各套全绿（现共七套）；
 实机（官方 Hub 被 DNS 污染的网络）：alpine 换清华源 12s、debian:12 经
 dockerproxy.net 约 50s、busybox:1.36/1.37 经 1ms / daocloud（realm token）
 45s / 23s 拉完；digest 拒绝、镜像物化容器、rm 守卫、clear 恢复官方均过。
-同批新增镜像源（换源）能力，见第八节。
+同批新增镜像源（换源）能力，见第八节。2026-11 增补公共第三方 registry
+（ghcr.io / quay.io 等）匿名直连，见第九节。
 
 ## 一、目标与范围
 
@@ -19,9 +20,10 @@ dockerproxy.net 约 50s、busybox:1.36/1.37 经 1ms / daocloud（realm token）
 **不做（第一期，明确报错而不是静默失败）**：
 
 - digest 引用（`debian@sha256:…`）——报错说明，等有真实诉求再做；
-- 自定义 registry 域名（ghcr.io / quay.io / 私有 registry）——API 同为 v2
-  但鉴权矩阵各异，另行评估；
-- 登录鉴权（私有仓库）、断点续传、blob 并行下载、schema v1 老镜像；
+- 私有 registry 与登录鉴权——GHCR / Quay 的公共包匿名可拉，私有包需 PAT，
+  第一期不做；带端口的自建 registry 明确报错（端口与 tag 分隔有歧义，
+  且本机没有自建场景）；
+- 断点续传、schema v1 老镜像；
 - **zstd 层**：需要 native 解码器（zstd-jni 数 MB），与「APK ≈ 512KB、
   零第三方依赖」两条硬约束直接冲突。主流官方镜像至今全是 gzip；
   遇到 zstd 层给明确报错，指路 `docker save` 后 `docker load` 导入。
@@ -258,3 +260,45 @@ Framework），APK 增量≈0，512KB 基线不动。
 
 **第一版不做**：多镜像站级联失败转移（用户手动换源即可）、写镜像源的
 凭据（镜像站私有鉴权）、镜像源健康探测。
+
+## 九、公共第三方 registry（2026-11 增补）
+
+**动机**：GitHub Packages（ghcr.io）、Quay 等公共镜像没有 Hub 镜像，用户
+此前只能 `docker save` 后导入。评估时确认：鉴权（realm/service/scope 来自
+401 应答）与 blob 307 跟随两块通用能力项目里已经具备，增量主要是 ref 解析
+与端点选择，故直接做。
+
+**ref 规则**（`parseRef`，纯函数）：
+
+- 首段含 `.` / `:` / `localhost` 视为 registry 域名；`docker.io`、
+  `index.docker.io`、`registry-1.docker.io` 归一到 Hub（镜像源照常生效）；
+- 第三方保留域名进登记名（`ghcr.io/owner/app:tag`），目录名经 `dirName`
+  变 `ghcr.io_owner_app-tag`，与 Hub 同名镜像不会混；
+- tag 取「最后一个 `/` 之后的冒号」，顺带消掉端口歧义；带端口写法直接
+  拒绝（自建场景，指路导入）；
+- 第三方必须 `域名/owner/名` 两段；不含 `library/` 前缀补全。
+
+**端点选择**（`registryBase`，纯函数）：Hub → 镜像源或官方；第三方 →
+`https://<host>/v2/` 直连。镜像源只代理 Hub，套到 ghcr 上必然 404。
+
+**鉴权**：第三方匿名同样走 401 → `WWW-Authenticate` 的 realm 取 token
+（GHCR 为 `https://ghcr.io/token?service=ghcr.io&scope=repository:owner/app:pull`）。
+realm 缺失时只有 Hub 退回 auth.docker.io；第三方直接报「未提供匿名鉴权端点」，
+不再拿 Hub token 去撞。
+
+**实测（2026-11-27，手机容器网络）**：`GET https://ghcr.io/v2/` → 401；
+`home-assistant/home-assistant` 匿名 token → 200；`manifests/latest`（OCI
+index Accept）→ 200；层 blob → 307 到 `pkg-containers.githubusercontent.com`
+→ 206（Range）。`library/hello-world` 的 token 为 403 是因为 GHCR 上无此包，
+不是必须登录。实机直连 ghcr.io 的层下载被限速到 1–5 KB/s（读超时后正确报错、
+清理半成品）；把 `ghcr.nju.edu.cn` 当 registry 域名后，`linuxserver/baseimage-alpine:3.21`
+（7 层）完整拉取并成功建容器（`/etc/alpine-release` = 3.21.0，`pidof sh` 正常）。
+
+**顺带修复**：拉取暴露了 `TarGzExtractor` 的一个老缺陷——下层把某路径从绝对
+符号链接改成实体文件时，`FileOutputStream` 会顺着链接写到宿主只读 `/bin`
+（真机报 EROFS）。现在落盘前先删同名链接，`TarTest` 加了对应用例（24→25）。
+
+**边界**：私有包（含 GitHub Packages 默认私有）→ 401 报「拒绝访问」；
+zstd 层照旧拒绝；GHCR 大镜像（1–2GB）对手机磁盘和时长不友好，属已知取舍；
+busybox 这类硬链接密集镜像解包时会复制成多份（SELinux 禁 `link(2)`），
+体积放大是既有行为，另行评估。

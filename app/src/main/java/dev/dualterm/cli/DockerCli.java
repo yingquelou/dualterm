@@ -482,12 +482,14 @@ public final class DockerCli {
 
     private static String pull(Context ctx, String[] args) {
         if (args.length == 0) {
-            return "docker: 用法 docker pull 名[:标签]（如 alpine:3.21 / debian:12）\n";
+            return "docker: 用法 docker pull 名[:标签]（如 alpine:3.21 / debian:12 / ghcr.io/owner/app:tag）\n";
         }
         try {
             // 写法归一化与 alpine/Hub 的分发都收在 Containers.pull，
-            // 控制台与 UI 拉取对话框共用同一条路
-            String pulled = Containers.pull(ctx, args[0], null);
+            // 控制台与 UI 拉取对话框共用同一条路；进度回显到控制台，
+            // 否则几十秒到几分钟的拉取只有一个「执行中…」
+            ProgressSink sink = progressSink;
+            String pulled = Containers.pull(ctx, args[0], sink == null ? null : sink::line);
             return "Pulled " + pulled + "\n";
         } catch (Exception e) {
             return "docker: pull 失败：" + e.getMessage() + "\n";
@@ -541,7 +543,8 @@ public final class DockerCli {
                 + "镜像\n"
                 + "  images                   列出镜像\n"
                 + "  pull 名[:标签]          拉镜像：alpine 版本走官方源（约 3MB），\n"
-                + "                           其余走 Docker Hub（匿名，gzip 层，几十 MB 起）\n"
+                + "                           其余匿名拉取（gzip 层，几十 MB 起）；\n"
+                + "                           ghcr.io/owner/app 等公共 registry 可直连\n"
                 + "  load -i FILE [名]        导入 docker save 的 tar（含层叠/whiteout）\n"
                 + "  import FILE [名:标签]    导入 docker export 的扁平 rootfs tar\n"
                 + "  rmi IMAGE                删除镜像（有容器在用时拒绝）\n"

@@ -48,10 +48,13 @@ mirror alpine mirrors.tuna.tsinghua.edu.cn/alpine
 info / version / help
 ```
 
-`pull` 支持两类来源：Alpine 版本标签走官方 CDN 快路径（约 3MB），其余引用
-从 Docker Hub 匿名拉取（gzip 层，几十 MB 起，边下边校验）。zstd 压缩的层
-不支持（拉取会明确报错），可 `docker save` 后用「导入镜像」；
-自定义 registry（ghcr/quay）、digest 引用、私有仓库暂不支持。
+`pull` 支持三类来源：Alpine 版本标签走官方 CDN 快路径（约 3MB）；Docker Hub
+引用匿名拉取；`ghcr.io/owner/名` 这类公共 registry 直连匿名拉取（gzip 层，
+几十 MB 起，边下边校验；Hub 镜像源只作用于 Docker Hub，不会代理第三方域名）。
+大陆网络直连 `ghcr.io` 可能非常慢（实测 1–5 KB/s），可改填 GitHub 镜像域名，
+例如 `ghcr.nju.edu.cn/owner/名`。
+zstd 压缩的层不支持（拉取会明确报错），可 `docker save` 后用「导入镜像」；
+私有仓库、带端口的自建 registry、digest 引用暂不支持。
 设计边界与镜像站鉴权细节见 [dev/pull-registry.md](dev/pull-registry.md)。
 
 **镜像源（换源）**：Hub 与 Alpine 两路各自可配（菜单「镜像源设置…」或

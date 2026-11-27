@@ -18,10 +18,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Docker Hub 匿名拉取（Registry HTTP API v2 子集），设计见 docs/pull-registry.md。
+ * Docker Hub 与公共第三方 registry 的匿名拉取（Registry HTTP API v2 子集），
+ * 设计见 docs/dev/pull-registry.md。
  *
  * 范围（缺一明确报错而不是静默失败）：
- *   - repo 支持 library/官方镜像 与 owner/repo，tag 形式；digest 引用不支持
+ *   - ref 支持 名 / owner/名（Docker Hub）与 host/owner/名（ghcr.io、quay.io 等
+ *     公共 registry）；第三方域名直连，Hub 镜像源只作用于 Docker Hub
+ *   - 私有仓库、带端口的自建 registry、digest 引用均明确拒绝
  *   - 默认匿名直连 Docker Hub；配置了镜像源（换源）则 registry 端点指向镜像站，
  *     先匿名拉、401 再走 auth token 兜底——全匿名站（dockerproxy 类）与
  *     复用 Hub token 的站（daocloud / 1ms 类）两种形态都覆盖
@@ -79,11 +82,13 @@ public final class RegistryPuller {
 
     /** 解析结果：repo 是发请求用的全名（library/debian 或 owner/name）。 */
     public static final class Ref {
+        public final String host;    // 第三方 registry 域名（ghcr.io）；Docker Hub 为空串
         public final String repo;
         public final String tag;
-        public final String local;   // 登记用：剥掉 library/ 前缀，如 debian:12
+        public final String local;   // 登记用：Hub 剥掉 library/ 前缀；第三方保留 域名/…
 
-        Ref(String repo, String tag, String local) {
+        Ref(String host, String repo, String tag, String local) {
+            this.host = host;
             this.repo = repo;
             this.tag = tag;
             this.local = local;
@@ -102,16 +107,44 @@ public final class RegistryPuller {
         if (s.contains("@")) {
             throw new IOException("暂不支持 digest 引用（名@sha256:…），请用标签形式");
         }
-        // repo 段不含冒号（不支持自建 registry 的 域名:端口 写法），最后一个冒号后是 tag
+        // 首段含点 / 冒号 / localhost 即 registry 域名。冒号只可能是端口写法，
+        // 本期明确拒绝自建 registry，也就顺带消掉了「端口 vs tag」的歧义。
+        String host = "";
+        String rest = s;
+        int slash = s.indexOf('/');
+        if (slash > 0) {
+            String first = s.substring(0, slash);
+            if (first.indexOf('.') >= 0 || first.indexOf(':') >= 0
+                    || "localhost".equalsIgnoreCase(first)) {
+                if (first.indexOf(':') >= 0) {
+                    throw new IOException("暂不支持带端口的自建 registry（" + first
+                            + "）\n请在电脑上 docker save 导出后，用「导入镜像」加载");
+                }
+                host = first.toLowerCase(Locale.US);
+                rest = s.substring(slash + 1);
+                if ("localhost".equals(host) || !host.matches(
+                        "[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")) {
+                    throw new IOException("不认识的 registry 域名：" + first
+                            + "\n（支持公共 registry，如 ghcr.io / quay.io；"
+                            + "自建请导出 tar 后导入）");
+                }
+                // Docker 官方域名的几种写法归一到 Hub，镜像源只作用于 Hub
+                if ("docker.io".equals(host) || "index.docker.io".equals(host)
+                        || "registry-1.docker.io".equals(host)) {
+                    host = "";
+                }
+            }
+        }
+        // 最后一个冒号后是 tag（此时 rest 已剥掉域名，端口写法也已拒绝）
         String repo;
         String tag;
-        int i = s.lastIndexOf(':');
+        int i = rest.lastIndexOf(':');
         if (i < 0) {
-            repo = s;
+            repo = rest;
             tag = "latest";
         } else {
-            repo = s.substring(0, i);
-            tag = s.substring(i + 1);
+            repo = rest.substring(0, i);
+            tag = rest.substring(i + 1);
         }
         if (repo.isEmpty()) {
             throw new IOException("镜像名不完整：" + input);
@@ -122,23 +155,31 @@ public final class RegistryPuller {
         repo = repo.toLowerCase(Locale.US);
         if (!repo.matches("[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*")) {
             throw new IOException("镜像名含非法字符：" + repo
-                    + "\n（只支持 Docker Hub 的 名 或 owner/名 写法，全小写）");
+                    + "\n（写法：名 / owner/名 / 域名/owner/名，全小写）");
         }
-        // 官方镜像的约定：不带 / 的 repo 发请求时补 library/ 前缀
-        if (!repo.contains("/")) {
+        if (!host.isEmpty() && !repo.contains("/")) {
+            throw new IOException("该 registry 需要 owner/名 两段：" + host + "/" + repo);
+        }
+        // 官方镜像的约定：Hub 上不带 / 的 repo 发请求时补 library/ 前缀
+        if (host.isEmpty() && !repo.contains("/")) {
             repo = "library/" + repo;
         }
         if (!tag.matches("[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")) {
             throw new IOException("标签含非法字符：" + tag);
         }
-        // 登记名剥掉官方镜像的 library/ 前缀，与本地镜像命名（normalizeImage）一致
-        String local = (repo.startsWith("library/")
-                ? repo.substring("library/".length()) : repo) + ":" + tag;
+        // 第三方保留域名，避免与 Hub 上的同名镜像混成一个目录
+        String local;
+        if (!host.isEmpty()) {
+            local = host + "/" + repo + ":" + tag;
+        } else {
+            local = (repo.startsWith("library/")
+                    ? repo.substring("library/".length()) : repo) + ":" + tag;
+        }
         // local 会变成镜像目录名，也会被 Docker 后端拼进 su -c——闸门前置
         if (!Containers.validImageRef(local)) {
             throw new IOException("镜像名含非法字符，拒绝拉取：" + local);
         }
-        return new Ref(repo, tag, local);
+        return new Ref(host, repo, tag, local);
     }
 
     /* -------------------- 镜像源归一化（纯函数） -------------------- */
@@ -188,6 +229,17 @@ public final class RegistryPuller {
                     + "\n（示例：docker.1ms.run 或 https://docker.m.daocloud.io）");
         }
         return (hasScheme ? lower.substring(0, lower.indexOf("://") + 3) : "https://") + s;
+    }
+
+    /**
+     * registry 端点：Hub 走（可选）镜像源；第三方域名直连——镜像源只代理 Hub，
+     * 把 ghcr 的请求套到镜像站上必然 404。
+     */
+    public static String registryBase(String host, String hubMirror) {
+        if (host != null && !host.isEmpty()) {
+            return "https://" + host + "/v2/";
+        }
+        return hubMirror == null || hubMirror.isEmpty() ? REGISTRY : hubMirror + "/v2/";
     }
 
     /* -------------------- 平台选择（纯函数） -------------------- */
@@ -259,9 +311,10 @@ public final class RegistryPuller {
             throws IOException {
         Ref ref = parseRef(input);
         String hub = Containers.hubMirror(ctx);
-        String registryBase = hub.isEmpty() ? REGISTRY : hub + "/v2/";
-        report(progress, (hub.isEmpty() ? "查询 Docker Hub：" : "经镜像源 " + hub + " 查询 ")
-                + ref.repo + ":" + ref.tag + " …");
+        boolean isHub = ref.host.isEmpty();
+        String registryBase = registryBase(ref.host, hub);
+        String where = !isHub ? ref.host : (hub.isEmpty() ? "Docker Hub" : "镜像源 " + hub);
+        report(progress, "查询 " + where + "：" + ref.repo + ":" + ref.tag + " …");
 
         File rootfs = Containers.imageRootfs(ctx, ref.local);
         int st = Containers.imageState(ctx, ref.local);
@@ -288,7 +341,7 @@ public final class RegistryPuller {
             if (e.code != 401) {
                 throw e;
             }
-            token = resolveToken(e.wwwAuth, ref.repo);
+            token = resolveToken(e.wwwAuth, ref.repo, isHub);
             manifest = fetchManifest(registryBase, ref, token, progress);
         }
         JSONArray layers = manifest.optJSONArray("layers");
@@ -329,7 +382,7 @@ public final class RegistryPuller {
             File cur = new File(cache, "pull-layer-" + System.nanoTime());
             report(progress, "下载 层 1/" + n + " …");
             downloadBlob(registryBase, ref.repo, token, layerAt(layers, 0).optString("digest", ""),
-                    cur, progress, "层 1/" + n);
+                    cur, progress, "层 1/" + n, isHub);
             for (int i = 0; i < n; i++) {
                 final File next;
                 Thread prefetch = null;
@@ -345,7 +398,7 @@ public final class RegistryPuller {
                         public void run() {
                             try {
                                 downloadBlob(registryBase, ref.repo, tk, nextDigest, next,
-                                        null, nextLabel);
+                                        null, nextLabel, isHub);
                             } catch (IOException e) {
                                 prefetchErr[0] = e;
                             }
@@ -399,10 +452,12 @@ public final class RegistryPuller {
     /**
      * 401 后取 token。规范流程：WWW-Authenticate 的 realm 就是鉴权端点
      * （镜像站会报自己的，如 docker.1ms.run/openapi/v1/auth/token——这正好
-     * 绕开大陆网络经常不可达的 auth.docker.io）；没有 realm 或解析不出才退回
-     * Hub 官方端点。
+     * 绕开大陆网络经常不可达的 auth.docker.io）。realm 缺失时只有 Hub 能退回
+     * 官方端点；第三方 registry 缺 realm 说明不支持匿名拉取，直接报错而不是
+     * 拿 Hub 的 token 去撞。
      */
-    private static String resolveToken(String wwwAuth, String repo) throws IOException {
+    private static String resolveToken(String wwwAuth, String repo, boolean hub)
+            throws IOException {
         String realm = realmParam(wwwAuth, "realm");
         if (realm != null && !realm.isEmpty()) {
             String service = realmParam(wwwAuth, "service");
@@ -419,6 +474,10 @@ public final class RegistryPuller {
                 throw new IOException("鉴权服务不可达（" + e.getMessage() + "）", e);
             }
             return tokenField(body, "鉴权端点 " + realm);
+        }
+        if (!hub) {
+            throw new IOException("该 registry 未提供匿名鉴权端点（缺少 realm），"
+                    + "可能是私有仓库或不支持匿名拉取");
         }
         return token(repo);
     }
@@ -549,7 +608,7 @@ public final class RegistryPuller {
 
     private static void downloadBlob(String registryBase, String repo, String token,
                                      String digest, File dest,
-                                     ContainerRuntime.Progress progress, String label)
+                                     ContainerRuntime.Progress progress, String label, boolean hub)
             throws IOException {
         try {
             downloadBlobOnce(registryBase, repo, token, digest, dest, progress, label);
@@ -558,7 +617,7 @@ public final class RegistryPuller {
             if (e.code != 401 || token != null) {
                 throw e;
             }
-            downloadBlobOnce(registryBase, repo, resolveToken(e.wwwAuth, repo),
+            downloadBlobOnce(registryBase, repo, resolveToken(e.wwwAuth, repo, hub),
                     digest, dest, progress, label);
         }
     }

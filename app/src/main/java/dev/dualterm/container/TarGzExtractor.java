@@ -238,6 +238,10 @@ public final class TarGzExtractor {
             // 上层是目录、这层是文件：目录让位
             deleteTree(out, destDir);
         }
+        // 上层若是符号链接（如 busybox 的 /bin/pidof -> /bin/busybox），直接
+        // FileOutputStream 会顺着绝对链接写进宿主 /bin（只读系统分区，EROFS）。
+        // 本层实体文件必须落在 rootfs 内，先把旧链接删掉。
+        dropSymlink(out);
         try (FileOutputStream fos = new FileOutputStream(out)) {
             long remaining = size;
             while (remaining > 0) {
@@ -332,10 +336,20 @@ public final class TarGzExtractor {
         return current;
     }
 
+    /** 目标位置若是符号链接，先删掉，避免写入顺着链接跑到 rootfs 外。 */
+    private static void dropSymlink(File file) throws IOException {
+        try {
+            if (Files.isSymbolicLink(file.toPath())) {
+                Files.delete(file.toPath());
+            }
+        } catch (IOException e) {
+            throw new IOException("无法清理符号链接：" + file, e);
+        }
+    }
+
     private static void copyFile(File src, File dest) throws IOException {
         try (InputStream in = Files.newInputStream(src.toPath());
-             FileOutputStream out = new FileOutputStream(dest)) {
-            byte[] buf = new byte[8192];
+             FileOutputStream out = new FileOutputStream(dest)) {            byte[] buf = new byte[8192];
             int n;
             while ((n = in.read(buf)) > 0) {
                 out.write(buf, 0, n);
@@ -369,6 +383,7 @@ public final class TarGzExtractor {
             //noinspection ResultOfMethodCallIgnored
             parent.mkdirs();
         }
+        dropSymlink(link);
         try {
             Files.createLink(link.toPath(), src.toPath());
             return;

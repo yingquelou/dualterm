@@ -40,6 +40,7 @@ public class TarTest {
         dirReplacedByFile(new File(base, "t13"));
         fileReplacedByDir(new File(base, "t14"));
         listNamesCleaned(new File(base, "t15"));
+        fileReplacesSymlink(new File(base, "t17"));
 
         File guard = new File(base, "t16");
         guard.mkdirs();
@@ -240,6 +241,20 @@ public class TarTest {
         b.file("../escape", "x".getBytes("UTF-8"), 0644);
         List<String> names = TarGzExtractor.listNames(new ByteArrayInputStream(b.build()), 100);
         check("listNames 清洗并滤穿越", names.contains("ok.txt") && !names.contains("escape"));
+    }
+
+    /** 层 1 把路径建成绝对符号链接，层 2 又在同一路径落实体文件（busybox 镜像的常见形态）。
+     *  直接开流写会顺着链接跑到 rootfs 外（真机表现为宿主 /bin 只读，EROFS）。 */
+    static void fileReplacesSymlink(File dest) throws Exception {
+        TarBuilder lower = new TarBuilder();
+        lower.file("bin/busybox", "BUSYBOX4".getBytes("UTF-8"), 0755);
+        lower.link("bin/pidof", "/bin/busybox", '2');
+        extract(lower, dest, false);
+        TarBuilder upper = new TarBuilder();
+        upper.file("bin/pidof", "REGULAR".getBytes("UTF-8"), 0755);
+        extract(upper, dest, false);
+        check("实体文件顶替符号链接：内容落在 rootfs 内",
+                Arrays.equals(readBytes(dest, "bin/pidof"), "REGULAR".getBytes("UTF-8")));
     }
 
     /* -------------------- 工具 -------------------- */
