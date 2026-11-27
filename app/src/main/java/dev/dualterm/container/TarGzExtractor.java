@@ -175,9 +175,22 @@ public final class TarGzExtractor {
                 }
 
                 File out = new File(destDir, clean);
-                // 必须带路径分隔符比较，否则 rootfs-evil 这类同级同前缀目录会被误判为在 rootfs 内
-                if (!isInside(destRoot, out.getCanonicalPath())) {
-                    // 防目录穿越
+                // 逃逸检查只针对 out 的**父目录**：cleanName 已保证 clean 词法上无 .. /
+                // 绝对路径，真正的逃逸只可能来自父目录里指向 rootfs 外的符号链接。
+                // 不能查 out 自身——上层镜像常把同一路径留成 guest 绝对路径符号链接
+                // （busybox 的 /bin/pidof -> /bin/busybox），getCanonicalPath() 会跟随它
+                // 解析到宿主根目录，把合法的「实体文件覆盖旧链接」误判成逃逸而跳过，
+                // 结果上层文件内容落不进 rootfs（Linux/Android 可建符号链接时必现）。
+                // out 自身要不要覆盖由 writeFile/makeSymlink 各自处理。
+                boolean escape;
+                try {
+                    File outParent = out.getParentFile();
+                    escape = !isInside(destRoot,
+                            (outParent == null ? destDir : outParent).getCanonicalPath());
+                } catch (IOException bad) {
+                    escape = true;   // 畸形路径视为逃逸，不让一条恶意条目中断解包
+                }
+                if (escape) {
                     skipEntry(in, size);
                     continue;
                 }
@@ -494,12 +507,18 @@ public final class TarGzExtractor {
             return;
         }
         File src = new File(destDir, cleanTarget);
-        // 二次校验：目标路径里若夹着指向 rootfs 外的符号链接，canonical 会跑出去。
-        // 同样禁止——硬链接的目标必须是 rootfs 内的实体。畸形路径 canonical 会抛
-        // 异常（Windows 盘符/非法字符），视为逃逸直接拒绝，不让一条恶意条目中断解包。
+        // 二次校验：cleanName 已保证目标词法上在 rootfs 内（无 .. / 绝对路径）。
+        // 这里只拦「目标路径里夹着指向 rootfs 外的符号链接」这一真逃逸——用父目录的
+        // canonical 判断，而不是 src 自身：src 常是 guest 绝对路径符号链接
+        // （usr/bin/env -> /usr/bin/coreutils），getCanonicalPath() 跟随它会解析到宿主
+        // 根目录，把合法硬链接误判为逃逸并拒绝创建（Linux/Android 可建符号链接时必现，
+        // 表现为 applet 脚本/符号链接缺失）。真正的符号链接跟随交给 resolveInsideRootfs
+        // 按 rootfs 语义处理。畸形路径 canonical 抛异常（Windows 盘符等）视为逃逸拒绝。
         try {
             String root = destDir.getCanonicalPath();
-            if (!isInside(root, src.getCanonicalPath())) {
+            File srcParent = src.getParentFile();
+            String parentCanonical = (srcParent == null ? destDir : srcParent).getCanonicalPath();
+            if (!isInside(root, parentCanonical)) {
                 return;
             }
         } catch (IOException bad) {
