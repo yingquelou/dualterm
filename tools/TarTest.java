@@ -42,6 +42,7 @@ public class TarTest {
         listNamesCleaned(new File(base, "t15"));
         fileReplacesSymlink(new File(base, "t17"));
         hardLinkFallback(new File(base, "t18"));
+        hardLinkNoEscape(new File(base, "t19"));
 
         File guard = new File(base, "t16");
         guard.mkdirs();
@@ -284,6 +285,35 @@ public class TarTest {
         }
         check("兜底：没有 /bin/sh 时按份拷贝",
                 Arrays.equals(readBytes(noSh, "usr/bin/cat"), "COREUTILS".getBytes("UTF-8")));
+    }
+
+    /** 硬链接目标穿越：.. / 绝对路径 / 同前缀兄弟目录都不能把宿主文件读进 rootfs。 */
+    static void hardLinkNoEscape(File dest) throws Exception {
+        // rootfs 外的宿主文件——任何条目都不该把它读进来
+        File victim = new File(dest.getParentFile(), "escape-victim.txt");
+        try (FileOutputStream f = new FileOutputStream(victim)) {
+            f.write("SECRET".getBytes("UTF-8"));
+        }
+        String vabs = victim.getAbsolutePath();
+        String dots = "../" + victim.getName();
+
+        TarBuilder b = new TarBuilder();
+        b.file("bin/sh", "SH".getBytes("UTF-8"), 0755);
+        b.link("usr/bin/a-dotdot", dots, '1');       // .. 目标：cleanName 返回 null
+        b.link("usr/bin/b-absolute", vabs, '1');     // 绝对目标：cleanName 去前导 / 后仍含 .. 语义
+        forceFallback(true);
+        try {
+            extract(b, dest, false);
+        } finally {
+            forceFallback(false);
+        }
+        // 目标条目要么不存在，要么绝不是宿主文件内容
+        for (String n : new String[]{"usr/bin/a-dotdot", "usr/bin/b-absolute"}) {
+            File made = new File(dest, n);
+            check("硬链接拒绝穿越目标：" + n,
+                    !made.exists() || !readFile(dest, n).equals("SECRET"));
+        }
+        victim.delete();
     }
 
     /** 探测本机是否能建符号链接（Windows 未开开发者模式时为否）。 */

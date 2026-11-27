@@ -69,9 +69,9 @@ public final class TarGzExtractor {
                     name = prefix + "/" + name;
                 }
                 if (type == 'x') {
-                    String p = paxPath(new String(readData(in, size), "UTF-8"));
-                    if (p != null) {
-                        pendingName = p;
+                    String[] pax = parsePax(new String(readData(in, size), "UTF-8"));
+                    if (pax[0] != null) {
+                        pendingName = pax[0];
                     }
                     continue;
                 }
@@ -111,6 +111,7 @@ public final class TarGzExtractor {
 
         String destRoot = destDir.getCanonicalPath();
         String pendingName = null;
+        String pendingLinkName = null;
         int entries = 0;
 
         InputStream in = decompress(source);
@@ -133,22 +134,32 @@ public final class TarGzExtractor {
                 if (type == 'x' || type == 'g') {
                     byte[] data = readData(in, size);
                     if (type == 'x') {
-                        String p = paxPath(new String(data, "UTF-8"));
-                        if (p != null) {
-                            pendingName = p;
+                        String[] pax = parsePax(new String(data, "UTF-8"));
+                        if (pax[0] != null) {
+                            pendingName = pax[0];
+                        }
+                        if (pax[1] != null) {
+                            pendingLinkName = pax[1];
                         }
                     }
                     continue;
                 }
-                // GNU 长文件名
+                // GNU 长文件名 / 长链接名
                 if (type == 'L') {
-                    byte[] data = readData(in, size);
-                    pendingName = trimNul(new String(data, "UTF-8"));
+                    pendingName = trimNul(new String(readData(in, size), "UTF-8"));
+                    continue;
+                }
+                if (type == 'K') {
+                    pendingLinkName = trimNul(new String(readData(in, size), "UTF-8"));
                     continue;
                 }
                 if (pendingName != null) {
                     name = pendingName;
                     pendingName = null;
+                }
+                if (pendingLinkName != null) {
+                    linkName = pendingLinkName;
+                    pendingLinkName = null;
                 }
 
                 String clean = cleanName(name);
@@ -164,7 +175,8 @@ public final class TarGzExtractor {
                 }
 
                 File out = new File(destDir, clean);
-                if (!out.getCanonicalPath().startsWith(destRoot)) {
+                // 必须带路径分隔符比较，否则 rootfs-evil 这类同级同前缀目录会被误判为在 rootfs 内
+                if (!isInside(destRoot, out.getCanonicalPath())) {
                     // 防目录穿越
                     skipEntry(in, size);
                     continue;
@@ -298,6 +310,17 @@ public final class TarGzExtractor {
         // 退路：把链接目标实体化复制过来。/bin/sh -> busybox 这类关键链接必须可用，
         // 否则容器里连 shell 都起不来（busybox 靠 argv[0] 分派，复制过去照样能跑）。
         File resolved = resolveLinkTarget(destDir, link, target);
+        // 退路是把目标内容复制进 rootfs；目标若经 .. 或符号链接跑出 rootfs，
+        // 就成了把宿主文件读进容器（信息泄露）。必须校验解析结果仍在 rootfs 内。
+        if (resolved != null) {
+            try {
+                if (!isInside(destDir.getCanonicalPath(), resolved.getCanonicalPath())) {
+                    resolved = null;
+                }
+            } catch (IOException bad) {
+                resolved = null;
+            }
+        }
         if (resolved != null && resolved.isFile()) {
             copyFile(resolved, link);
             //noinspection ResultOfMethodCallIgnored
@@ -346,6 +369,11 @@ public final class TarGzExtractor {
         } catch (IOException e) {
             throw new IOException("无法清理符号链接：" + file, e);
         }
+    }
+
+    /** canonical 路径是否落在 root 内（含 root 本身）；带分隔符避免同前缀兄弟目录误判。 */
+    private static boolean isInside(String root, String canonical) {
+        return canonical.equals(root) || canonical.startsWith(root + File.separator);
     }
 
     /**
@@ -398,7 +426,18 @@ public final class TarGzExtractor {
         if (!new File(destDir, "bin/sh").exists()) {
             return false;   // 无 shell 的镜像用不了脚本，只能按份拷贝
         }
-        String script = "#!/bin/sh\nexec " + guestTarget + " \"" + link.getName() + "\" \"$@\"\n";
+        String applet = link.getName();
+        // applet 名会被写进 shell 脚本的双引号里，只允许安全字符；含 " $ ` \ 换行等
+        // 的名字会破坏引号结构甚至注入命令（tar 条目名不可信），退回按份拷贝。
+        for (int i = 0; i < applet.length(); i++) {
+            char c = applet.charAt(i);
+            boolean safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' || c == '+';
+            if (!safe) {
+                return false;
+            }
+        }
+        String script = "#!/bin/sh\nexec " + guestTarget + " \"" + applet + "\" \"$@\"\n";
         try (FileOutputStream fos = new FileOutputStream(link)) {
             fos.write(script.getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
@@ -449,7 +488,23 @@ public final class TarGzExtractor {
      */
     private static void makeHardLink(File destDir, File link, String target) throws IOException {
         String cleanTarget = cleanName(target);
-        File src = new File(destDir, cleanTarget == null ? target : cleanTarget);
+        // cleanName 返回 null 说明目标带 .. / 绝对路径 / 空——绝不能退回原始 target，
+        // 否则 new File(destDir, "../../宿主文件") 会把宿主文件链进/拷进 rootfs。
+        if (cleanTarget == null) {
+            return;
+        }
+        File src = new File(destDir, cleanTarget);
+        // 二次校验：目标路径里若夹着指向 rootfs 外的符号链接，canonical 会跑出去。
+        // 同样禁止——硬链接的目标必须是 rootfs 内的实体。畸形路径 canonical 会抛
+        // 异常（Windows 盘符/非法字符），视为逃逸直接拒绝，不让一条恶意条目中断解包。
+        try {
+            String root = destDir.getCanonicalPath();
+            if (!isInside(root, src.getCanonicalPath())) {
+                return;
+            }
+        } catch (IOException bad) {
+            return;
+        }
         File parent = link.getParentFile();
         if (parent != null && !parent.exists()) {
             //noinspection ResultOfMethodCallIgnored
@@ -658,9 +713,11 @@ public final class TarGzExtractor {
 
     /**
      * pax 记录格式是「十进制长度 + 空格 + key=value + 换行」，长度包含自身，
-     * 所以不能简单地按 "path=" 前缀找。
+     * 所以不能简单地按 "path=" 前缀找。返回 [path, linkpath]，缺的字段为 null。
+     * linkpath 是长链接目标（硬链接/符号链接 ustar 只有 100 字节放不下时用它）。
      */
-    private static String paxPath(String content) {
+    private static String[] parsePax(String content) {
+        String[] out = new String[2];
         int i = 0;
         while (i < content.length()) {
             int sp = content.indexOf(' ', i);
@@ -679,14 +736,13 @@ public final class TarGzExtractor {
             int end = Math.min(i + len, content.length());
             String record = content.substring(sp + 1, end).replace("\n", "");
             if (record.startsWith("path=")) {
-                return record.substring(5);
-            }
-            if (record.startsWith("linkpath=")) {
-                // 目前只需要 path，linkpath 留给以后
+                out[0] = record.substring(5);
+            } else if (record.startsWith("linkpath=")) {
+                out[1] = record.substring(9);
             }
             i = end;
         }
-        return null;
+        return out;
     }
 
     private static String trimNul(String value) {

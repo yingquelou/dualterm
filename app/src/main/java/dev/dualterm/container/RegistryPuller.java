@@ -307,7 +307,18 @@ public final class RegistryPuller {
 
     /* -------------------- 主流程 -------------------- */
 
+    /** 拉取互斥：对话框走 ioLong、控制台 docker pull 走自建线程，两条入口能并发。
+     *  同 ref 双写 rootfs、stale 清理互删临时层都会损坏镜像；整个拉取串行化最简单可靠。 */
+    private static final Object PULL_LOCK = new Object();
+
     public static String pull(Context ctx, String input, ContainerRuntime.Progress progress)
+            throws IOException {
+        synchronized (PULL_LOCK) {
+            return pullLocked(ctx, input, progress);
+        }
+    }
+
+    private static String pullLocked(Context ctx, String input, ContainerRuntime.Progress progress)
             throws IOException {
         Ref ref = parseRef(input);
         String hub = Containers.hubMirror(ctx);
@@ -679,8 +690,11 @@ public final class RegistryPuller {
                 if (!hex.equals(want)) {
                     //noinspection ResultOfMethodCallIgnored
                     dest.delete();
-                    throw new IOException(label + " 数据校验不符（期望 " + want.substring(0, 12)
-                            + "…，实得 " + hex.substring(0, 12) + "…），网络异常？");
+                    // want 来自 registry 的 digest，畸形值可能短于 12 字符，
+                    // 直接 substring(0,12) 会抛越界，把「校验不符」变成无头异常。
+                    int show = Math.min(12, want.length());
+                    throw new IOException(label + " 数据校验不符（期望 " + want.substring(0, show)
+                            + "…，实得 " + hex.substring(0, Math.min(12, hex.length())) + "…），网络异常？");
                 }
                 return;
             } catch (java.security.NoSuchAlgorithmException e) {
