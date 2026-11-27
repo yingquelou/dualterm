@@ -438,17 +438,26 @@ shell 域（`/data/local/tmp`）也被拒——是域级策略而非目录/文�
 符号链接属 `lnk_file` 类、走另一条权限线，应用可以创建。proot 在 app
 进程内跑，容器里 `link()` 同样被拒。此前文档写「部分设备拒绝」是错的，
 实为全平台普遍策略（曾误记为 MIUI 特性）。docker 镜像层里的硬链接条目
-（type '1'）按「createLink → 带权限实体拷贝 → 相对符号链接」兜底：
+（type '1'）按「createLink → uutils applet 脚本 → 指向真身的符号链接 →
+实体拷贝」兜底：
 
 - 拷贝必须从源恢复可执行位——硬链接条目的 tar 头不带 x 位，丢了它
   proot 报 `'/usr/bin/env' is not executable`；
-- 符号链接只能作最后手段：ubuntu 25.10 起默认 Rust 版 coreutils（uutils），
-  `/usr/bin/env` → `…/coreutils/env` → 硬链接 `/usr/bin/coreutils`，多调用
-  分发要求 `argv[0]` 的符号链接**直接目标**就是实际执行的文件
-  （对 `/proc/self/exe` 校验），链接链多跳一跳就被它自己的
-  `Security violation` 拒掉；硬链接没有这个跳转所以真 docker 没事。
-  拷贝兜底的代价是盘空间：uutils 全家 ≈ 120 × 10MB，`ubuntu:latest`
-  在 link 不可用的设备上落盘 1.2GB（真 docker 靠硬链接只要 ~130MB）。
+- **uutils 的 applet 不能走符号链接**：Ubuntu 25.10 起默认 Rust 版 coreutils，
+  applet 是 `usr/lib/cargo/bin/coreutils/<名>` 硬链接到 `/usr/bin/coreutils`；
+  Ubuntu 打的 `require-utility-to-be-invoked-at-matching-path` 补丁要求
+  `/proc/self/exe` 的**文件名**等于 `argv[0]`。符号链接解析后的最终 dentry 是
+  `coreutils`，`env`/`ls` 一律被判 `Security violation`（实测 ubuntu:25.10 的
+  容器连登录 shell 都起不来）。此时把该条目写成 60 字节脚本
+  `#!/bin/sh` + `exec /usr/bin/coreutils "<applet>" "$@"`，用多调用二进制的
+  `<名>` 参数分发：零拷贝且能过校验，代价是每次 applet 调用多一个 `/bin/sh`
+  （实测 30 次 `ls`：脚本 0.59s vs 直调 0.48s，约 +4ms/次）。没有 `/bin/sh`
+  的镜像退回拷贝；
+- 其余硬链接（busybox 这类只看 `argv[0]` 的多调用二进制）走指向最终实体的
+  符号链接：`busybox:latest` 解包 4.2MB，不再按份复制；
+- 实体拷贝是最后手段（盘满等），uutils 全家按份拷贝要 1.2GB
+  （`ubuntu:latest` 用脚本方案后落盘 ~116MB）。
+
 
 ### Android 专属前提
 
