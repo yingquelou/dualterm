@@ -22,6 +22,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.window.OnBackInvokedDispatcher;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -268,6 +269,7 @@ public class MainActivity extends Activity
         });
         installInputDeviceWatcher();
         installImeWatcher();
+        installBackHandler();
 
         installInsetsHandler();
         // 始终 edge-to-edge：adjustResize + 系统栏混着来的时候，窗口高度和
@@ -2379,8 +2381,27 @@ public class MainActivity extends Activity
 
     /* -------------------- 生命周期 -------------------- */
 
+    /**
+     * 预测性返回（API 33+）：targetSdk 36 在 Android 16+ 不再回调 onBackPressed、
+     * 也不再分派 KEYCODE_BACK，拦截返回必须改用平台回调。manifest 里
+     * enableOnBackInvokedCallback="true" 让 API 33+ 统一走这条路径；API 26-32
+     * 没有 dispatcher，仍由 onBackPressed() 兜底。两条入口共用 handleBack()，
+     * 不会重复处理（opt-in 后系统不再调用 onBackPressed）。
+     */
+    private void installBackHandler() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::handleBack);
+        }
+    }
+
     @Override
     public void onBackPressed() {
+        // API 33+ 已 opt-in 预测性返回，系统不会调这里；只为 API 26-32 服务。
+        handleBack();
+    }
+
+    private void handleBack() {
         // 自绘菜单是非焦点窗口，返回键落到这里：二级退回顶层，顶层才收起
         if (menuSheet.handleBack()) {
             return;

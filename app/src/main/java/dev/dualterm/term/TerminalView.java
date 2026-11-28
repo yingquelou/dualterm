@@ -2646,6 +2646,9 @@ public class TerminalView extends View {
         }
         int keyCode = event.getKeyCode();
         if (keyCode == KeyEvent.KEYCODE_BACK) {
+            // 返回键一律交回 Activity（菜单逐层退 / 全屏 / 退后台）。
+            // targetSdk 36 在 Android 16+ 已不再分派 KEYCODE_BACK，改由
+            // MainActivity 的 OnBackInvokedCallback 接手；这里只是旧平台的兜底。
             return false;
         }
         // 单独按下修饰键不应该往 PTY 写任何字节
