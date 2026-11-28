@@ -57,6 +57,8 @@ java -cp "/tmp/tt:$ANDROID_HOME/platforms/android-34/android.jar" TarTest
 
 覆盖 `..` 穿越拒绝、`.wh.`/opq 白化、pax 与 GNU 长文件名、ustar prefix 拼接、硬链接与绝对符号链接实体化退路、目录与文件互相顶替、gzip 自动识别。
 
+> **平台差异（v3.10.0 的教训）**：Windows 无法创建符号链接，TarTest 里两条符号链接用例会 SKIP、走实体化退路，本地全绿不代表 Linux / 真机正确——CI 首次失败正是这样被掩盖的。改动解包、符号链接、权限相关逻辑后，必须在真 Linux（CI 或容器）再跑一次 TarTest，不能只看 Windows 的结果。
+
 **镜像导入**（`tools/ImportTest.java`，同款跑法）：`detectArch` 的 ELF 架构识别，`pickRef` 的镜像名闸门（恶意 RepoTags 白名单拒绝）。整包 `importArchive` 依赖 Context 与真 `org.json` 实现，仍需真机验证。
 
 **Hub 拉取**（`tools/RegistryTest.java`，同款跑法）：`RegistryPuller` 的纯逻辑部分——`parseRef`（library 前缀补全/剥离、tag 归一化、digest 拒绝、`validImageRef` 闸门）、`platformMatches`（ABI × architecture/variant 匹配表）、`layerKind`/`rejectReason`（gzip 收、zstd / nondistributable 拒）、`normalizeMirror`（换源归一化：补协议/剥尾斜杠与 /v2、非法拒绝）、`realmParam`（WWW-Authenticate 参数摘取，Hub/1ms/daocloud 实样）。JSON 解析与流下载依赖 Context，留真机验证（已过，见 pull-registry.md）。

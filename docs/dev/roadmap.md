@@ -375,3 +375,8 @@ PTY；输入法收起或用户显式退出接管时回到 `TYPE_NULL`，字母�
   解包防逃逸（硬链接目标/符号链接退路/前缀守卫）、pull 双入口互斥、畸形 digest 报错
   越界、pax 长链接名。均为评审发现的真实缺陷，非新功能；TarTest 30→32、
   EmuTest 加 CSI 3 J 用例
+- 2026-11-27 v3.10.0 CI 失败修复（Linux 符号链接平台差异，详见 verification 表）：
+  逃逸检查改为只校验父目录 canonical，不再跟随目标自身的 guest 绝对路径链接；
+  `764d0b5` + tag 强移重推，run `45965350657` success。Windows 建不了符号链接，
+  本地七套全绿曾掩盖该缺陷——涉及符号链接/权限的改动必须在真 Linux 上复验，
+  TarTest 在 Windows 上的两条 SKIP 不能当作「通过」
