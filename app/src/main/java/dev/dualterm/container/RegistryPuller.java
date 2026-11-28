@@ -270,6 +270,30 @@ public final class RegistryPuller {
         return s == null || s.isEmpty();
     }
 
+    /**
+     * 单 manifest 的平台自查：老镜像 / 手工 docker push 的镜像不是 manifest list，
+     * 平台信息只写在 config blob 里，tag 层看不出来。config 缺失字段就返回 null
+     * （交给落地后的 ELF 校验兜底），只有「明确不匹配」才给出说明。
+     *
+     * <p>linuxdeepin/deepin:latest 就是这一档：它只有一个 amd64 manifest，手机是
+     * arm64——不在这里拦住，就要下完 90MB、解包、再做 ELF 校验才发现。
+     */
+    public static String platformProblem(String abi, String os, String arch, String variant) {
+        if (isEmpty(os) || isEmpty(arch)) {
+            return null; // 老 manifest 的 config 可能不写，别凭猜测拒绝
+        }
+        if (platformMatches(abi, os, arch, variant)) {
+            return null;
+        }
+        String want = ContainerBootstrap.ABI_ARM64.equals(abi) ? "linux/arm64"
+                : (ContainerBootstrap.ABI_ARM.equals(abi) ? "linux/arm" : "linux/amd64");
+        StringBuilder got = new StringBuilder(os).append('/').append(arch);
+        if (!isEmpty(variant)) {
+            got.append('/').append(variant);
+        }
+        return "该镜像发布的是 " + got + "，本机是 " + abi + "（需要 " + want + "）";
+    }
+
     /* -------------------- 层类型判定（纯函数） -------------------- */
 
     /** 层 mediaType：0=gzip、1=未压缩 tar、-1=拒绝（reason 说明原因）。 */
@@ -353,8 +377,20 @@ public final class RegistryPuller {
                 throw e;
             }
             token = resolveToken(e.wwwAuth, ref.repo, isHub);
-            manifest = fetchManifest(registryBase, ref, token, progress);
+            try {
+                manifest = fetchManifest(registryBase, ref, token, progress);
+            } catch (StatusException e2) {
+                throw e2;
+            } catch (IOException e2) {
+                throw hubHint(e2, isHub, hub);
+            }
+        } catch (IOException e) {
+            throw hubHint(e, isHub, hub);
         }
+        // 平台闸门：单架构镜像（tag 不是 manifest list）在 manifest 层看不出架构，
+        // 查一次 config，别为了一个跑不起来的镜像白下几十 MB
+        checkManifestPlatform(registryBase, ref, manifest, token);
+
         JSONArray layers = manifest.optJSONArray("layers");
         if (layers == null || layers.length() == 0) {
             throw new IOException("manifest 里没有任何镜像层");
@@ -459,6 +495,27 @@ public final class RegistryPuller {
     }
 
     /* -------------------- token / manifest -------------------- */
+
+    /**
+     * 直连 Docker Hub 的网络失败补一句换源提示。这个错在大陆网络下十有八九，
+     * 而原始消息只有「failed to connect … after 15000ms」，用户不知道下一步干什么。
+     * 已配置镜像源时不再提示（说明请求本来就发往镜像站，问题在镜像站那边）。
+     */
+    private static IOException hubHint(IOException e, boolean isHub, String hub) {
+        if (!isHub || (hub != null && !hub.isEmpty())) {
+            return e;
+        }
+        String m = e.getMessage() == null ? "" : e.getMessage();
+        String lower = m.toLowerCase(Locale.US);
+        boolean net = lower.contains("failed to connect") || lower.contains("timed out")
+                || lower.contains("connectexception") || lower.contains("unknownhost")
+                || lower.contains("unreachable") || lower.contains("econnrefused");
+        if (!net) {
+            return e;
+        }
+        return new IOException(m + "\n\n连不上 Docker Hub（registry-1.docker.io）。"
+                + "大陆网络常这样：点容器面板的「换源」填一个国内镜像站（如 docker.1panel.live），再拉一次。", e);
+    }
 
     /**
      * 401 后取 token。规范流程：WWW-Authenticate 的 realm 就是鉴权端点
@@ -597,6 +654,51 @@ public final class RegistryPuller {
         }
         throw new IOException("标签 " + ref.repo + ":" + ref.tag
                 + " 下没有匹配本设备（" + abi + "）的镜像\n可用平台：" + avail);
+    }
+
+    /**
+     * 层下载前的平台闸门：读 manifest 的 config blob（image config，几 KB），
+     * 用里面的 os/architecture 自查一次。
+     *
+     * <p>取不到就跳过——镜像站不一定允许匿名取 blob，校验不能变成新的失败点，
+     * 落地后的 ELF 头校验仍在兜底。
+     */
+    private static void checkManifestPlatform(String registryBase, Ref ref, JSONObject manifest,
+                                              String token) throws IOException {
+        JSONObject cfg = manifest.optJSONObject("config");
+        String digest = cfg == null ? "" : cfg.optString("digest", "");
+        if (digest.isEmpty()) {
+            return;
+        }
+        String body;
+        try {
+            body = getForText(registryBase + ref.repo + "/blobs/" + digest, token, null)[0];
+        } catch (StatusException e) {
+            if (e.code != 401 || token != null) {
+                return;
+            }
+            try {
+                body = getForText(registryBase + ref.repo + "/blobs/" + digest,
+                        resolveToken(e.wwwAuth, ref.repo, ref.host.isEmpty()), null)[0];
+            } catch (IOException again) {
+                return;
+            }
+        } catch (IOException e) {
+            return;
+        }
+        JSONObject config;
+        try {
+            config = new JSONObject(body);
+        } catch (org.json.JSONException e) {
+            return;
+        }
+        String variant = config.isNull("variant") ? "" : config.optString("variant", "");
+        String problem = platformProblem(ContainerBootstrap.abi(),
+                config.optString("os", ""), config.optString("architecture", ""), variant);
+        if (problem != null) {
+            throw new IOException(problem + "\n该标签发布的就只有这个架构，换源或重试都不会变。"
+                    + "可在电脑上 docker save 后「导入镜像」，或换一个多架构镜像");
+        }
     }
 
     private static JSONObject layerAt(JSONArray layers, int i) throws IOException {

@@ -7,7 +7,8 @@ import java.io.IOException;
  * RegistryPuller 桌面回归（纯逻辑部分，可离线跑）：
  *   1. parseRef  —— ref 解析与闸门（library 前缀、tag 归一化、digest 拒绝、非法字符、
  *      第三方 registry 域名与 Hub 域名归一）
- *   2. platformMatches —— manifest list 的平台选择（按设备 ABI + variant 匹配规则）
+ *   2. platformMatches / platformProblem —— manifest list 的平台选择（按设备 ABI +
+ *      variant 匹配规则），以及单 manifest 用 config 里的 os/arch 自查
  *   3. layerKind / rejectReason —— 层 mediaType 白名单（gzip 收、zstd/nondistributable 拒）
  *   4. registryBase —— Hub 走镜像源、第三方直连
  *
@@ -22,6 +23,7 @@ public class RegistryTest {
     public static void main(String[] args) throws Exception {
         parseRefCases();
         platformCases();
+        platformProblemCases();
         layerKindCases();
         registryBaseCases();
         mirrorCases();
@@ -148,6 +150,34 @@ public class RegistryTest {
         check("platform: os 非 linux 拒", !RegistryPuller.platformMatches(a64, "windows", "arm64", "v8"));
         check("platform: os 空 拒", !RegistryPuller.platformMatches(a64, "", "arm64", "v8"));
         check("platform: 未知 ABI 拒", !RegistryPuller.platformMatches("mips", "linux", "arm64", "v8"));
+    }
+
+    /* -------------------- platformProblem（单 manifest 的 config 自查） -------------------- */
+
+    static void platformProblemCases() {
+        String a64 = ContainerBootstrap.ABI_ARM64;
+        String x64 = ContainerBootstrap.ABI_X86_64;
+
+        // 匹配：不拦
+        check("problem: arm64/arm64 放行",
+                RegistryPuller.platformProblem(a64, "linux", "arm64", "") == null);
+        check("problem: arm64 缺 os 放行（老 config，交给 ELF 兜底）",
+                RegistryPuller.platformProblem(a64, "", "arm64", "") == null);
+        check("problem: arm64 缺 arch 放行",
+                RegistryPuller.platformProblem(a64, "linux", "", "") == null);
+
+        // linuxdeepin/deepin 这一档：只有 amd64，手机上必须报清楚
+        String p = RegistryPuller.platformProblem(a64, "linux", "amd64", "");
+        check("problem: arm64 vs amd64 拦下", p != null);
+        check("problem: 说明里有镜像架构", p != null && p.contains("linux/amd64"));
+        check("problem: 说明里有本机架构", p != null && p.contains("arm64-v8a"));
+        check("problem: 说明里有需要的平台", p != null && p.contains("linux/arm64"));
+
+        // windows 镜像同样拦住
+        check("problem: windows 镜像拦下",
+                RegistryPuller.platformProblem(a64, "windows", "amd64", "") != null);
+        check("problem: x86_64 认 amd64",
+                RegistryPuller.platformProblem(x64, "linux", "amd64", "") == null);
     }
 
     /* -------------------- layerKind / rejectReason -------------------- */
