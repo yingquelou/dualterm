@@ -6,7 +6,8 @@
 2. **容器不是内核隔离**：共享内核与 `/proc`，没有 cgroup 限额，`nsenter` 之类不可用。真隔离需要更换内核。
 3. **`/sdcard` 绑定默认不可完整访问**：Android 11+ 分区存储，完整访问需 `MANAGE_EXTERNAL_STORAGE`，应用内通过菜单「存储权限」申请。
 4. **proot 依赖 Termux 的 bionic 构建**：脚本从 Termux 官方源获取，避免自行交叉编译。更换源时需注意 proot 版本与内核 `ptrace` 策略的兼容性（部分 ROM 需要 `PROOT_NO_SECCOMP=1`）。
-5. **Docker 后端未经真机验证**：代码路径完整（探测 → 启 dockerd → `docker run -it --net=host`），但没有带 namespace 内核的设备可测，按实验性功能对待。固定 host 网络的取舍见 [containers.md](containers.md#docker-后端为什么不是默认)。6. **运行时按 ABI 单独准备**：`scripts/fetch-runtime.*` 默认只处理一个 ABI。未准备的 ABI 上容器模式会提示缺运行时；本地模式不受影响。发布流水线会准备三个 ABI。
+5. **Docker 后端未经真机验证**：代码路径完整（探测 → 启 dockerd → `docker run -it --net=host`），但没有带 namespace 内核的设备可测，按实验性功能对待。固定 host 网络的取舍见 [containers.md](containers.md#docker-后端为什么不是默认)。
+6. **运行时按 ABI 单独准备**：`scripts/fetch-runtime.*` 默认只处理一个 ABI。未准备的 ABI 上容器模式会提示缺运行时；本地模式不受影响。发布流水线会准备三个 ABI。
 7. **本地模式的 `PS1` 会被 `/system/etc/mkshrc` 覆盖**：因此提示符是 Android 默认的 `:当前目录$`，而非工程设置的值。纯外观问题。
 8. **软键盘弹出时终端会被压扁**：横屏下输入法本体可占 600dp 以上，`adjustResize` 之后终端只剩两三行；辅助键盘默认再叠 2 行固定区 + 4 行自定义区（菜单「辅助键盘行数」可降到 2 行）。接入物理键盘时不触发。
 9. **部分终端协议有意不实现**：`IRM` / `LNM`、`modifyOtherKeys` 与 kitty 键盘协议、OSC 0/2 标题、OSC 8 超链接、Sixel 图片、同步输出 `?2026`、ZWJ emoji 合成序列。取舍理由见 [dev/internals.md](dev/internals.md#与-xterm-对表的取舍)，这些程序都会静默降级。OSC 52 的**写**方向已实现（默认关，见 [usage.md](usage.md#程序写剪贴板osc-52)），**读**方向（程序查询剪贴板内容）有意不支持。
@@ -15,6 +16,8 @@
 12. **读屏只覆盖当前视口**：无障碍节点按可见逻辑行生成（软换行已拼接），滚出视口的 scrollback 不在节点里，也没有按词/按字符的粒度与「朗读选区」动作。要读历史先用上滑把目标行滚进视口；复制仍走长按选区。
 
 13. **拉取/导入镜像不保证切出应用后继续**：这两项在应用内是非阻塞的（顶栏下方一行进度，可继续切会话、开菜单），但没有前台服务——切到其它应用或锁屏后，进程可能被系统回收，下载随之中断。中断的镜像目录会在下一次拉取时自动清理，重试即可。何时值得上前台服务、最小实现规格与重评条件见 [dev/roadmap.md](dev/roadmap.md#十二镜像拉取的后台策略--a-已做b-缓做2026-11-26)。
+
+14. **只能运行与手机同架构的镜像**：手机是 arm64（少数 x86 平板/模拟器是 x86_64），只发布 `linux/amd64` 的镜像（典型如 `linuxdeepin/deepin`）在本机无法运行——不是解析或网络问题，换镜像源也不会改变。这类镜像会在开始下载前就报「该镜像发布的是 linux/amd64，本机是 arm64-v8a（需要 linux/arm64）」；PC 上能拉是因为 PC 本来就是 x86。替代路径：换多架构镜像（`debian` / `ubuntu` / `alpine` 等），或在电脑上 `docker save` 后导入 tar。不引入 qemu 用户态模拟的理由见 [dev/roadmap.md](dev/roadmap.md#十八单架构镜像的前置拦截与-hub-换源提示--已完成2026-11-28)。
 
 ## 后续计划
 

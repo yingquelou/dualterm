@@ -161,7 +161,7 @@ UI：模式 chip 下拉即会话列表（`●` 标当前）+ 新建本地/容器
   `ghcr.nju.edu.cn`）当 registry 域名填；
 - 纯判定逻辑（ref 解析 / 平台选择 / mediaType 白名单 / 换源归一化 /
   WWW-Authenticate 解析 / registry 端点选择）抽 static 纯函数，桌面
-  `RegistryTest`（90 用例）回归；JSON 与流下载已实机验证；
+  `RegistryTest`（99 用例）回归；JSON 与流下载已实机验证；
 - APK 增量≈0（512KB → 530KB，仍远低于旧基线 10.93MB）。
 
 **镜像源（换源）**：官方 Hub 在大陆经常被 DNS 污染（实测 401 前就连接
@@ -555,6 +555,38 @@ PTY；输入法收起或用户显式退出接管时回到 `TYPE_NULL`，字母�
 体积：546,160 → **547,888 字节**（多出的两层矢量图标约 1.7KB），`zipalign -c -P 16`
 与 `check_16k_align.py` 均通过。
 
+## 十八、单架构镜像的前置拦截与 Hub 换源提示 —— 已完成（2026-11-28）
+
+起因是一个看起来像「解析太严」的报障：`docker pull linuxdeepin/deepin` 在本应用
+拉不下来，而正统 Docker 可以。实测下来三档原因叠在一起，没有一档在解析上：
+
+1. **直连 Hub 超时**：`registry-1.docker.io:443` 15s 连不上（大陆网络常态）。
+2. **镜像站不领情**：`docker.1ms.run` 回 429（匿名 100 次/6h），
+   `docker.m.daocloud.io` 回 403，`docker.1panel.live` 才通。
+3. **镜像只有 x86-64**：`linuxdeepin/deepin:latest` 不是 manifest list，是单个
+   amd64 manifest。下完 90.9MB、解包，才被 ELF 头校验拦下——「手机跑不了」这个
+   事实，前面几十秒的流量和时间全花在了证明它上。
+
+解析本身一直是宽的：`parseRef` 对 `owner/名`、`域名/owner/名`、
+`library/` 前缀、省略 tag 全都接受，进度行里显示的正是 `linuxdeepin/deepin:latest`。
+问题在于**单 manifest 的平台信息藏在 image config 里**，manifest 层看不到，
+所以只能落地后靠 ELF 反推。
+
+修法（都在 `RegistryPuller`，零依赖）：
+
+- **层下载前的平台闸门**：用 manifest 的 `config.digest` 取 image config（几 KB），
+  读 `os` / `architecture` / `variant`，与 `platformMatches` 同一张表比对。不匹配
+  立刻报「该镜像发布的是 linux/amd64，本机是 arm64-v8a（需要 linux/arm64）」，
+  并明说「换源或重试都不会变」。取不到或字段缺失就**跳过**——校验不能变成新的
+  失败点，落地后的 ELF 校验仍在兜底。
+- **Hub 直连失败补一句换源提示**：原始消息只有 `failed to connect … after 15000ms`，
+  用户不知道下一步。已配置镜像源时不提示（问题在镜像站那边，不是 Hub）。
+
+**不做的**：不为「能在手机上跑 x86-64 镜像」引入 qemu-user 转译，也不为个别
+镜像去实现 zstd 解码——前者是另一个数量级的工程（二进制翻译 + 性能），后者要
+native 解码器。正确路径是电脑 `docker save` 后「导入镜像」，或者选多架构镜像
+（`debian` / `ubuntu` / `alpine` / `busybox` 都有 arm64）。
+
 ## 硬约束（后续任何条目开工前先对一遍）
 
 1. **第三方依赖的准入门槛是「深度使用」，不是「广泛使用」**：库本身要极广泛
@@ -571,7 +603,7 @@ PTY；输入法收起或用户显式退出接管时回到 `TYPE_NULL`，字母�
 2. **`TerminalEmulator` 保持纯 Java**：桌面 EmuTest 是唯一的模拟器回归手段，
    引入 Android 类型等于放弃回归。
 3. **APK 体积**：rootfs 已移出包（2026-11），零依赖后基线是 **535KB**
-   （547,888 字节；撤依赖前一度到过 1.9MB，见上一条）。大头是三 ABI 各一份
+   （548,956 字节；撤依赖前一度到过 1.9MB，见上一条）。大头是三 ABI 各一份
    proot（jniLibs，约 397KB）。往 assets/nativeLibrary 塞任何东西都先算 ×3；
    图标是矢量（每个 300 字节级），别为省这点体积退回位图。
 4. **会话层是多 tab**：会话 id = 根进程 pid，`tabs`（LinkedHashMap）是唯一

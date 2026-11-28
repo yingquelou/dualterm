@@ -1,6 +1,6 @@
 # docker pull 泛化：Docker Hub 官方镜像子集（设计定稿）
 
-状态：已实现并实机验证（2026-11）。RegistryTest 90 用例 + 其余各套全绿（现共七套）；
+状态：已实现并实机验证（2026-11）。RegistryTest 99 用例 + 其余各套全绿（现共七套）；
 实机（官方 Hub 被 DNS 污染的网络）：alpine 换清华源 12s、debian:12 经
 dockerproxy.net 约 50s、busybox:1.36/1.37 经 1ms / daocloud（realm token）
 45s / 23s 拉完；digest 拒绝、镜像物化容器、rm 守卫、clear 恢复官方均过。
@@ -125,6 +125,24 @@ manifest list 应答或 404。
 - 匹配不到：报错并列出该 tag 下全部可用平台（用户能看懂是架构问题，
   而不是对着 404 猜）。
 
+**单 manifest 的 config 自查（2026-11 增补）**：tag 不是 manifest list 时（老镜像、
+手工 `docker push` 的单架构镜像），平台信息只写在 image config 里，manifest 层
+看不出来。`linuxdeepin/deepin:latest` 就是这样：只有一个 amd64 manifest，手机下完
+90.9MB、解包、再靠 ELF 头校验才发现不对，白费流量和时间。
+
+因此在层下载前补一次自查：
+
+```
+GET .../blobs/<manifest.config.digest>    (image config，几 KB)
+→ 读顶层 os / architecture / variant，与 §3.6 同一张表比对
+```
+
+- 不匹配：立刻报「该镜像发布的是 linux/amd64，本机是 arm64-v8a（需要 linux/arm64）」，
+  并说明「换源或重试都不会变」，指路电脑 `docker save` 后导入；
+- config 取不到（镜像站不允许匿名取 blob）或字段缺失：**跳过**，交给落地后的
+  ELF 校验兜底——校验不能变成新的失败点。
+
+
 ### 3.7 层下载与叠加
 
 - 白名单 `layers[].mediaType`：
@@ -183,7 +201,9 @@ pull 说「已存在（先 docker rmi）」，rmi 又说「镜像不存在」。
 | manifest 404 | 「没有这个镜像/标签：<ref>」（Hub 对私有/不存在仓库回 401/404 掩盖存在性，统一按「没有」处理） |
 | blob 429 | 「匿名拉取限速（同 IP 100 次/6h），稍后再试，或用 `docker save` 导入」 |
 | zstd 层 | 「该镜像的层用了 zstd 压缩，本端不支持。可在电脑上 `docker save` 后 `docker load -i` 导入」 |
-| 平台不匹配 | 列出全部可用平台 |
+| 平台不匹配（list） | 列出全部可用平台 |
+| 平台不匹配（单 manifest） | 「该镜像发布的是 linux/amd64，本机是 arm64-v8a（需要 linux/arm64）」+「换源或重试都不会变」 |
+| 直连 Hub 网络失败 | 原始 `failed to connect …` 之后补「连不上 Docker Hub…点『换源』填一个国内镜像站」 |
 | digest 校验失败 | 「下载的层数据校验不符，已丢弃（网络异常？）」 |
 | ref 非法 | 沿用 `validImageRef` 现有文案 |
 

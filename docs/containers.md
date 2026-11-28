@@ -93,6 +93,10 @@ info / version / help
 例如 `ghcr.nju.edu.cn/owner/名`。
 zstd 压缩的层不支持（拉取会明确报错），可 `docker save` 后用「导入镜像」；
 私有仓库、带端口的自建 registry、digest 引用暂不支持。
+**架构必须匹配手机**：很多镜像只发布了 x86-64（例如 `linuxdeepin/deepin`），
+在 arm64 手机上会在开始下载前直接提示「该镜像发布的是 linux/amd64」，换源或
+重试都不会变——只能用电脑 `docker save` 后导入，或换多架构镜像（`debian`、
+`ubuntu`、`alpine` 这类都有 arm64）。
 设计边界与镜像站鉴权细节见 [dev/pull-registry.md](dev/pull-registry.md)。
 
 **镜像源（换源）**：Hub 与 Alpine 两路各自可配（菜单「镜像源设置…」或
