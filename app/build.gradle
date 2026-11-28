@@ -60,9 +60,10 @@ android {
             applicationIdSuffix '.debug'
         }
         release {
-            // 引入 AndroidX/Material 后，不开压缩时 dex+arsc 会涨到 4.6MB（APK 5.4MB）；
-            // 打开 R8 与资源收缩，把没用到的 Material 主题/配色/控件剔掉。
-            // 代码里没有反射，唯一必须保留的是 JNI 入口（见 proguard-rules.pro）。
+            // 零依赖后 dex 本身只有几百 KB，开不开 R8 差不了多少；仍保留压缩，
+            // 因为 R8 顺带做常量折叠与无用代码剥离，且资源收缩能剔掉未引用的
+            // 颜色/字符串。代码里没有反射，唯一必须保留的是 JNI 入口（见
+            // proguard-rules.pro）。
             minifyEnabled true
             shrinkResources true
             signingConfig = signingConfigs.release
@@ -93,11 +94,13 @@ android {
 }
 
 dependencies {
-    // 2026-11 起允许引入第三方库，但只限「被极广泛使用」的那几个。这里只需要
-    // 一套标准控件来做容器管理面板（BottomSheetDialog + 分段页签 + RecyclerView），
-    // 不再自绘列表与弹层。AppTheme 仍是 Framework 主题（见 themes.xml），
-    // 面板自带 Material 3 主题上下文，30+ 处既有 AlertDialog 的观感不受影响。
-    implementation 'androidx.appcompat:appcompat:1.7.1'
-    implementation 'androidx.recyclerview:recyclerview:1.4.0'
-    implementation 'com.google.android.material:material:1.13.0'
+    // 故意留空：整个 App 只用 Framework API。
+    //
+    // 2026-11-28 曾引入 appcompat / recyclerview / material 做容器面板（分段页签 +
+    // RecyclerView + BottomSheetDialog），实测只有「局部取用」：appcompat 只用了
+    // ContextThemeWrapper 一个类（Framework 有同名的），recyclerview 只服务一个
+    // 十来条的列表，material 只用了 MaterialButton/MaterialButtonToggleGroup 两个
+    // 控件。按「必须对库有深度使用需求，不能只取部分能力」的准入规则，这三个都
+    // 不合格：不开压缩时 APK 5.6MB，开 R8 后 1.9MB，换来的只有一个面板的控件。
+    // 现在面板改成自绘父子里表，依赖全部撤掉，APK 回到 ~0.5MB。
 }
