@@ -48,11 +48,16 @@ jobs:
           [ -x "$SDKM" ] || SDKM="$(command -v sdkmanager)"
           yes | "$SDKM" --licenses > /dev/null 2>&1 || true
           "$SDKM" --install \
-            "platforms;android-34" \
-            "build-tools;34.0.0" \
-            "ndk;26.1.10909125" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
             "cmake;3.22.1" > /dev/null
           echo "sdk.dir=$SDK" > local.properties
+          # 后续步骤要用 ANDROID_SDK_ROOT 拼 android.jar 路径，显式写进环境
+          {
+            echo "ANDROID_HOME=$SDK"
+            echo "ANDROID_SDK_ROOT=$SDK"
+          } >> "$GITHUB_ENV"
           echo "ANDROID_SDK=$SDK"
 
       - name: 计算版本号
@@ -88,7 +93,7 @@ jobs:
       - name: 回归测试
         run: |
           set -euo pipefail
-          AJ="$ANDROID_SDK_ROOT/platforms/android-34/android.jar"
+          AJ="$ANDROID_SDK_ROOT/platforms/android-36/android.jar"
           mkdir -p /tmp/t/emu
           # 用 -sourcepath 而不是列文件：EmuTest 会引用被测类，新增一个类就得
           # 记得改这里，漏一次就是 v3.5.3 那次「package does not exist」的翻车。
@@ -138,6 +143,14 @@ jobs:
             echo "OK  lib/$abi/libproot.so"
           done
           # rootfs pack 不再进包（体积优化，2026-11）：镜像由应用内 docker pull / 导入 tar 获得
+
+      # Android 15+ 有 16KB 内存页设备，PT_LOAD 未对齐的 so 会加载失败。
+      # useLegacyPackaging 下 so 解压到 nativeLibraryDir 再由内核 mmap，
+      # 决定因素是 ELF 内的 p_align，zipalign 的条目偏移对齐不足以覆盖。
+      - name: 校验 16KB 页对齐
+        run: |
+          set -euo pipefail
+          python3 tools/check_16k_align.py app/build/outputs/apk/release/app-release.apk
 
       - name: 整理产物
         run: |

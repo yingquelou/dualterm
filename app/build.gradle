@@ -3,10 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'dev.dualterm'
-    compileSdk 34
-    // 固定 NDK 版本：CI 与本地装同一套，避免"AGP 默认 NDK"随插件版本漂移
-    ndkVersion '26.1.10909125'
+    namespace = 'dev.dualterm'
+    compileSdk 36
+    // 固定 NDK 版本：CI 与本地装同一套，避免"AGP 默认 NDK"随插件版本漂移。
+    // r28 起默认按 16KB 页对齐链接（Android 15+ 的 16KB 页设备需要）。
+    ndkVersion = '28.2.13676358'
 
     // 发布时由 CI 按 tag 推导（v3.5.0 → versionCode 30500）；本地不设就走默认值
     def dtVersionName = System.getenv('DT_VERSION_NAME')
@@ -15,12 +16,12 @@ android {
     defaultConfig {
         applicationId 'dev.dualterm'
         minSdk 26
-        targetSdk 34
+        targetSdk 36
         versionCode dtVersionCode ? dtVersionCode.toInteger() : 26
         versionName dtVersionName ?: '3.5'
         // 需要 NDK：首次 Sync 时 Android Studio 会提示安装 NDK + CMake，直接同意即可。
         // 若要指定版本，取消下一行注释并改成你已安装的版本。
-        // ndkVersion '26.1.10909125'
+        // ndkVersion '28.2.13676358'
         ndk {
             abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
         }
@@ -35,8 +36,8 @@ android {
     // 发布流水线只需要可复现地产出 APK；lint 在本地按需跑（./gradlew lint）。
     // 否则 assembleRelease 会额外拉 lint-gradle，离线构建直接失败。
     lint {
-        checkReleaseBuilds false
-        abortOnError false
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 
     // 仓库里自带的是"测试签名"（等同 debug key，密码公开），只为让 Release 开箱能装、
@@ -60,7 +61,7 @@ android {
         }
         release {
             minifyEnabled false
-            signingConfig signingConfigs.release
+            signingConfig = signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
@@ -68,7 +69,7 @@ android {
     externalNativeBuild {
         cmake {
             path 'src/main/cpp/CMakeLists.txt'
-            version '3.22.1'
+            version = '3.22.1'
         }
     }
 
@@ -77,11 +78,12 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    packagingOptions {
+    // AGP 8.x 里 packagingOptions 是旧名，8.13 起统一用 packaging。
+    packaging {
         // 必须解压到 nativeLibraryDir：proot 是从 jniLibs 里以 libproot.so 形式
         // 打包的可执行文件，只能从磁盘上 exec，APK 内部的压缩条目无法执行。
         jniLibs {
-            useLegacyPackaging true
+            useLegacyPackaging = true
         }
     }
 }
