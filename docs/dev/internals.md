@@ -34,6 +34,9 @@ app/src/main/
 │   ├── ui/
 │   │   ├── ConsoleActivity.java  ← 容器管理控制台界面（docker 语法的子集）
 │   │   ├── ContainerDialogs.java ← 容器/镜像/绑定目录对话框：装配与后台编排，行为经 Host 回到 Activity
+│   │   ├── ContainerSheet.java   ← 容器管理面板：容器/镜像两页签、两行条目、随页签切换的操作栏
+│   │   ├── ContainerDetail.java  ← 容器/镜像属性页：全量属性 + 该对象的操作按钮
+│   │   ├── BottomPanel.java      ← 贴底弹层容器（替代在 Android 11 上贴顶的 BottomSheetDialog）
 │   │   ├── KeyBar.java           ← 顶部键条：常用键 + ⌨/⛶，行为经 Host 回到 Activity
 │   │   ├── MenuSheet.java        ← 应用菜单面板：分组层级、按锚点选弹出方向、返回键逐层退
 │   │   ├── SessionPicker.java    ← 模式 chip 下拉：会话列表 + 新建/管理入口，标签与切换由宿主提供
@@ -485,6 +488,9 @@ shell 域（`/data/local/tmp`）也被拒——是域级策略而非目录/文�
   `shutdownNow`。
 - 重入守卫在 `ContainerDialogs.pulling`（tag 集合）：同一镜像重复点拉取只提示不重跑。
   未注册的镜像本来就不出现在列表里，因此不会出现「基于半成品镜像建容器」。
+- 拉取 / 导入完成后主动 `ContainerSheet.reloadIfShowing()` + `refreshImageSizesAsync()`：
+  面板开着时列表要当场多一行、大小不能停在「…」。（初版漏了这个回调，实测发现
+  要重开面板才看得到新镜像。）
 
 ## 远程调试入口
 

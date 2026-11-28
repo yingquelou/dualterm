@@ -299,14 +299,51 @@ PTY；输入法收起或用户显式退出接管时回到 `TYPE_NULL`，字母�
 进度按 1s 节流；进程级 `PullRegistry` 供 UI 重新附着；完成/失败转普通通知并
 `stopForeground`；通知权限被拒时静默回退 A（不阻止拉取）。
 
+## 十三、容器管理界面改造：两页签 + 属性页 —— 已完成（2026-11-28）
+
+原状：一个 `AlertDialog` 里平铺「N 个容器 + M 个镜像」，两类对象混排，只能靠
+「镜像」两字前缀分辨；新建在顶、拉取/导入/换源在底，列表一长就要来回滑。
+
+**三个候选**：
+
+| | 做法 | 代价 |
+|---|---|---|
+| A | 拆成「容器管理」「镜像管理」两个菜单入口 | 两个入口都要各点一遍才知道自己在哪；镜像→建容器跨入口 |
+| B | 一个底部面板，容器 / 镜像两个页签，操作栏随页签换 | 需要页签控件与列表控件，自绘成本高 |
+| C | 独立的管理 Activity（整页） | 打断终端上下文；返回栈多一层；终端场景下过重 |
+
+**选 B**，并同步放宽「零第三方依赖」硬约束（见硬约束 1）：B 的分段页签与可滚动
+列表自绘工作量大，用 `MaterialButtonToggleGroup` + `RecyclerView` 是标准解法。
+
+**实现**：`ui/ContainerSheet`（面板 + 两页签 + 操作栏）、`ui/ContainerDetail`
+（属性页）、`ui/BottomPanel`（贴底弹层容器）。
+
+**边界**：
+
+- 列表只留必要信息，占用体积 / 存储路径 / 创建时间 / 引用关系进属性页——
+  属性页底部就是同名操作按钮，少一次「长按出菜单」的心智负担；
+- 镜像被容器引用时「删除镜像」直接置灰（`ColorStateList` 让危险色在 disabled
+  时退回灰），不再让人点进去吃一遍报错；
+- 不做 C：终端应用的主界面不该被管理功能打断；
+- 菜单（`ui/MenuSheet`）仍是自绘，本次没动——按新约束可以迁到 Material，
+  但没有必须迁的理由，留作后续可选项；
+- 代价是包体积：AndroidX / Material 让 Release 从 563KB 涨到 1,992KB（已开
+  R8 + 资源收缩；不开压缩是 5.6MB）。相对「用户自己要拉的镜像动辄几十 MB」，
+  这个量级可接受，但要记住基线变了。
+
 ## 硬约束（后续任何条目开工前先对一遍）
 
-1. **零第三方依赖**：`build.gradle` 的 dependencies 块故意留空，整个 App 只用
-   Framework API。菜单/对话框/浮条只能用 `PopupMenu` / `AlertDialog` / 自绘。
+1. **第三方依赖只收「极广泛使用」的那一档**：AndroidX、Material 这类有官方
+   维护、几百万应用在用、AAR 自带 consumer ProGuard 规则的库可以引；小众库、
+   单点工具库不为一件小事进货。每引一个都要在本文档记录下来由与被替代的自绘
+   代码。「零依赖」自 2026-11-28 起不再是目标（起因：容器面板的两页签）。
+   现有依赖：`androidx.appcompat`、`androidx.recyclerview`、`com.google.android.material`。
+   引入前先算体积：不开 R8 时这三个库让 Release 从 563KB 涨到 5.6MB。
 2. **`TerminalEmulator` 保持纯 Java**：桌面 EmuTest 是唯一的模拟器回归手段，
    引入 Android 类型等于放弃回归。
-3. **APK 体积**：rootfs 已移出包（2026-11，APK 约 512KB）；剩余大头是三 ABI
-   各一份 proot（jniLibs）。往 assets/nativeLibrary 塞任何东西都先算 ×3。
+3. **APK 体积**：rootfs 已移出包（2026-11），基线从 512KB 变成 **1.9MB**
+   （AndroidX / Material 的 dex + 资源，已开 R8 + 资源收缩）。剩余大头仍是三 ABI
+   各一份 proot（jniLibs，397KB）。往 assets/nativeLibrary 塞任何东西都先算 ×3。
 4. **会话层是多 tab**：会话 id = 根进程 pid，`tabs`（LinkedHashMap）是唯一
    会话表。动 `tabs` / `dropTabs` / `dropTab` / `SessionService` 前先读
    internals.md 的进程清理章节，确认不破坏 HUP → 补杀 → KILL 链；
@@ -386,3 +423,9 @@ PTY；输入法收起或用户显式退出接管时回到 `TYPE_NULL`，字母�
   （NDK r28 默认也已是 16KB），新增 `tools/check_16k_align.py` 并在 CI 校验；
   B 适配 targetSdk 36 的预测性返回，改用 `OnBackInvokedCallback` + `handleBack()`，
   真机 API 30/31/36 验证返回键与 edge-to-edge 均正常
+- 2026-11-28 容器管理界面改造（详见第十三节与 verification 表）：一个面板两个页签
+  + 属性页，列表只留必要信息；同时放宽「零第三方依赖」硬约束，引入 AndroidX /
+  Material。踩到 `BottomSheetDialog` 在 Android 11 上贴顶（AT_MOST 量出内容高度、
+  `childTop=0`），改用自建 `BottomPanel`。Release 开 R8 + 资源收缩把体积从
+  5.6MB 压到 1.99MB。实机验出并修掉一处真缺陷：拉取/导入完成后（面板开着时）
+  列表不刷新，数量要重开面板才变——现已补 `sheet.reloadIfShowing()`

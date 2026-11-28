@@ -137,4 +137,11 @@ apksigner verify --print-certs dualterm-<版本>.apk | grep "SHA-256"
 
 本地出签名包走同一条路：`./gradlew assembleRelease`（未设置环境变量时使用测试签名），环境变量 `DT_KEYSTORE` / `DT_STORE_PASSWORD` / `DT_KEY_ALIAS` / `DT_KEY_PASSWORD` 可覆盖。
 
+**Release 开 R8 + 资源收缩**（2026-11-28 起）：`minifyEnabled true` + `shrinkResources true`。
+引入 AndroidX / Material 后不开压缩的 Release 是 5,634,872 字节（dex 3.5MB + arsc 1.1MB），
+开压缩后 1,997,832 字节（dex 563KB + arsc 662KB + so 397KB），明细见
+[verification.md](verification.md)。代码里没有反射，`proguard-rules.pro` 只保 JNI 入口
+`NativePty`；AndroidX / Material 自带的 consumer 规则由 R8 自动应用。
+**debug 变体不压缩**，实机取证时堆栈仍是原始类名。
+
 **升级安装**：覆盖安装要求与已装版本同签名。debug 包与本工程 Release 包签名不同，互装会报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，需先卸载（应用内的容器与设置会一并清空）。
