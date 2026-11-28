@@ -1178,6 +1178,20 @@ public class MainActivity extends Activity
             public void onMenu(View anchor) {
                 showMenu(anchor);
             }
+
+            @Override
+            public String storedQuickBar() {
+                return prefs.getString("key_bar", null);
+            }
+
+            @Override
+            public void storeQuickBar(String value) {
+                if (value == null) {
+                    prefs.edit().remove("key_bar").apply();
+                } else {
+                    prefs.edit().putString("key_bar", value).apply();
+                }
+            }
         });
         keyBarUi.build();
     }
@@ -1264,8 +1278,9 @@ public class MainActivity extends Activity
             }
 
             @Override
-            public String newContainerLabel() {
-                return "＋ 新建容器会话（" + Containers.activeName(MainActivity.this) + "）";
+            public String activeContainer() {
+                // 只给「新建容器会话」的提示文案用（图标按钮的长按说明）
+                return Containers.activeName(MainActivity.this);
             }
 
             @Override
@@ -1509,9 +1524,10 @@ public class MainActivity extends Activity
         groups.add(new MenuSheet.Group("键盘与输入法",
                 new String[]{"切换输入法…", "输入法设置…",
                         "外接键盘中文输入：" + takeoverLabel(),
+                        "快速访问栏…",
                         "辅助键盘：恢复默认键集",
                         "辅助键盘行数：" + maxRowsLabel()},
-                new int[]{24, 25, 26, 20, 21}));
+                new int[]{24, 25, 26, 28, 20, 21}));
         groups.add(new MenuSheet.Group("容器",
                 new String[]{
                         "容器管理（" + Containers.items(this).size() + " 个容器 / "
@@ -1608,6 +1624,9 @@ public class MainActivity extends Activity
                 return true;
             case 21:
                 showKeyboardRowsDialog();
+                return true;
+            case 28:
+                keyBarUi.showQuickBarEditor();
                 return true;
             case 22:
                 showFontRangeDialog();

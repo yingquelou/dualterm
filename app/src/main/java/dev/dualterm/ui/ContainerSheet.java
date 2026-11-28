@@ -152,18 +152,20 @@ public final class ContainerSheet {
 
     private void buildActions() {
         actionBar.removeAllViews();
-        actionBar.addView(action("＋ 新建", true, v -> actions.onNewContainer()));
-        actionBar.addView(action("⇣ 拉取", false, v -> actions.onPullImage()));
-        actionBar.addView(action("⇣ 导入", false, v -> actions.onImportTar()));
-        actionBar.addView(action("⇄ 换源", false, v -> actions.onMirrorSettings()));
+        // 图标 + 文字：四个动作挤一行，纯文字要 8 个汉字宽，图标把前缀的
+        // 视觉重量接过去，文字只留动作词（规范见 Icons）
+        actionBar.addView(action("新建", R.drawable.ic_plus, true, v -> actions.onNewContainer()));
+        actionBar.addView(action("拉取", R.drawable.ic_pull, false, v -> actions.onPullImage()));
+        actionBar.addView(action("导入", R.drawable.ic_import, false, v -> actions.onImportTar()));
+        actionBar.addView(action("换源", R.drawable.ic_swap, false, v -> actions.onMirrorSettings()));
     }
 
     private void render() {
         listBox.removeAllViews();
 
         if (images.isEmpty()) {
-            emptyView.setText("还没有镜像。\n\n点下面「⇣ 拉取」下载一个（alpine 走官方 CDN / 镜像源，"
-                    + "约 3MB），或用「⇣ 导入」读入 docker save 的 tar。\n\n"
+            emptyView.setText("还没有镜像。\n\n点下面「拉取」下载一个（alpine 走官方 CDN / 镜像源，"
+                    + "约 3MB），或用「导入」读入 docker save 的 tar。\n\n"
                     + "容器只能由镜像创建，所以这里先有镜像才有容器。");
             emptyView.setVisibility(View.VISIBLE);
             return;
@@ -276,11 +278,13 @@ public final class ContainerSheet {
         scroll.post(() -> scroll.scrollTo(0, y));
     }
 
-    private Button action(String text, boolean primary, View.OnClickListener click) {
+    private Button action(String text, int iconRes, boolean primary, View.OnClickListener click) {
         Button b = (Button) LayoutInflater.from(actionBar.getContext())
                 .inflate(R.layout.action_button, actionBar, false);
         b.setText(text);
-        b.setTextColor(activity.getColor(primary ? R.color.accent : R.color.text_primary));
+        int color = activity.getColor(primary ? R.color.accent : R.color.text_primary);
+        b.setTextColor(color);
+        Icons.compound(b, iconRes, Icons.SIZE_INLINE, color);
         b.setOnClickListener(click);
         LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) b.getLayoutParams();
         lp.setMarginStart(dp(2));
