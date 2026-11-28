@@ -60,7 +60,11 @@ android {
             applicationIdSuffix '.debug'
         }
         release {
-            minifyEnabled false
+            // 引入 AndroidX/Material 后，不开压缩时 dex+arsc 会涨到 4.6MB（APK 5.4MB）；
+            // 打开 R8 与资源收缩，把没用到的 Material 主题/配色/控件剔掉。
+            // 代码里没有反射，唯一必须保留的是 JNI 入口（见 proguard-rules.pro）。
+            minifyEnabled true
+            shrinkResources true
             signingConfig = signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
@@ -89,5 +93,11 @@ android {
 }
 
 dependencies {
-    // 故意留空：整个 App 只用 Android Framework API。
+    // 2026-11 起允许引入第三方库，但只限「被极广泛使用」的那几个。这里只需要
+    // 一套标准控件来做容器管理面板（BottomSheetDialog + 分段页签 + RecyclerView），
+    // 不再自绘列表与弹层。AppTheme 仍是 Framework 主题（见 themes.xml），
+    // 面板自带 Material 3 主题上下文，30+ 处既有 AlertDialog 的观感不受影响。
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.recyclerview:recyclerview:1.4.0'
+    implementation 'com.google.android.material:material:1.13.0'
 }
