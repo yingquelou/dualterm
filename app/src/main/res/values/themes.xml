@@ -17,6 +17,33 @@
         <item name="android:minHeight">40dp</item>
     </style>
 
+    <!--
+      容器管理面板（Material 3）。只作用在面板自己的 ContextThemeWrapper 上：
+      AppTheme 保持 Framework 主题，既有的 27 处平台 AlertDialog 观感一行不变。
+      面板里用到的标准控件（BottomSheetDialog / MaterialButtonToggleGroup /
+      RecyclerView）都从这里取色，配色仍沿用终端的一套深灰 + 绿色强调。
+    -->
+    <style name="Theme.DualTerm.Sheet" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorOnPrimary">@color/term_bg</item>
+        <item name="colorSecondary">@color/accent</item>
+        <item name="android:colorBackground">@color/bar_bg</item>
+        <item name="colorSurface">@color/bar_bg</item>
+        <item name="colorOnSurface">@color/text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/text_dim</item>
+        <item name="colorOutline">@color/key_bg</item>
+        <item name="colorOutlineVariant">@color/key_bg</item>
+        <item name="bottomSheetDialogTheme">@style/Theme.DualTerm.Sheet.Modal</item>
+    </style>
+
+    <style name="Theme.DualTerm.Sheet.Modal" parent="ThemeOverlay.Material3.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/Widget.DualTerm.Sheet</item>
+    </style>
+
+    <style name="Widget.DualTerm.Sheet" parent="Widget.Material3.BottomSheet.Modal">
+        <item name="backgroundTint">@color/bar_bg</item>
+    </style>
+
     <style name="KeyButton" parent="android:Widget.Material.Button">
         <item name="android:textColor">@color/text_primary</item>
         <item name="android:textSize">12sp</item>

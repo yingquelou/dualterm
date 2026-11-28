@@ -1,5 +1,6 @@
 package dev.dualterm.ui;
 
+import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -98,6 +99,9 @@ public final class ContainerDialogs {
 
     /** 正在拉取的 tag（主线程访问）：进度条不遮屏后，防同一镜像被重复点两次。 */
     private final java.util.Set<String> pulling = new java.util.HashSet<>();
+
+    /** 当前打开的容器管理面板：删除 / 新建 / 拉取完成后要就地重绘，已收起则忽略。 */
+    private ContainerSheet sheet;
 
     public ContainerDialogs(Host host) {
         this.host = host;
@@ -251,10 +255,23 @@ public final class ContainerDialogs {
         host.background().execute(new Runnable() {
             @Override
             public void run() {
+                boolean changed = false;
                 try {
-                    Containers.refreshImageSizes(app);
+                    changed = Containers.refreshImageSizes(app);
                 } catch (Throwable ignored) {
                     // 缓存补齐失败不影响列表打开
+                }
+                if (changed) {
+                    // 大小是后台补的：补齐后重绘一次，别让镜像页一直停在「…」
+                    final boolean filled = changed;
+                    host.runOnUi(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (filled && sheet != null) {
+                                sheet.reloadIfShowing();
+                            }
+                        }
+                    });
                 }
             }
         });
@@ -262,112 +279,110 @@ public final class ContainerDialogs {
 
     public void showContainersDialog() {
         refreshImageSizesAsync();
-        final Context ctx = host.context();
-        final List<Containers.Item> containers = Containers.items(ctx);
-        final List<Containers.Image> images = Containers.images(ctx);
-        final String active = Containers.activeName(ctx);
+        final Activity activity = (Activity) host.context();
+        sheet = new ContainerSheet(activity, new ContainerSheet.Actions() {
+            @Override
+            public void onNewContainer() {
+                chooseImageForNewContainer();
+            }
 
-        final List<String> labels = new ArrayList<>();
-        final List<int[]> meta = new ArrayList<>();
+            @Override
+            public void onOpenConsole() {
+                host.openConsole();
+            }
 
-        labels.add("⌨ 管理控制台（docker 命令）");
-        meta.add(new int[]{5, -1});
-        labels.add("＋ 新建容器（从镜像）");
-        meta.add(new int[]{2, -1});
-        for (int i = 0; i < containers.size(); i++) {
-            Containers.Item item = containers.get(i);
-            labels.add((item.name.equals(active) ? "★ " : "   ")
-                    + item.name + "   " + item.image
-                    + "   [" + (item.isRunning() ? "运行中" : "已停止") + "]");
-            meta.add(new int[]{0, i});
-        }
-        for (int i = 0; i < images.size(); i++) {
-            Containers.Image img = images.get(i);
-            // 大小只读缓存：dirSize 要递归数几万个文件，在 UI 线程跑必卡。
-            // 缓存缺失显示「…」，refreshImageSizesAsync 补齐后下次打开就有值。
-            long sz = Containers.cachedImageSize(ctx, img.name);
-            labels.add("镜像   " + img.name + "   "
-                    + (sz < 0 ? "…" : Containers.humanSize(sz)));
-            meta.add(new int[]{1, i});
-        }
-        labels.add("⇣ 拉取镜像（Docker Hub / ghcr 等 / Alpine）…");
-        meta.add(new int[]{3, -1});
-        labels.add("⇣ 导入 tar 镜像（docker save / export）…");
-        meta.add(new int[]{4, -1});
-        labels.add("⇄ 镜像源设置（换源）…");
-        meta.add(new int[]{6, -1});
+            @Override
+            public void onPullImage() {
+                showPullDialog();
+            }
 
-        new AlertDialog.Builder(ctx)
-                .setTitle("容器与镜像")
-                .setItems(labels.toArray(new String[0]), new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        int[] m = meta.get(which);
-                        switch (m[0]) {
-                            case 0:
-                                showContainerActions(containers.get(m[1]));
-                                break;
-                            case 1:
-                                showImageActions(images.get(m[1]));
-                                break;
-                            case 2:
-                                chooseImageForNewContainer();
-                                break;
-                            case 3:
-                                showPullDialog();
-                                break;
-                            case 4:
-                                pickArchiveForImport();
-                                break;
-                            case 5:
-                                host.openConsole();
-                                break;
-                            case 6:
-                                showMirrorDialog();
-                                break;
-                            default:
-                                break;
-                        }
-                    }
-                })
-                .setPositiveButton("关闭", null)
-                .show();
+            @Override
+            public void onImportTar() {
+                pickArchiveForImport();
+            }
+
+            @Override
+            public void onMirrorSettings() {
+                showMirrorDialog();
+            }
+
+            @Override
+            public void onContainerDetail(Containers.Item item) {
+                showContainerDetail(item);
+            }
+
+            @Override
+            public void onImageDetail(Containers.Image image) {
+                showImageDetail(image);
+            }
+        });
+        sheet.show();
     }
 
-    private void showContainerActions(final Containers.Item item) {
-        final List<String> list = new ArrayList<>();
-        list.add(item.isRunning() ? "切换到此容器" : "启动并切换");
-        if (item.isRunning()) {
-            list.add("停止");
-        }
-        list.add("删除");
-        final String[] actions = list.toArray(new String[0]);
-        new AlertDialog.Builder(host.context())
-                .setTitle(item.name)
-                .setItems(actions, new DialogInterface.OnClickListener() {
+    private void showContainerDetail(final Containers.Item item) {
+        ContainerDetail.showContainer((Activity) host.context(), item, host.background(),
+                new ContainerDetail.Actions() {
                     @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        String action = actions[which];
-                        if ("删除".equals(action)) {
-                            confirmRemoveContainer(item);
-                        } else if ("停止".equals(action)) {
-                            Containers.Item it = Containers.find(host.context(), item.name);
-                            if (it != null && it.isRunning()) {
-                                // 只掐这个容器的 tab，别的容器会话不受影响
-                                host.stopContainerTabs(item.name);
-                                host.updateStatus("已停止 " + item.name);
-                            }
-                        } else {
-                            host.applyContainerMode();
-                            host.resetFallback();
-                            Containers.setActive(host.context(), item.name);
-                            host.refreshModeChip();
-                            host.startContainer(item.name);
-                        }
+                    public void switchTo(Containers.Item it) {
+                        host.applyContainerMode();
+                        host.resetFallback();
+                        Containers.setActive(host.context(), it.name);
+                        host.refreshModeChip();
+                        host.startContainer(it.name);
                     }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+
+                    @Override
+                    public void stop(Containers.Item it) {
+                        Containers.Item current = Containers.find(host.context(), it.name);
+                        if (current != null && current.isRunning()) {
+                            // 只掐这个容器的 tab，别的容器会话不受影响
+                            host.stopContainerTabs(it.name);
+                            host.updateStatus("已停止 " + it.name);
+                        }
+                        sheet.reloadIfShowing();
+                    }
+
+                    @Override
+                    public void remove(Containers.Item it) {
+                        confirmRemoveContainer(it);
+                    }
+
+                    @Override
+                    public void newFrom(Containers.Image image) {
+                        askContainerName(image);
+                    }
+
+                    @Override
+                    public void removeImage(Containers.Image image) {
+                        confirmRemoveImage(image);
+                    }
+                });
+    }
+
+    private void showImageDetail(final Containers.Image image) {
+        ContainerDetail.showImage((Activity) host.context(), image, new ContainerDetail.Actions() {
+            @Override
+            public void switchTo(Containers.Item item) {
+            }
+
+            @Override
+            public void stop(Containers.Item item) {
+            }
+
+            @Override
+            public void remove(Containers.Item item) {
+            }
+
+            @Override
+            public void newFrom(Containers.Image img) {
+                askContainerName(img);
+            }
+
+            @Override
+            public void removeImage(Containers.Image img) {
+                confirmRemoveImage(img);
+            }
+        });
     }
 
     private void confirmRemoveContainer(final Containers.Item item) {
@@ -389,6 +404,9 @@ public final class ContainerDialogs {
                         // 活动容器落位（落到剩余第一个 / 空册）由 Containers.remove 统一处理
                         host.updateStatus(Containers.items(host.context()).isEmpty()
                                 ? "已删除最后一个容器" : null);
+                        if (sheet != null) {
+                            sheet.reloadIfShowing();
+                        }
                     }
                 })
                 .show();
@@ -463,6 +481,9 @@ public final class ContainerDialogs {
                             host.applyContainerMode();
                             host.refreshModeChip();
                             host.startContainer(created.name);
+                            if (sheet != null) {
+                                sheet.reloadIfShowing();
+                            }
                         }
                     });
                 } catch (final Exception e) {
@@ -478,28 +499,10 @@ public final class ContainerDialogs {
         });
     }
 
-    private void showImageActions(final Containers.Image image) {
-        String[] actions = {"基于它新建容器", "删除镜像"};
-        new AlertDialog.Builder(host.context())
-                .setTitle(image.name)
-                .setItems(actions, new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        if (which == 0) {
-                            askContainerName(image);
-                        } else {
-                            confirmRemoveImage(image);
-                        }
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
     private void confirmRemoveImage(final Containers.Image image) {
         new AlertDialog.Builder(host.context())
                 .setTitle("删除镜像 " + image.name)
-                .setMessage("只有当没有容器基于它时才能删除。已存在的容器自带 rootfs 副本，不受影响。")
+                .setMessage("已存在的容器自带 rootfs 副本，不受影响。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("删除", new DialogInterface.OnClickListener() {
                     @Override
@@ -509,6 +512,9 @@ public final class ContainerDialogs {
                             host.toast("已删除镜像 " + image.name);
                         } catch (Exception e) {
                             host.toast(describe(e));
+                        }
+                        if (sheet != null) {
+                            sheet.reloadIfShowing();
                         }
                     }
                 })
@@ -617,7 +623,12 @@ public final class ContainerDialogs {
                         public void run() {
                             pulling.remove(tag);
                             host.hideProgress();
-                            host.toast("已拉取 " + pulled + "（菜单 → 容器管理可基于它新建容器）");
+                            host.toast("已拉取 " + pulled + "（点下面的镜像查看属性，或基于它新建容器）");
+                            // 面板正开着时要立刻多出一个镜像，否则页面停在「0 个」直到重开
+                            if (sheet != null) {
+                                sheet.reloadIfShowing();
+                            }
+                            refreshImageSizesAsync();
                         }
                     });
                 } catch (final Exception e) {
@@ -779,11 +790,15 @@ public final class ContainerDialogs {
                             String message = "已导入 " + result.ref + "\n"
                                     + "格式：" + result.format + "\n"
                                     + "层数：" + result.layers + "\n\n"
-                                    + "下一步：菜单 → 容器管理 → 新建容器；"
+                                    + "下一步：镜像页里点它 → 「基于它新建容器」；"
                                     + "或控制台里 docker run --name c1 " + result.ref;
                             if (result.note != null) {
                                 message = result.note + "\n\n" + message;
                             }
+                            if (sheet != null) {
+                                sheet.reloadIfShowing();
+                            }
+                            refreshImageSizesAsync();
                             new AlertDialog.Builder(host.context())
                                     .setTitle("导入完成")
                                     .setMessage(message)

@@ -8,4 +8,6 @@
     <color name="accent">#FF7CE38B</color>
     <color name="key_bg">#FF262A33</color>
     <color name="scrim">#CC000000</color>
+    <!-- 危险操作（删除）的文字色：只用于属性页的按钮，不影响终端配色 -->
+    <color name="danger_text">#FFE28A8A</color>
 </resources>

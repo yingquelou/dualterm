@@ -524,11 +524,28 @@ public final class Containers {
         return true;
     }
 
+    /**
+     * 基于某镜像的容器名列表。
+     *
+     * <p>镜像页的「n 个容器在用」与「能不能删」必须共用这一份判定，
+     * 否则又会出现「列表说没人用、删除却报占用」这类自相矛盾。
+     */
+    public static List<String> containersUsing(Context ctx, String ref) {
+        String name = normalizeImage(ref);
+        List<String> out = new ArrayList<>();
+        for (Item item : items(ctx)) {
+            if (item.image.equals(name)) {
+                out.add(item.name);
+            }
+        }
+        return out;
+    }
+
     public static void removeImage(Context ctx, String ref) throws IOException {
         String name = normalizeImage(ref);
         for (Item item : items(ctx)) {
             if (item.image.equals(name)) {
-                throw new IOException("还有容器（" + item.name + "）基于该镜像，先 docker rm 它们");
+                throw new IOException("还有容器（" + item.name + "）基于该镜像，先删除这些容器");
             }
         }
         int state = imageState(ctx, name);
