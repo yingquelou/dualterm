@@ -34,9 +34,10 @@ app/src/main/
 │   ├── ui/
 │   │   ├── ConsoleActivity.java  ← 容器管理控制台界面（docker 语法的子集）
 │   │   ├── ContainerDialogs.java ← 容器/镜像/绑定目录对话框：装配与后台编排，行为经 Host 回到 Activity
-│   │   ├── ContainerSheet.java   ← 容器管理面板：容器/镜像两页签、两行条目、随页签切换的操作栏
+│   │   ├── ContainerSheet.java   ← 容器管理面板：镜像为父、容器为子的可展开列表 + 底部操作栏
 │   │   ├── ContainerDetail.java  ← 容器/镜像属性页：全量属性 + 该对象的操作按钮
 │   │   ├── BottomPanel.java      ← 贴底弹层容器（替代在 Android 11 上贴顶的 BottomSheetDialog）
+│   │   │   （布局：item_image_row 父行 / item_container_row 子行 / child_line 层级竖线）
 │   │   ├── KeyBar.java           ← 顶部键条：常用键 + ⌨/⛶，行为经 Host 回到 Activity
 │   │   ├── MenuSheet.java        ← 应用菜单面板：分组层级、按锚点选弹出方向、返回键逐层退
 │   │   ├── SessionPicker.java    ← 模式 chip 下拉：会话列表 + 新建/管理入口，标签与切换由宿主提供
