@@ -40,6 +40,7 @@ app/src/main/
 │   │   │   （布局：item_image_row 父行 / item_container_row 子行 / child_line 层级竖线）
 │   │   ├── KeyBar.java           ← 快速访问栏（键条）：键目录 + 自定义编排 + ⌨/⛶，行为经 Host 回到 Activity
 │   │   ├── MenuSheet.java        ← 应用菜单面板：分组层级、按锚点选弹出方向、返回键逐层退
+│   │   ├── A11y.java             ← 自绘行的无障碍补丁：把可点 TextView 的节点角色标成 Button
 │   │   ├── Icons.java            ← 统一图标方案：尺寸/取色/复合图标（规范见下文「图标方案」）
 │   │   ├── SessionPicker.java    ← 模式 chip 下拉：会话列表 + 一行图标动作（新建本地/新建容器/容器与镜像）
 │   │   ├── SoftKeyboard.java     ← 辅助键盘：固定区（编辑键/F 键）+ 可自定义区（步骤序列键）
@@ -212,6 +213,27 @@ vim `"+y`、tmux copy-mode 靠它把文本写进系统剪贴板。实现分三�
 容器面板的四个动作），图标 + 极短文字或纯图标；能写全词的地方不退化——菜单
 项、属性页按钮、空态说明都保持文字。纯图标的入口要给 `contentDescription`，
 能顺手补一条长按提示就补（会话下拉的三个图标长按弹出动作名）。
+
+**角色**：自绘行（菜单、会话列表）是 `TextView`，读屏只会念文字、不说「按钮」。
+`ui/A11y.asButton()` 用 `View.AccessibilityDelegate` 把节点的 `className` 改成
+`android.widget.Button`，朗读即变成「<文字>，按钮」。不需要 `contentDescription`
+去近似，也不必为此引 `androidx.core`。
+
+### 应用图标（2026-11-28 起）
+
+| 资源 | 作用 |
+|---|---|
+| `mipmap-anydpi-v26/ic_launcher.xml` | 自适应图标：底色 `@color/term_bg` + 前景 + `monochrome` |
+| `drawable/ic_launcher_fg.xml` | 前景 `$`（24 单位网格，按 108dp 声明 → ×4.5） |
+| `drawable/ic_launcher_mono.xml` | Android 13+ 主题图标层，几何与前景逐笔一致，只留白色 |
+| `drawable/ic_notif.xml` | 通知小图标，同一个 `$` 的纯白剪影 |
+
+- **安全圆**：自适应前景的可视范围是 108dp 图层的中间 66dp 圆（半径 33dp，即 24 网格
+  中心半径 7.3）。画之前先换算，画完再核对——内容出圈会被启动器按遮罩形状切掉。
+- **为什么不是 `$_`**：`$` 纵向已占满，再排光标要么被圆形遮罩切角，要么 48dp 下糊成
+  一个点。单 `$` 在任何遮罩下都完整。
+- **改图标时三层要同改**：前景、单色层、通知图标。主题图标只取单色层的形状自己上色，
+  形状与前景不一致就会「主题图标缺笔」。
 
 ## 输入
 
