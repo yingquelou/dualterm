@@ -2,7 +2,11 @@
 
 ## 环境
 
-JDK 17、Android SDK（compileSdk 34）、NDK 26.1.10909125、CMake 3.22.1。AGP 与应用配置见 `app/build.gradle`。
+JDK 17、Android SDK（compileSdk / targetSdk 36）、Build Tools 36.0.0、NDK 28.2.13676358、CMake 3.22.1、AGP 8.13.2、Gradle 8.14.8。AGP 与应用配置见 `app/build.gradle`。
+
+> **版本链为什么钉死**：AGP 8.x 硬性要求 JDK 17（AGP 7.x 才用 11），Gradle 8.14.8 是修掉 8.7 那一批已公开安全公告的 8.14 末版；AGP 8.2 只支持到 API 34，要 `compileSdk 36` 必须升 8.13。JDK 无需跟着升——17 是 AGP 8.x/9.x 共同的硬性版本，Java 字节码经 D8 转 dex 后与构建 JDK 无关。
+
+**16KB 页对齐**：Android 15+ 有 16KB 内存页设备，ELF 的 `PT_LOAD` 必须按 0x4000 对齐，否则 so 加载失败。NDK r28 默认已按 16KB 链接，`app/src/main/cpp/CMakeLists.txt` 又显式加了 `-Wl,-z,max-page-size=16384` 双保险。发布前用 `python3 tools/check_16k_align.py <apk>` 校验（CI 也有同一步）；注意 `useLegacyPackaging true` 下决定因素是 ELF 内的 `p_align`，不是 zipalign 的条目偏移。
 
 ## 构建
 
@@ -18,14 +22,14 @@ bash scripts/fetch-runtime.sh                                          # Linux /
 #      需要离线调试包时显式 WITH_ROOTFS=1 再跑脚本，Alpine minirootfs 才会落到
 #      app/src/main/assets/runtime/rootfs-<abi>.pack
 
-# 3. 出包（仓库自带 wrapper，Gradle 8.7）
+# 3. 出包（仓库自带 wrapper，Gradle 8.14.8）
 ./gradlew assembleDebug
 #    产物：app/build/outputs/apk/debug/app-debug.apk
 ```
 
 运行时脚本默认准备单一 ABI（脚本参数可指定 `arm64-v8a` / `armeabi-v7a` / `x86_64`），发布流水线会依次准备三个。
 
-wrapper 首次运行会从 `services.gradle.org` 下载 Gradle 8.7（约 100MB）；离线环境可自备同版本分发，或直接用本机 Gradle：
+wrapper 首次运行会从 `services.gradle.org` 下载 Gradle 8.14.8（约 130MB）；离线环境可自备同版本分发，或直接用本机 Gradle：
 
 ```bash
 gradle assembleDebug           # 等价，跳过 wrapper 下载
@@ -50,9 +54,9 @@ java -cp /tmp/etest EmuTest      # 全部通过时打印 ALL PASS
 **tar/OCI 解包**（`tools/TarTest.java`）：
 
 ```bash
-javac -encoding UTF-8 -cp $ANDROID_HOME/platforms/android-34/android.jar \
+javac -encoding UTF-8 -cp $ANDROID_HOME/platforms/android-36/android.jar \
       -sourcepath app/src/main/java -d /tmp/tt tools/TarTest.java
-java -cp "/tmp/tt:$ANDROID_HOME/platforms/android-34/android.jar" TarTest
+java -cp "/tmp/tt:$ANDROID_HOME/platforms/android-36/android.jar" TarTest
 ```
 
 覆盖 `..` 穿越拒绝、`.wh.`/opq 白化、pax 与 GNU 长文件名、ustar prefix 拼接、硬链接与绝对符号链接实体化退路、目录与文件互相顶替、gzip 自动识别。
@@ -89,7 +93,8 @@ git push origin v3.6.0
    rootfs 不进包，镜像由用户在应用内 `docker pull` / 导入 tar 获取
 2. 跑七套桌面回归：EmuTest / TarTest / ImportTest / RegistryTest / SecTest / PortsTest / KbdTest
 3. `assembleRelease`，产物重命名为 `dualterm-<版本>.apk` 并附 `SHA256SUMS`
-4. 校验 APK 内三个 ABI 的 `libproot.so` 都在，缺失即失败（rootfs 不进包，不校验）
+4. 校验 APK 内三个 ABI 的 `libproot.so` 都在，缺失即失败（rootfs 不进包，不校验）；
+   并用 `tools/check_16k_align.py` 校验 64 位 so 的 `PT_LOAD` 16KB 页对齐，不合格即失败
 
 Release 说明由流水线按 tag 区间生成（`上一个 tag..本次 tag` 的提交列表），不使用 `--generate-notes`：后者在没有上一个 Release 时只输出一行 Full Changelog，首个发布会等于没有变更说明。同一 tag 重跑时会补传产物并刷新说明，不会产生第二个 Release。
 

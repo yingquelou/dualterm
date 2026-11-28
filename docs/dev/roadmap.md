@@ -380,3 +380,9 @@ PTY；输入法收起或用户显式退出接管时回到 `TYPE_NULL`，字母�
   `764d0b5` + tag 强移重推，run `45965350657` success。Windows 建不了符号链接，
   本地七套全绿曾掩盖该缺陷——涉及符号链接/权限的改动必须在真 Linux 上复验，
   TarTest 在 Windows 上的两条 SKIP 不能当作「通过」
+- 2026-11-28 工具链升级 A+B（详见 verification 表）：AGP 8.13.2 / Gradle 8.14.8 /
+  compileSdk+targetSdk 36 / Build Tools 36.0.0 / NDK 28.2.13676358，JDK 仍 17
+  （AGP 8.x 硬性要求）。A 用链接 flag 把本地 `libptyterm.so` 从 4KB 提到 16KB 页对齐
+  （NDK r28 默认也已是 16KB），新增 `tools/check_16k_align.py` 并在 CI 校验；
+  B 适配 targetSdk 36 的预测性返回，改用 `OnBackInvokedCallback` + `handleBack()`，
+  真机 API 30/31/36 验证返回键与 edge-to-edge 均正常
