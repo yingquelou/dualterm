@@ -24,6 +24,18 @@ import dev.dualterm.R;
  * <p>用自绘面板而不是 PopupMenu：PopupMenu 的二级子菜单是级联窗口，顶部那行
  * 绿色组名只是标题摆设——点不动、也没法回到上一层。自绘后层级在同一窗口
  * 内切换：二级首行（绿色组名）点一下回顶层，返回键同理逐层退。
+ *
+ * <h2>宽度：跟内容，但按屏宽封顶</h2>
+ * 面板宽度一直是 WRAP_CONTENT，遇到「容器管理（2 个容器 / 3 个镜像）」这类长标签
+ * 在窄屏上会顶到屏边、贴着状态栏看着像被裁过。现在与 {@link SessionPicker}
+ * 同一套三段式：自然宽取内容，夹进 [200dp, min(屏宽-24dp, 屏宽×{@value #WIDTH_RATIO})]，
+ * 再长的行在行内省略。宽度必须量出来交给面板，否则 ScrollView 会按 UNSPECIFIED
+ * 重新把行撑回自然宽，省略就不生效。
+ *
+ * <h2>无障碍</h2>
+ * 行是 TextView，读屏只会念文字、不说「按钮」。{@link A11y#asButton} 把节点
+ * 角色改成 Button，返回行另给一条「返回上一级」的朗读文字（可见的 {@code ‹}
+ * 符号读出来没有意义）。
  */
 public final class MenuSheet {
 
@@ -47,6 +59,12 @@ public final class MenuSheet {
 
     private static final int COLOR_TEXT = 0xFFE6E6E6;
     private static final int COLOR_ACCENT = 0xFF7CE38B;
+
+    /** 面板宽度上限占屏宽的比例；比会话下拉（0.68）宽一点，菜单标签本来就更长。 */
+    private static final float WIDTH_RATIO = 0.78f;
+
+    /** 面板最小宽度：顶层只有四个组名，太窄不像菜单。 */
+    private static final int MIN_WIDTH = 200;
 
     private final Activity activity;
     private final Host host;
@@ -101,7 +119,7 @@ public final class MenuSheet {
         LinearLayout panel = new LinearLayout(activity);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setBackgroundResource(R.drawable.menu_bg);
-        panel.setMinimumWidth(dp(200));
+        panel.setMinimumWidth(dp(MIN_WIDTH));
 
         // 行先装进 rowsBox 再套 ScrollView：菜单超过锚点下方可用高度时
         // （横屏的容器二级最高）像系统菜单一样可滚，而不是被屏幕裁掉底行。
@@ -113,6 +131,7 @@ public final class MenuSheet {
             for (int i = 0; i < groups.size(); i++) {
                 final int idx = i;
                 TextView row = addRow(rowsBox, groups.get(i).title, false);
+                A11y.asButton(row);
                 row.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -124,6 +143,8 @@ public final class MenuSheet {
             final Group g = groups.get(groupIndex);
             // 二级首行：绿色组名 = 返回按钮（"‹" 提示可点回顶层）
             TextView back = addRow(rowsBox, "‹ " + g.title, true);
+            // "‹" 读出来只是个标点，朗读文字换成动作本身，组名保留
+            A11y.asButton(back, "返回上一级，" + g.title);
             back.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -133,6 +154,7 @@ public final class MenuSheet {
             for (int i = 0; i < g.ids.length; i++) {
                 final int id = g.ids[i];
                 TextView row = addRow(rowsBox, g.labels[i], false);
+                A11y.asButton(row);
                 row.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -158,15 +180,26 @@ public final class MenuSheet {
         int spaceBelow = frame.bottom - (loc[1] + anchor.getHeight());
         int spaceAbove = loc[1] - frame.top;
         int avail = Math.max(spaceBelow, spaceAbove) - dp(12);
-        rowsBox.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+
+        // 宽度：自然宽夹进 [200dp, min(屏宽-24dp, 屏宽×比例)]。以 AT_MOST 量行盒，
+        // 超宽的行先被压到上限（行内省略），量出来的就是面板宽。
+        int screen = activity.getResources().getDisplayMetrics().widthPixels;
+        int maxW = Math.min(screen - dp(24), Math.round(screen * WIDTH_RATIO));
+        rowsBox.measure(View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.UNSPECIFIED);
+        int panelW = Math.min(maxW, Math.max(dp(MIN_WIDTH), rowsBox.getMeasuredWidth()));
+
         if (rowsBox.getMeasuredHeight() > avail) {
             scroll.setLayoutParams(new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, avail));
         }
-        panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        // 必须用 EXACTLY 量面板：ScrollView 会用 UNSPECIFIED 重新量子视图，
+        // 那样刚才压下去的宽度会被撑回自然宽，省略形同虚设。
+        panel.measure(View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.UNSPECIFIED);
 
         PopupWindow popup = new PopupWindow(panel,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                panelW,
                 ViewGroup.LayoutParams.WRAP_CONTENT, false);
         // 背景必须是任意非空 drawable，否则 outsideTouchable 不生效（点外部不收起）
         popup.setBackgroundDrawable(
@@ -195,6 +228,9 @@ public final class MenuSheet {
         row.setText(text);
         row.setTextSize(15);
         row.setSingleLine(true);
+        // 面板宽度封顶后，超长标签（"容器管理（2 个容器 / 3 个镜像）"）在行内省略，
+        // 而不是把面板顶到屏边
+        row.setEllipsize(android.text.TextUtils.TruncateAt.END);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setTextColor(accent ? COLOR_ACCENT : COLOR_TEXT);
         row.setBackgroundResource(R.drawable.menu_item_bg);

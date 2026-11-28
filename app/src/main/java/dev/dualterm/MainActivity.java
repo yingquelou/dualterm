@@ -1284,6 +1284,11 @@ public class MainActivity extends Activity
             }
 
             @Override
+            public int containerCount() {
+                return Containers.items(MainActivity.this).size();
+            }
+
+            @Override
             public void onSwitchSession(int index) {
                 // 会话列表项：按创建顺序找到对应 tab
                 int i = 0;
@@ -1303,13 +1308,7 @@ public class MainActivity extends Activity
 
             @Override
             public void onNewContainer() {
-                if (Containers.items(MainActivity.this).isEmpty()) {
-                    showNoContainerGuide();
-                    return;
-                }
-                applyContainerMode();
-                refreshModeChip();
-                startContainer(Containers.activeName(MainActivity.this));
+                newContainerSession();
             }
 
             @Override
@@ -1335,6 +1334,50 @@ public class MainActivity extends Activity
                 return -1;
             }
         }).show();
+    }
+
+    /**
+     * 新建容器会话：没有容器先引导，只有一个直接进，多个先问「在哪个容器里」。
+     *
+     * <p>以前固定进活动容器——想在另一个容器里开会话，得先去容器管理把它设为
+     * 活动再回来，绕一圈。选择只在「有得选」时才出现：只有一个容器还弹一层
+     * 选择，纯粹是白点一下。
+     */
+    private void newContainerSession() {
+        final java.util.List<Containers.Item> items = Containers.items(this);
+        if (items.isEmpty()) {
+            showNoContainerGuide();
+            return;
+        }
+        if (items.size() == 1) {
+            openContainerSession(items.get(0).name);
+            return;
+        }
+        final String active = Containers.activeName(this);
+        String[] labels = new String[items.size()];
+        for (int i = 0; i < items.size(); i++) {
+            Containers.Item item = items.get(i);
+            // 行里只放「选哪个」要用的两样：容器名、来自哪个镜像；活动容器标一下
+            labels[i] = item.name + "  ·  " + item.image
+                    + (item.name.equals(active) ? "（当前）" : "");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("在哪个容器里新建会话")
+                .setItems(labels, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        openContainerSession(items.get(which).name);
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 在指定容器里开新会话：切到容器模式，活动容器随这次启动改到它。 */
+    private void openContainerSession(String name) {
+        applyContainerMode();
+        refreshModeChip();
+        startContainer(name);
     }
 
     /* -------------------- 输入设备自适应 -------------------- */

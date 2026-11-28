@@ -28,8 +28,10 @@ import dev.dualterm.R;
  * 图标规范见 {@link Icons} 与 docs/dev/internals.md），省下的两行全给会话。
  *
  * <p>图标只有三个、语义靠形状区分（终端窗口 / 箱体 / 层叠），长按补一条文字
- * 提示，不至于「只认图标不认动作」。标签怎么打（● 当前、已退出、容器名）
- * 与「切到哪」仍由宿主提供。
+ * 提示，不至于「只认图标不认动作」。箱体那个在册容器多于一个时不再是「进活动
+ * 容器」，而是先让宿主弹一层选择（见 {@link Host#containerCount()}），长按提示
+ * 也跟着改成「先选容器」——图标不变，但说法不能骗人。标签怎么打（● 当前、
+ * 已退出、容器名）与「切到哪」仍由宿主提供。
  *
  * <h2>宽度：跟内容，但按屏幕比例封顶</h2>
  * 早先宽度由 {@code setMinimumWidth(230dp)} 加行内 {@code maxWidth} 决定，
@@ -53,6 +55,12 @@ public final class SessionPicker {
 
         /** 当前活动容器名；用于「新建容器会话」的提示文案，无容器时为 null。 */
         String activeContainer();
+
+        /**
+         * 在册容器数量：决定「新建容器会话」的长按说明——没有容器要先去建，
+         * 一个容器直接进，多个容器先在弹层里选一个。
+         */
+        int containerCount();
 
         void onSwitchSession(int index);
 
@@ -133,6 +141,7 @@ public final class SessionPicker {
         for (int i = 0; i < labels.size(); i++) {
             final int index = i;
             TextView row = sessionRow(labels.get(i), maxW);
+            A11y.asButton(row);
             row.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -312,8 +321,17 @@ public final class SessionPicker {
     }
 
     private String newContainerTip() {
+        int count = host.containerCount();
+        if (count <= 0) {
+            return "新建容器会话（还没有容器）";
+        }
         String name = host.activeContainer();
-        return name == null || name.isEmpty() ? "新建容器会话" : "新建容器会话（" + name + "）";
+        if (count == 1) {
+            return name == null || name.isEmpty()
+                    ? "新建容器会话" : "新建容器会话（" + name + "）";
+        }
+        // 多个容器：点了要先选容器，提示别把活动容器写成唯一目标
+        return "新建容器会话（先选容器）";
     }
 
     private int borderless() {
