@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标（API 26+，minSdk 26 所以不需要位图兜底）：
+  背景是终端底色，前景是 $_ 的 $，另带一层单色给 Android 13+ 的主题图标。
+  之前是一张 108dp 的整块矢量（深色方块 + 绿 > _），启动器按自己的形状裁剪时
+  会连方块一起裁，圆角/圆形遮罩下四个角被啃掉。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/term_bg" />
+    <foreground android:drawable="@drawable/ic_launcher_fg" />
+    <monochrome android:drawable="@drawable/ic_launcher_mono" />
+</adaptive-icon>
