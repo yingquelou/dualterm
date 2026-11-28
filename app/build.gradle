@@ -17,8 +17,8 @@ android {
         applicationId 'dev.dualterm'
         minSdk 26
         targetSdk 36
-        versionCode dtVersionCode ? dtVersionCode.toInteger() : 26
-        versionName dtVersionName ?: '3.5'
+        versionCode dtVersionCode ? dtVersionCode.toInteger() : 31100
+        versionName dtVersionName ?: '3.11.0'
         // 需要 NDK：首次 Sync 时 Android Studio 会提示安装 NDK + CMake，直接同意即可。
         // 若要指定版本，取消下一行注释并改成你已安装的版本。
         // ndkVersion '28.2.13676358'
