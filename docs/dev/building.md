@@ -138,7 +138,8 @@ apksigner verify --print-certs dualterm-<版本>.apk | grep "SHA-256"
 本地出签名包走同一条路：`./gradlew assembleRelease`（未设置环境变量时使用测试签名），环境变量 `DT_KEYSTORE` / `DT_STORE_PASSWORD` / `DT_KEY_ALIAS` / `DT_KEY_PASSWORD` 可覆盖。
 
 **Release 开 R8 + 资源收缩**（2026-11-28 起）：`minifyEnabled true` + `shrinkResources true`。
-`dependencies` 块是空的（零第三方依赖），Release 约 **526KB**：dex 三百多 KB、
+`dependencies` 块是空的（零第三方依赖），Release 约 **533KB**（545,612 字节，
+2026-11-28 加了七个矢量图标与快速访问栏编辑器）：dex 三百多 KB、
 so 397KB（三 ABI 各一份 proot）、res 与 arsc 各几十 KB。代码里没有反射，
 `proguard-rules.pro` 只保 JNI 入口 `NativePty`。
 
