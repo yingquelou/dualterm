@@ -1316,6 +1316,24 @@ public class MainActivity extends Activity
             public void onContainers() {
                 containerDialogs.showContainersDialog();
             }
+
+            @Override
+            public int maxVisibleRows() {
+                // 与辅助键盘行数上限同一套做法：一条 prefs 整数，菜单里可改
+                return sessionRowsMax();
+            }
+
+            @Override
+            public int activeIndex() {
+                int i = 0;
+                for (java.util.Map.Entry<String, Tab> e : tabs.entrySet()) {
+                    if (e.getKey().equals(activeTabId)) {
+                        return i;
+                    }
+                    i++;
+                }
+                return -1;
+            }
         }).show();
     }
 
@@ -1516,8 +1534,9 @@ public class MainActivity extends Activity
     private java.util.List<MenuSheet.Group> buildMenuGroups() {
         java.util.List<MenuSheet.Group> groups = new java.util.ArrayList<>();
         groups.add(new MenuSheet.Group("会话",
-                new String[]{"重启当前会话", "退出应用（结束会话）"},
-                new int[]{1, 17}));
+                new String[]{"会话列表行数：" + sessionRowsLabel(),
+                        "重启当前会话", "退出应用（结束会话）"},
+                new int[]{29, 1, 17}));
         groups.add(new MenuSheet.Group("屏幕内容",
                 new String[]{"复制全部输出", "复制当前屏", "粘贴", "清屏"},
                 new int[]{2, 18, 3, 4}));
@@ -1628,6 +1647,9 @@ public class MainActivity extends Activity
             case 28:
                 keyBarUi.showQuickBarEditor();
                 return true;
+            case 29:
+                showSessionRowsDialog();
+                return true;
             case 22:
                 showFontRangeDialog();
                 return true;
@@ -1676,6 +1698,65 @@ public class MainActivity extends Activity
             default:
                 return false;
         }
+    }
+
+    /* -------------------- 会话下拉的尺寸 -------------------- */
+
+    /**
+     * 会话列表最多显示几行（0 = 不限，仍受可用高度约束）。
+     *
+     * <p>会话是长列表，窗口高度不该由会话数量决定。上限与辅助键盘的
+     * {@code soft_kbd_max_rows} 同一套做法：一条 prefs 整数、菜单里改，
+     * 超出部分在会话区内滚动，底部动作行不动。
+     */
+    private int sessionRowsMax() {
+        return prefs.getInt("session_rows_max", 8);
+    }
+
+    private String sessionRowsLabel() {
+        int n = sessionRowsMax();
+        return n <= 0 ? "不限（会话多则面板变长）" : "最多 " + n + " 行（超出滚动）";
+    }
+
+    /**
+     * 会话下拉的行数上限。与「辅助键盘最多几行」同构：留空或 0 = 不限，
+     * 1–20 = 最多几行。上限只控制会话区，宽度另由内容 + 屏宽比例决定，
+     * 两者都在 {@code ui/SessionPicker} 里落地。
+     */
+    private void showSessionRowsDialog() {
+        final EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setSingleLine(true);
+        int cur = sessionRowsMax();
+        if (cur > 0) {
+            input.setText(String.valueOf(cur));
+        } else {
+            input.setHint("留空 = 不限");
+        }
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("会话列表最多几行")
+                .setMessage("会话下拉里一屏最多显示几行，超出部分在列表内竖向滚动。\n"
+                        + "留空或 0 表示不限（会话多则面板一直变长）。")
+                .setView(input)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确定", null)
+                .show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int value = parseDialogInt(input.getText().toString(), 0);
+                if (value < 0 || value > 20) {
+                    toast("行数只能是 0–20（0 或留空 = 不限）");
+                    return;
+                }
+                prefs.edit().putInt("session_rows_max", value).apply();
+                dialog.dismiss();
+                // SessionPicker 每次打开都重建面板，下次点 chip 即生效，不用刷新
+                toast(value <= 0
+                        ? "会话列表：不限行数"
+                        : "会话列表最多 " + value + " 行，超出可竖向滚动");
+            }
+        });
     }
 
     /** 菜单里显示可自定义区的行数上限设置。 */

@@ -30,6 +30,20 @@ import dev.dualterm.R;
  * <p>图标只有三个、语义靠形状区分（终端窗口 / 箱体 / 层叠），长按补一条文字
  * 提示，不至于「只认图标不认动作」。标签怎么打（● 当前、已退出、容器名）
  * 与「切到哪」仍由宿主提供。
+ *
+ * <h2>宽度：跟内容，但按屏幕比例封顶</h2>
+ * 早先宽度由 {@code setMinimumWidth(230dp)} 加行内 {@code maxWidth} 决定，
+ * 容器会话的标签（{@code 容器 · eclipse-temurin:17-jre · pid 1234}）一长就把
+ * 面板顶到近整屏宽——看着像抽屉，不像从 chip 上掉下来的菜单。现在的算法是
+ * 三段：自然宽取「最长会话行」与「动作行」的较大值；下限锁在动作行（三个
+ * 44dp 图标不许换行）；上限 = 屏宽的 {@link #WIDTH_RATIO} 且至少留两侧 12dp，
+ * 再长的标签在行内省略。
+ *
+ * <h2>高度：行数上限 + 滚动</h2>
+ * 会话多寡不该决定窗口多高，所以会话区最多显示 {@link Host#maxVisibleRows()}
+ * 行（0 = 不限），超出部分在会话区竖向滚动，动作行始终钉在面板底部。上限与
+ * 辅助键盘的行数上限是同一套做法：一条 prefs 整数，菜单里可改；同时仍受锚点
+ * 上下可用空间约束，取两者的小值。
  */
 public final class SessionPicker {
 
@@ -47,9 +61,37 @@ public final class SessionPicker {
         void onNewContainer();
 
         void onContainers();
+
+        /**
+         * 会话区最多显示几行；0 = 不限（仍受锚点上下可用空间约束）。
+         *
+         * <p>与辅助键盘的行数上限（{@code soft_kbd_max_rows}）同一口径：
+         * 由宿主从 prefs 读，菜单里可改。
+         */
+        int maxVisibleRows();
+
+        /**
+         * 当前活动会话在 {@link #sessionLabels()} 里的下标；-1 = 找不到。
+         *
+         * <p>只用来把会话区滚到「我在哪一行」——限高之后当前会话很可能
+         * 排在第 8 行，一打开却只看见前 3 行。不靠解析标签前缀（●）判断，
+         * 那是宿主的显示格式，不该被这边依赖。
+         */
+        int activeIndex();
     }
 
     private static final int COLOR_TEXT = 0xFFE6E6E6;
+
+    /** 一行会话的高度；最大行数与可用空间都按它折算，别在两处各写一个数。 */
+    private static final int ROW_H = 44;
+
+    /**
+     * 面板宽度上限占屏宽的比例：360dp 竖屏 ≈ 245dp。
+     *
+     * <p>再宽就不像「从 chip 上掉下来的菜单」了；再窄，容器名会被截得只剩
+     * 前缀——68% 是这两头之间能同时站住的位置（横屏时屏宽大，上限也跟着放大）。
+     */
+    private static final float WIDTH_RATIO = 0.68f;
 
     private final Activity activity;
     private final View anchor;
@@ -79,16 +121,18 @@ public final class SessionPicker {
         LinearLayout panel = new LinearLayout(activity);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setBackgroundResource(R.drawable.menu_bg);
-        panel.setMinimumWidth(dp(230));
+
+        // 宽度上限：屏宽的比例与「两侧各留 12dp」取小
+        int screen = activity.getResources().getDisplayMetrics().widthPixels;
+        int maxW = Math.min(screen - dp(24), Math.round(screen * WIDTH_RATIO));
 
         LinearLayout rows = new LinearLayout(activity);
         rows.setOrientation(LinearLayout.VERTICAL);
 
         List<String> labels = host.sessionLabels();
-        int labelMax = maxLabelWidth();
         for (int i = 0; i < labels.size(); i++) {
             final int index = i;
-            TextView row = sessionRow(labels.get(i), labelMax);
+            TextView row = sessionRow(labels.get(i), maxW);
             row.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -152,18 +196,50 @@ public final class SessionPicker {
         int spaceBelow = frame.bottom - (loc[1] + anchor.getHeight());
         int spaceAbove = loc[1] - frame.top;
         int avail = Math.max(spaceBelow, spaceAbove) - dp(12);
+
+        // 量三样东西：动作行多高（要钉底）、会话区的自然高与自然宽
         actions.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
         int actionsH = actions.getMeasuredHeight() + Math.max(1, dp(1));
         rows.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
-        int room = Math.max(dp(44), avail - actionsH);
-        if (rows.getMeasuredHeight() > room) {
-            scroll.setLayoutParams(new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, room));
-        }
-        panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        int rowsH = rows.getMeasuredHeight();
 
-        PopupWindow window = new PopupWindow(panel,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+        // 宽度：max(最长会话行, 动作行)，再夹进 [动作行宽, 屏宽比例]。
+        // 下限用动作行的实测宽（三个图标 + 间距），而不是拍一个 230dp——
+        // 图标排不下就会被挤成两行，这才是真正的下限。
+        int panelW = Math.max(actions.getMeasuredWidth(),
+                Math.min(maxW, rows.getMeasuredWidth()));
+
+        // 高度：min(内容高, 配置行数折算高, 可用空间)，哪一档先到就在哪滚
+        int limit = host.maxVisibleRows();
+        int limitH = limit > 0 ? limit * dp(ROW_H) : Integer.MAX_VALUE;
+        int room = Math.max(dp(ROW_H), avail - actionsH);
+        int visible = Math.min(rowsH, Math.min(limitH, room));
+        scroll.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                visible < rowsH ? visible : ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        panel.measure(View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.UNSPECIFIED);
+
+        // 限高之后当前会话可能落在可视区外：把它滚到中间偏上的位置，
+        // 打开的第一眼就能看到「我在哪」，而不是一屏陌生的前几行。
+        final int active = host.activeIndex();
+        if (visible < rowsH && active >= 0) {
+            int target = active * dp(ROW_H) - (visible - dp(ROW_H)) / 2;
+            final int maxScroll = rowsH - visible;
+            final int to = Math.max(0, Math.min(target, maxScroll));
+            if (to > 0) {
+                // 布局完成前 scrollTo 会被 clamp 回 0，延到下一帧
+                scroll.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        scroll.scrollTo(0, to);
+                    }
+                });
+            }
+        }
+
+        PopupWindow window = new PopupWindow(panel, panelW,
                 ViewGroup.LayoutParams.WRAP_CONTENT, true);
         // 背景必须非空，否则 outsideTouchable 不生效（点外部不收起）
         window.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
@@ -180,7 +256,12 @@ public final class SessionPicker {
         }
     }
 
-    /** 会话行：一行一档高，超宽截断（面板宽度上限 = 屏幕宽 - 24dp）。 */
+    /**
+     * 会话行：一行一档高，超宽截断。
+     *
+     * <p>{@code maxWidth} 是「行能长到多宽」的上限（面板宽上限），不是面板目标宽：
+     * 短标签时面板就窄，长标签才长到上限并在行内省略。
+     */
     private TextView sessionRow(String text, int maxWidth) {
         TextView row = new TextView(activity);
         row.setText(text);
@@ -193,7 +274,7 @@ public final class SessionPicker {
         row.setBackgroundResource(R.drawable.menu_item_bg);
         row.setPadding(dp(18), 0, dp(18), 0);
         row.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(ROW_H)));
         return row;
     }
 
@@ -233,12 +314,6 @@ public final class SessionPicker {
     private String newContainerTip() {
         String name = host.activeContainer();
         return name == null || name.isEmpty() ? "新建容器会话" : "新建容器会话（" + name + "）";
-    }
-
-    /** 会话行可用宽度：屏幕宽减去面板内边距与左右留白。 */
-    private int maxLabelWidth() {
-        int screen = activity.getResources().getDisplayMetrics().widthPixels;
-        return screen - dp(24 + 36);
     }
 
     private int borderless() {
