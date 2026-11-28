@@ -8,6 +8,7 @@
     <string name="copy_output">复制输出</string>
     <string name="restart">重启</string>
     <string name="sheet_containers_title">容器与镜像</string>
-    <string name="sheet_tab_containers">容器 %1$d</string>
-    <string name="sheet_tab_images">镜像 %1$d</string>
+    <string name="sheet_done">完成</string>
+    <string name="sheet_console">控制台</string>
+    <string name="sheet_image_properties">镜像属性</string>
 </resources>

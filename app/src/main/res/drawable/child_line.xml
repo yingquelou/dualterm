@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 子行左侧的层级竖线：淡白细线，缩进到父行名字的位置。 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="2dp"
+        android:left="46dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#2EFFFFFF" />
+        </shape>
+    </item>
+</layer-list>

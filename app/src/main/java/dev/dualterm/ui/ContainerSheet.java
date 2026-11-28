@@ -3,41 +3,46 @@ package dev.dualterm.ui;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
+import android.view.ContextThemeWrapper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
-
-import androidx.annotation.NonNull;
-import androidx.appcompat.view.ContextThemeWrapper;
-import androidx.recyclerview.widget.LinearLayoutManager;
-import androidx.recyclerview.widget.RecyclerView;
-
-import com.google.android.material.button.MaterialButton;
-import com.google.android.material.button.MaterialButtonToggleGroup;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import dev.dualterm.R;
 import dev.dualterm.container.Containers;
 
 /**
- * 容器管理面板：一个弹层、两个页签（容器 / 镜像）、操作栏随页签切换。
+ * 容器管理面板：镜像为父、容器为子的单列可展开列表。
  *
- * <p>换掉的是原来那个「一个 AlertDialog 平铺 N 个容器 + M 个镜像」的列表：
- * 两类对象混在一个列表里，只能靠「镜像」两字前缀分辨；新建在顶、拉取导入在底，
- * 列表一长就要来回滑。现在把两类彻底分开，动作贴着自己那一页放。
+ * <p>镜像与容器本来就是目录关系——容器必然由某个镜像物化而来。旧的「容器 / 镜像」
+ * 两个平级页签把这个关系抹掉了：切到容器页看不到它属于谁，切到镜像页也看不到
+ * 它下面有几个容器。现在一个列表两层级：
  *
- * <p>列表只放必要信息（容器：镜像 + 状态；镜像：大小 + 被几个容器占用），
- * 占用、路径、创建时间这些全量属性进 {@link ContainerDetail} 属性页。
+ * <ul>
+ *   <li>父行（镜像）：{@code ▾ alpine:3.21} + {@code 7.7MB · 2 个容器}，
+ *       整行点击展开/折叠它下面的容器；行尾 {@code ⋯} 进镜像属性页
+ *       （不给整行双击语义，避免"想看属性结果收起了列表"）；</li>
+ *   <li>子行（容器）：缩进 + 左侧竖线，只写 {@code c1} 和运行状态——镜像名
+ *       父行已经写了，子行再写一遍是重复。</li>
+ * </ul>
  *
- * <p>控件用 Material 的标准件（MaterialButtonToggleGroup / RecyclerView），
- * 弹层本身由 {@link BottomPanel} 提供；主题走 {@code Theme.DualTerm.Sheet}，
- * 不改动 App 主体的 Framework 主题，既有对话框观感不受影响。
+ * <p>属性页（{@link ContainerDetail}）保留全量信息：列表只放"扫一眼"要用的两行，
+ * 占用、路径、创建时间、被谁引用都点进去看。
+ *
+ * <p>控件全部是 Framework 的（LinearLayout / ScrollView / Button），没有第三方
+ * 依赖：这里的列表最多十几条，RecyclerView 的回收能力用不上；分段页签随父子
+ * 结构一起消失了。理由与取舍见 {@code app/build.gradle} 的 dependencies 注释。
  */
 public final class ContainerSheet {
 
@@ -58,21 +63,22 @@ public final class ContainerSheet {
         void onImageDetail(Containers.Image image);
     }
 
-    private static final int PAGE_CONTAINERS = 0;
-    private static final int PAGE_IMAGES = 1;
+    /** 「来源镜像已不存在」的容器分组的 key，不会与真实镜像名冲突。 */
+    private static final String ORPHANS = "\u0000orphans";
 
     private final Activity activity;
     private final Actions actions;
-    private final RowAdapter adapter = new RowAdapter();
 
     private Dialog dialog;
-    private MaterialButtonToggleGroup tabs;
+    private ScrollView scroll;
+    private LinearLayout listBox;
     private LinearLayout actionBar;
     private TextView emptyView;
-    private int page = PAGE_CONTAINERS;
-    // 一次读盘的结果：重绘（切页签）时直接用，不再回表
+
+    // 一次读盘的结果：展开/折叠只重建视图，不再回表
     private List<Containers.Item> containers = new ArrayList<>();
     private List<Containers.Image> images = new ArrayList<>();
+    private final Set<String> expanded = new HashSet<>();
 
     public ContainerSheet(Activity activity, Actions actions) {
         this.activity = activity;
@@ -83,36 +89,28 @@ public final class ContainerSheet {
         Context themed = new ContextThemeWrapper(activity, R.style.Theme_DualTerm_Sheet);
         View content = LayoutInflater.from(themed).inflate(R.layout.sheet_containers, null);
 
-        // 列表区高度固定：容器 2 行 / 镜像 6 行切页签时面板不会忽大忽小地跳变。
+        // 列表区高度固定：展开/折叠时面板不会忽大忽小地跳变，超出就在列表内滚。
         int screenH = activity.getResources().getDisplayMetrics().heightPixels;
         int listHeight = Math.min(dp(420), Math.max(dp(140), screenH - dp(300)));
         content.findViewById(R.id.sheet_list_box).setLayoutParams(
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, listHeight));
 
-        RecyclerView list = content.findViewById(R.id.sheet_list);
-        list.setLayoutManager(new LinearLayoutManager(themed));
-        list.setAdapter(adapter);
-
+        scroll = content.findViewById(R.id.sheet_scroll);
+        listBox = content.findViewById(R.id.sheet_list);
         emptyView = content.findViewById(R.id.sheet_empty);
         actionBar = content.findViewById(R.id.sheet_actions);
-        tabs = content.findViewById(R.id.sheet_tabs);
-        tabs.addOnButtonCheckedListener(new MaterialButtonToggleGroup.OnButtonCheckedListener() {
-            @Override
-            public void onButtonChecked(MaterialButtonToggleGroup group, int checkedId,
-                                        boolean isChecked) {
-                if (!isChecked) {
-                    return;
-                }
-                int next = checkedId == R.id.tab_images ? PAGE_IMAGES : PAGE_CONTAINERS;
-                if (next == page) {
-                    return;
-                }
-                page = next;
-                render();
-            }
+
+        content.findViewById(R.id.sheet_done).setOnClickListener(v -> dismiss());
+        content.findViewById(R.id.sheet_console).setOnClickListener(v -> {
+            dismiss();
+            actions.onOpenConsole();
         });
 
+        // 操作栏与页签无关，建一次就够；数据变化只重绘列表。
+        // 必须在 BottomPanel.show 之后：action() 取的是列表/操作栏的 Context，
+        // 早于窗口创建时 dialog 还是 null（初版就栽在这儿）。
         dialog = BottomPanel.show(activity, content);
+        buildActions();
         reload();
     }
 
@@ -131,154 +129,165 @@ public final class ContainerSheet {
     }
 
     private void reload() {
+        int before = containers.size();
         containers = Containers.items(activity);
         images = Containers.images(activity);
 
-        // 页签上的数字就是规模，省得再写一行「共 n 个」。
-        button(R.id.tab_containers).setText(activity.getString(
-                R.string.sheet_tab_containers, containers.size()));
-        button(R.id.tab_images).setText(activity.getString(
-                R.string.sheet_tab_images, images.size()));
+        // 镜像被删掉了，它那一项就不该继续留在展开集合里
+        Set<String> alive = new HashSet<>();
+        for (Containers.Image image : images) {
+            alive.add(image.name);
+        }
+        expanded.retainAll(alive);
+
+        // 从「一个容器都没有」变成「有了」时自动展开——新建/拉取完就看得见，
+        // 之后用户的折叠选择不会再被覆盖。
+        if (before == 0 && !containers.isEmpty()) {
+            for (Containers.Item item : containers) {
+                expanded.add(item.image);
+            }
+        }
         render();
     }
 
-    private MaterialButton button(int id) {
-        return (MaterialButton) tabs.findViewById(id);
+    private void buildActions() {
+        actionBar.removeAllViews();
+        actionBar.addView(action("＋ 新建", true, v -> actions.onNewContainer()));
+        actionBar.addView(action("⇣ 拉取", false, v -> actions.onPullImage()));
+        actionBar.addView(action("⇣ 导入", false, v -> actions.onImportTar()));
+        actionBar.addView(action("⇄ 换源", false, v -> actions.onMirrorSettings()));
     }
 
     private void render() {
-        if (page == PAGE_CONTAINERS) {
-            renderContainers();
-        } else {
-            renderImages();
+        listBox.removeAllViews();
+
+        if (images.isEmpty()) {
+            emptyView.setText("还没有镜像。\n\n点下面「⇣ 拉取」下载一个（alpine 走官方 CDN / 镜像源，"
+                    + "约 3MB），或用「⇣ 导入」读入 docker save 的 tar。\n\n"
+                    + "容器只能由镜像创建，所以这里先有镜像才有容器。");
+            emptyView.setVisibility(View.VISIBLE);
+            return;
         }
-    }
+        emptyView.setVisibility(View.GONE);
 
-    private void renderContainers() {
-        List<Containers.Item> items = containers;
-        String active = Containers.activeName(activity);
-        List<Row> rows = new ArrayList<>();
-        for (Containers.Item item : items) {
-            final Containers.Item it = item;
-            rows.add(new Row(
-                    (item.name.equals(active) ? "★ " : "") + item.name,
-                    item.image + " · " + (item.isRunning() ? "运行中" : "已停止"),
-                    () -> actions.onContainerDetail(it)));
-        }
-        adapter.submit(rows);
-        showEmpty(items.isEmpty(),
-                "还没有容器。\n\n点下面「＋ 新建」，从镜像物化一份可写 rootfs；"
-                        + "容器之间的改动互不影响。");
-
-        actionBar.removeAllViews();
-        actionBar.addView(action("＋ 新建", v -> actions.onNewContainer()));
-        actionBar.addView(action("控制台", v -> actions.onOpenConsole()));
-    }
-
-    private void renderImages() {
-        List<Containers.Image> images = this.images;
-        // 一张表算完引用数：别为每个镜像再读一遍容器表。
-        Map<String, Integer> used = new HashMap<>();
+        // 按镜像分组：一次遍历，别为每个镜像再扫一遍容器表
+        Map<String, List<Containers.Item>> byImage = new HashMap<>();
         for (Containers.Item item : containers) {
-            used.merge(item.image, 1, Integer::sum);
-        }
-        List<Row> rows = new ArrayList<>();
-        for (Containers.Image image : images) {
-            final Containers.Image img = image;
-            long size = Containers.cachedImageSize(activity, image.name);
-            int users = used.getOrDefault(image.name, 0);
-            StringBuilder sub = new StringBuilder(size < 0 ? "…" : Containers.humanSize(size));
-            if (users > 0) {
-                sub.append(" · ").append(users).append(" 个容器在用");
+            List<Containers.Item> bucket = byImage.get(item.image);
+            if (bucket == null) {
+                bucket = new ArrayList<>();
+                byImage.put(item.image, bucket);
             }
-            rows.add(new Row(image.name, sub.toString(), () -> actions.onImageDetail(img)));
+            bucket.add(item);
         }
-        adapter.submit(rows);
-        showEmpty(images.isEmpty(),
-                "还没有镜像。\n\n点下面「⇣ 拉取」下载一个（alpine 走官方 CDN / 镜像源，约 3MB），"
-                        + "或用「⇣ 导入」读入 docker save 的 tar。");
 
-        actionBar.removeAllViews();
-        actionBar.addView(action("⇣ 拉取", v -> actions.onPullImage()));
-        actionBar.addView(action("⇣ 导入", v -> actions.onImportTar()));
-        actionBar.addView(action("⇄ 换源", v -> actions.onMirrorSettings()));
+        for (Containers.Image image : images) {
+            List<Containers.Item> kids = byImage.remove(image.name);
+            addImageRow(image, kids == null ? new ArrayList<>() : kids);
+        }
+
+        // 兜底：容器的 image 字段指向一个已不存在的镜像（正常流程下 Containers
+        // 会拦住删镜像，但数据可能来自旧版本或手工改过的 prefs）。宁可多一组，
+        // 也不能让容器在界面里凭空消失。
+        List<Containers.Item> orphans = new ArrayList<>();
+        for (List<Containers.Item> rest : byImage.values()) {
+            orphans.addAll(rest);
+        }
+        if (!orphans.isEmpty()) {
+            addOrphanRow(orphans);
+        }
     }
 
-    private void showEmpty(boolean isEmpty, String text) {
-        emptyView.setText(text);
-        emptyView.setVisibility(isEmpty ? View.VISIBLE : View.GONE);
+    private void addImageRow(final Containers.Image image, final List<Containers.Item> kids) {
+        View row = LayoutInflater.from(listBox.getContext())
+                .inflate(R.layout.item_image_row, listBox, false);
+
+        boolean open = !kids.isEmpty() && expanded.contains(image.name);
+        ((TextView) row.findViewById(R.id.row_arrow)).setText(open ? "▼" : "▶");
+        ((TextView) row.findViewById(R.id.row_title)).setText(image.name);
+
+        long size = Containers.cachedImageSize(activity, image.name);
+        String sizeText = size < 0 ? "…" : Containers.humanSize(size);
+        ((TextView) row.findViewById(R.id.row_subtitle)).setText(
+                sizeText + " · " + (kids.isEmpty() ? "无容器" : kids.size() + " 个容器"));
+
+        // 没有容器时点了也展开不出东西，箭头一律收着，别留下"▾ 打开却是空"的错觉
+        row.setOnClickListener(v -> {
+            if (!kids.isEmpty()) {
+                toggle(image.name);
+            }
+        });
+        row.findViewById(R.id.row_more).setOnClickListener(v -> actions.onImageDetail(image));
+        listBox.addView(row);
+
+        if (open) {
+            for (Containers.Item item : kids) {
+                addContainerRow(item);
+            }
+        }
     }
 
-    private MaterialButton action(String text, View.OnClickListener click) {
-        MaterialButton b = (MaterialButton) LayoutInflater.from(dialog.getContext())
+    private void addOrphanRow(final List<Containers.Item> orphans) {
+        View row = LayoutInflater.from(listBox.getContext())
+                .inflate(R.layout.item_image_row, listBox, false);
+
+        boolean open = expanded.contains(ORPHANS);
+        ((TextView) row.findViewById(R.id.row_arrow)).setText(open ? "▼" : "▶");
+        ((TextView) row.findViewById(R.id.row_title)).setText("其他容器");
+        ((TextView) row.findViewById(R.id.row_subtitle)).setText(
+                orphans.size() + " 个 · 来源镜像已不存在");
+        // 没有对应的镜像实体，属性入口无意义
+        row.findViewById(R.id.row_more).setVisibility(View.GONE);
+
+        row.setOnClickListener(v -> toggle(ORPHANS));
+        listBox.addView(row);
+
+        if (open) {
+            for (Containers.Item item : orphans) {
+                addContainerRow(item);
+            }
+        }
+    }
+
+    private void addContainerRow(final Containers.Item item) {
+        View row = LayoutInflater.from(listBox.getContext())
+                .inflate(R.layout.item_container_row, listBox, false);
+
+        boolean active = item.name.equals(Containers.activeName(activity));
+        ((TextView) row.findViewById(R.id.row_title)).setText(
+                (active ? "★ " : "") + item.name);
+
+        TextView state = row.findViewById(R.id.row_state);
+        state.setText(item.isRunning() ? "运行中" : "已停止");
+        state.setTextColor(activity.getColor(
+                item.isRunning() ? R.color.accent : R.color.text_dim));
+
+        row.setOnClickListener(v -> actions.onContainerDetail(item));
+        listBox.addView(row);
+    }
+
+    private void toggle(String key) {
+        // 重建子视图会把 ScrollView 的滚动位置带偏，先记下来再放回去
+        final int y = scroll.getScrollY();
+        if (!expanded.remove(key)) {
+            expanded.add(key);
+        }
+        render();
+        scroll.post(() -> scroll.scrollTo(0, y));
+    }
+
+    private Button action(String text, boolean primary, View.OnClickListener click) {
+        Button b = (Button) LayoutInflater.from(actionBar.getContext())
                 .inflate(R.layout.action_button, actionBar, false);
         b.setText(text);
-        b.setInsetTop(0);
-        b.setInsetBottom(0);
+        b.setTextColor(activity.getColor(primary ? R.color.accent : R.color.text_primary));
         b.setOnClickListener(click);
         LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) b.getLayoutParams();
-        lp.setMarginStart(dp(4));
+        lp.setMarginStart(dp(2));
         return b;
     }
 
     private int dp(int value) {
         return (int) (value * activity.getResources().getDisplayMetrics().density);
-    }
-
-    /* -------------------- 列表 -------------------- */
-
-    private static final class Row {
-        final String title;
-        final String subtitle;
-        final Runnable action;
-
-        Row(String title, String subtitle, Runnable action) {
-            this.title = title;
-            this.subtitle = subtitle;
-            this.action = action;
-        }
-    }
-
-    private static final class RowAdapter extends RecyclerView.Adapter<RowAdapter.VH> {
-
-        private final List<Row> rows = new ArrayList<>();
-
-        void submit(List<Row> next) {
-            rows.clear();
-            rows.addAll(next);
-            notifyDataSetChanged();
-        }
-
-        @NonNull
-        @Override
-        public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            View v = LayoutInflater.from(parent.getContext())
-                    .inflate(R.layout.item_row, parent, false);
-            return new VH(v);
-        }
-
-        @Override
-        public void onBindViewHolder(@NonNull VH holder, int position) {
-            Row row = rows.get(position);
-            holder.title.setText(row.title);
-            holder.subtitle.setText(row.subtitle);
-            holder.itemView.setOnClickListener(v -> row.action.run());
-        }
-
-        @Override
-        public int getItemCount() {
-            return rows.size();
-        }
-
-        static final class VH extends RecyclerView.ViewHolder {
-            final TextView title;
-            final TextView subtitle;
-
-            VH(View v) {
-                super(v);
-                title = v.findViewById(R.id.row_title);
-                subtitle = v.findViewById(R.id.row_subtitle);
-            }
-        }
     }
 }

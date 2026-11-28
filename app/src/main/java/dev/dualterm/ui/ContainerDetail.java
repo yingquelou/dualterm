@@ -4,15 +4,13 @@ import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.view.ContextThemeWrapper;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
-
-import androidx.appcompat.view.ContextThemeWrapper;
-
-import com.google.android.material.button.MaterialButton;
 
 import java.io.File;
 import java.text.SimpleDateFormat;
@@ -170,7 +168,7 @@ public final class ContainerDetail {
             dismiss();
             actions.newFrom(image);
         });
-        MaterialButton remove = button("删除镜像", true, v -> {
+        Button remove = button("删除镜像", true, v -> {
             dismiss();
             actions.removeImage(image);
         });
@@ -210,12 +208,10 @@ public final class ContainerDetail {
         return val;
     }
 
-    private MaterialButton button(String text, boolean danger, View.OnClickListener click) {
-        MaterialButton b = (MaterialButton) android.view.LayoutInflater.from(themed)
+    private Button button(String text, boolean danger, View.OnClickListener click) {
+        Button b = (Button) android.view.LayoutInflater.from(themed)
                 .inflate(R.layout.action_button, buttons, false);
         b.setText(text);
-        b.setInsetTop(0);
-        b.setInsetBottom(0);
         if (danger) {
             // 危险色只在可用时给；被禁用（镜像还有容器在用）时退回灰，
             // 否则一个红色的「删除镜像（使用中）」看着像能点。

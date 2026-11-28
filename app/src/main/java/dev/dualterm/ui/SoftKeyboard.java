@@ -50,6 +50,9 @@ import dev.dualterm.term.TerminalView;
  * 延迟（毫秒）。发送时按序攒字节、遇延迟分批：先冲刷已攒字节，
  * 等 N 毫秒后继续——由此可以拼宏，比如 ^U + 命令 + 回车 = 「清行并执行」。
  *
+ * 步骤的顺序就是发送顺序，所以编辑时行尾「⋮」里能插入、上移、下移、删除：
+ * 少了中间一步不必把后面的全删掉重来。
+ *
  * 键集持久化在 SharedPreferences（Host 转交）：未自定义时为 null，直接用
  * 默认键集；一旦增删就落盘完整列表，「恢复默认」即清掉这份记录。旧格式
  * {label,mode,value}（单模式键）读取时自动转成单步骤序列。
@@ -485,7 +488,7 @@ public final class SoftKeyboard {
 
     /**
      * 添加/编辑自定义键对话框：标签 + 步骤列表。每步一行
-     * （模式 Spinner + 内容输入框 + 删除「×」），「＋ 步骤」追加，
+     * （模式 Spinner + 内容输入框 + 行尾「⋮」），「＋ 步骤」追加到末尾，
      * 按行序执行：如 ^U + ls -la + 回车 = 清行并执行。
      * existingIndex = 被编辑键在键集里的下标（-1 = 添加）。
      * 确定按钮的点击先置空，onShow 里挂校验：非法输入时留在对话框里改。
@@ -590,18 +593,27 @@ public final class SoftKeyboard {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         et.setLayoutParams(etLp);
 
-        Button del = new Button(ctx);
-        del.setText("×");
-        del.setTextSize(14);
-        LinearLayout.LayoutParams delLp = new LinearLayout.LayoutParams(
-                host.dp(44), ViewGroup.LayoutParams.WRAP_CONTENT);
-        del.setLayoutParams(delLp);
-        del.setOnClickListener(new View.OnClickListener() {
+        // 行尾操作入口：插入 / 上移 / 下移 / 删除都收在「⋮」里。
+        // 不在行内并排放两个按钮——Spinner 已占 104dp，再加 2×40dp，输入框
+        // 就只剩一百来 dp，填一条带空格的命令会看不到后半截。
+        Button more = new Button(ctx);
+        more.setText("⋮");
+        more.setTextSize(16);
+        more.setAllCaps(false);
+        more.setPadding(0, 0, 0, 0);
+        android.util.TypedValue pressed = new android.util.TypedValue();
+        if (ctx.getTheme().resolveAttribute(
+                android.R.attr.selectableItemBackgroundBorderless, pressed, true)) {
+            more.setBackgroundResource(pressed.resourceId);
+        }
+        LinearLayout.LayoutParams moreLp = new LinearLayout.LayoutParams(
+                host.dp(40), ViewGroup.LayoutParams.WRAP_CONTENT);
+        more.setLayoutParams(moreLp);
+        more.setContentDescription("步骤操作");
+        more.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (stepsBox.getChildCount() > 1) {
-                    stepsBox.removeView(row);   // 至少留一步
-                }
+                showStepMenu(ctx, stepsBox, row);
             }
         });
 
@@ -625,9 +637,82 @@ public final class SoftKeyboard {
 
         row.addView(sp);
         row.addView(et);
-        row.addView(del);
+        row.addView(more);
         row.setTag(et);
         return row;
+    }
+
+    /**
+     * 单步的操作菜单：插入、调序、删除。
+     *
+     * <p>只列出当前可用的项——首步没有「上移」、末步没有「下移」、只剩一步时
+     * 没有「删除」，比把不可用项灰在那里更少一次判断。菜单标题带步号，
+     * 多步宏里不至于改错行。
+     */
+    private void showStepMenu(final Context ctx, final LinearLayout stepsBox, final View row) {
+        final int index = stepsBox.indexOfChild(row);
+        final int count = stepsBox.getChildCount();
+        if (index < 0) {
+            return;
+        }
+
+        List<String> labels = new ArrayList<>();
+        List<Runnable> ops = new ArrayList<>();
+
+        labels.add("在上方插入一步");
+        ops.add(new Runnable() {
+            @Override
+            public void run() {
+                stepsBox.addView(makeStepRow(ctx, stepsBox, null), index);
+            }
+        });
+        labels.add("在下方插入一步");
+        ops.add(new Runnable() {
+            @Override
+            public void run() {
+                stepsBox.addView(makeStepRow(ctx, stepsBox, null), index + 1);
+            }
+        });
+        if (index > 0) {
+            labels.add("上移");
+            ops.add(new Runnable() {
+                @Override
+                public void run() {
+                    stepsBox.removeView(row);
+                    stepsBox.addView(row, index - 1);
+                }
+            });
+        }
+        if (index < count - 1) {
+            labels.add("下移");
+            ops.add(new Runnable() {
+                @Override
+                public void run() {
+                    stepsBox.removeView(row);
+                    stepsBox.addView(row, index + 1);
+                }
+            });
+        }
+        if (count > 1) {
+            labels.add("删除本步");
+            ops.add(new Runnable() {
+                @Override
+                public void run() {
+                    stepsBox.removeView(row);   // 至少留一步
+                }
+            });
+        }
+
+        new AlertDialog.Builder(ctx)
+                .setTitle("第 " + (index + 1) + " 步")
+                .setItems(labels.toArray(new String[0]),
+                        new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, int which) {
+                                ops.get(which).run();
+                            }
+                        })
+                .show();
     }
 
     /** Spinner 显示名数组（与 StepMode.values() 下标一一对应）。 */
